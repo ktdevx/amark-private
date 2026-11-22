@@ -25,7 +25,8 @@ amark は、Markdown を構文木として表し、原文に忠実に解析す�
   - テスト専用の HTML 出力、spec.txt の準拠テスト、病的な入力のテスト、原文の復元のテスト。
   - ビルドと CI：CMake、静的と動的のライブラリ、Windows・Linux・macOS。
 - **Out**:
-  - 公開する HTML 出力。木から Markdown を書き直す処理。
+  - 公開する HTML 出力。
+  - 木から Markdown を書き出す処理と、範囲を指定して原文を差し替える補助 API。後の段階の候補とする（「Future Phases」を参照）。
   - I/O と BOM の除去、フロントマターなど本文の外側の解析。BOM とフロントマターは、利用者が解析する範囲の指定で除く。
   - 用途に固有の処理（翻訳の単位への分割、原文の置き換えなど）。
   - GFM の各拡張（表、取り消し線、タスクリスト、脚注、拡張オートリンク）の実装。拡張点が固まった後の段階で、別の spec にする。
@@ -58,6 +59,19 @@ amark は、Markdown を構文木として表し、原文に忠実に解析す�
   - **block-parser / inline-parser ⇔ dialect-extension**：差し込み口の位置と呼び出しの契約。解析器の設計の段階で差し込み口を確保し、dialect-extension で公開と検査を仕上げる。
   - **syntax-tree の公開する設定 ⇔ 各解析器**：範囲、UTF-8 の扱い、資源の上限、確保関数を、どこで検査し、どこで適用するか。
   - **unicode-tables ⇔ 利用する側**：参照する関数の形（コードポイントの判定と、畳み込み結果の書き出し）。
+
+## Future Phases
+今回の 8 つの spec が終わり、拡張点と公開 API が固まった後の候補である。今回の spec では作らない。ただし、ここに挙げたものを後から本体の設計を変えずに足せることは、syntax-tree と source-text の設計で確かめておく。下の「Specs (dependency order)」には含めない（`/kiro-spec-batch` の対象外）。
+
+- **markdown-writer**：木から Markdown を書き出す。書式は正規化する（cmark の `cmark_render_commonmark` に相当）。
+  - 用途：整形ツール、プログラムで組み立てた文書の出力、「書き出す → もう一度解析する → 同じ木になる」の往復テスト。
+  - 決めること：木を作る・書き換える公開 API が要るか。エスケープと正規化の方針。
+  - Dependencies: syntax-tree, source-text
+- **source-edit**：範囲を指定して原文を差し替える補助 API。変えない部分は原文のまま残す（書式も行末記号も変わらない）。
+  - 用途：翻訳した文章での置き換えなど、原文に忠実な編集。
+  - Dependencies: syntax-tree, source-text
+- **GFM の各拡張**：表、取り消し線、タスクリスト、脚注、拡張オートリンク。拡張ごとに 1 つの spec にする。
+  - Dependencies: dialect-extension, spec-conformance
 
 ## Specs (dependency order)
 - [ ] project-foundation -- CMake・CI・ライセンス・Naos の統合と、内部の部品（確保関数、アリーナ、配列、行の索引、UTF-8 の検査と置換）。Dependencies: none
