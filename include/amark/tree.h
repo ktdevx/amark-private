@@ -148,6 +148,13 @@ typedef struct amark_diagnostic {
                                   the document is destroyed */
 } amark_diagnostic_t;
 
+/*
+ * Releases doc and everything it holds (nodes, attributes, diagnostics)
+ * through the allocator it was created with. The content is neither changed
+ * nor released. Does nothing if doc is NULL.
+ */
+AMARK_API void amark_document_destroy(amark_document_t *doc);
+
 #ifdef __cplusplus
 }
 #endif

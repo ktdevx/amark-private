@@ -1,0 +1,436 @@
+/*
+ * Copyright (c) The Amark Authors
+ * SPDX-License-Identifier: MIT
+ */
+
+/* Unit tests of the document (src/document.h): create and destroy. */
+
+#include "document.h"
+#include "test_alloc.h"
+
+#include <naos/naos.h>
+
+#include <stddef.h>
+#include <string.h>
+
+/*
+ * Fixture. NAOS_REQUIRE_* leaves a test with longjmp, so the document a test
+ * creates is kept in g_doc, and teardown (which always runs) destroys it and
+ * then checks that no block is left and that every call received the
+ * context value it was given.
+ */
+#define LARGE_INPUT 100000
+
+static amark_test_alloc_t g_state;
+static amark_allocator_t g_allocator;
+static amark_document_t *g_doc;
+static unsigned char g_large[LARGE_INPUT];
+
+NAOS_SETUP(counting)
+{
+    amark_test_alloc_init(&g_state);
+    g_allocator = amark_test_allocator(&g_state);
+    g_doc = NULL;
+}
+
+NAOS_TEARDOWN(counting)
+{
+    g_state.fail_at = 0;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+/*
+ * "ab\n" is line 1 (offsets 0-2), "cd\r\n" line 2 (3-6), "ef\r" line 3
+ * (7-9) and "gh" line 4 (10-11); offset 12 (the length) is on line 4.
+ */
+static const char k_mixed[] = "ab\ncd\r\nef\rgh";
+#define MIXED_LENGTH (sizeof(k_mixed) - 1)
+
+static const amark_node_t *node_at(const amark_document_t *doc,
+                                   amark_node_id_t id)
+{
+    return (const amark_node_t *)amark_array_at(&doc->nodes, id);
+}
+
+/* Creates g_doc over k_mixed with the range [start, end). */
+static amark_error_t create_mixed(size_t start, size_t end,
+                                  const char *filename)
+{
+    return amark_document_create(&g_allocator,
+                                 (const unsigned char *)k_mixed, MIXED_LENGTH,
+                                 start, end, filename, &g_doc);
+}
+
+/* Checks that g_doc holds only the root, with the given range and lines. */
+static void check_only_root(size_t start, size_t end, size_t start_line,
+                            size_t end_line)
+{
+    const amark_node_t *root;
+    const amark_node_t *unused;
+
+    NAOS_REQUIRE_TRUE(g_doc != NULL);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 1);
+    NAOS_REQUIRE_UINT_EQ(amark_array_len(&g_doc->nodes), 2);
+
+    unused = node_at(g_doc, AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(unused->kind, AMARK_KIND_NONE);
+
+    root = node_at(g_doc, 1);
+    NAOS_CHECK_UINT_EQ(root->kind, AMARK_KIND_DOCUMENT);
+    NAOS_CHECK_UINT_EQ(root->is_inline, 0);
+    NAOS_CHECK_UINT_EQ(root->parent, AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(root->first_child, AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(root->last_child, AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(root->prev_sibling, AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(root->next_sibling, AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(root->attr, 0);
+    NAOS_CHECK_UINT_EQ(root->start, start);
+    NAOS_CHECK_UINT_EQ(root->end, end);
+    NAOS_CHECK_UINT_EQ(root->start_line, start_line);
+    NAOS_CHECK_UINT_EQ(root->end_line, end_line);
+
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->diagnostics), 0);
+}
+
+/* ---- the root (2.2, 2.4, 2.7, 7.1) ---- */
+
+NAOS_TEST(whole_content_root)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, NULL), AMARK_ERROR_NONE);
+    check_only_root(0, MIXED_LENGTH, 1, 4);
+}
+
+NAOS_TEST(root_range_is_the_parsed_range_from_the_content_start)
+{
+    /* [3, 11): starts at "cd" (line 2), last byte 'g' at 10 (line 4). */
+    NAOS_REQUIRE_INT_EQ(create_mixed(3, 11, NULL), AMARK_ERROR_NONE);
+    check_only_root(3, 11, 2, 4);
+}
+
+NAOS_TEST(root_ending_with_a_line_ending)
+{
+    /* [3, 7): the last byte is the LF of CR LF at 6, on line 2. */
+    NAOS_REQUIRE_INT_EQ(create_mixed(3, 7, NULL), AMARK_ERROR_NONE);
+    check_only_root(3, 7, 2, 2);
+}
+
+NAOS_TEST(root_ending_between_cr_and_lf)
+{
+    /* [0, 6): the last byte is the CR of CR LF at 5, on line 2. */
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, 6, NULL), AMARK_ERROR_NONE);
+    check_only_root(0, 6, 1, 2);
+}
+
+NAOS_TEST(empty_root_range)
+{
+    /* [7, 7): start line and end line are both the line of 7. */
+    NAOS_REQUIRE_INT_EQ(create_mixed(7, 7, NULL), AMARK_ERROR_NONE);
+    check_only_root(7, 7, 3, 3);
+}
+
+NAOS_TEST(empty_range_at_the_end_of_the_content)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(MIXED_LENGTH, MIXED_LENGTH, NULL),
+                        AMARK_ERROR_NONE);
+    check_only_root(MIXED_LENGTH, MIXED_LENGTH, 4, 4);
+}
+
+NAOS_TEST(empty_content_with_null_pointer)
+{
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator, NULL, 0, 0, 0,
+                                              NULL, &g_doc),
+                        AMARK_ERROR_NONE);
+    check_only_root(0, 0, 1, 1);
+    NAOS_CHECK_NULL(amark_document_content(g_doc));
+    NAOS_CHECK_UINT_EQ(amark_document_content_length(g_doc), 0);
+    NAOS_CHECK_UINT_EQ(
+        amark_line_index_line_count(amark_document_line_index(g_doc)), 1);
+}
+
+NAOS_TEST(empty_content_with_a_pointer)
+{
+    static const unsigned char empty[1] = {0};
+
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator, empty, 0, 0, 0,
+                                              "e.md", &g_doc),
+                        AMARK_ERROR_NONE);
+    check_only_root(0, 0, 1, 1);
+    NAOS_CHECK_PTR_EQ(amark_document_content(g_doc), empty);
+}
+
+/* ---- accessors ---- */
+
+NAOS_TEST(content_and_line_index_accessors)
+{
+    const amark_line_index_t *lines;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(3, 11, NULL), AMARK_ERROR_NONE);
+    NAOS_CHECK_PTR_EQ(amark_document_content(g_doc), k_mixed);
+    NAOS_CHECK_UINT_EQ(amark_document_content_length(g_doc), MIXED_LENGTH);
+
+    /* The index covers the whole content, not only the parsed range. */
+    lines = amark_document_line_index(g_doc);
+    NAOS_REQUIRE_TRUE(lines != NULL);
+    NAOS_CHECK_UINT_EQ(amark_line_index_line_count(lines), 4);
+    NAOS_CHECK_UINT_EQ(amark_line_index_line_at(lines, 0), 1);
+    NAOS_CHECK_UINT_EQ(amark_line_index_line_at(lines, 12), 4);
+}
+
+NAOS_TEST(range_lines_follow_the_rule)
+{
+    size_t first = 0;
+    size_t last = 0;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, NULL), AMARK_ERROR_NONE);
+
+    amark_document_range_lines(g_doc, 0, 3, &first, &last); /* ends at LF */
+    NAOS_CHECK_UINT_EQ(first, 1);
+    NAOS_CHECK_UINT_EQ(last, 1);
+    amark_document_range_lines(g_doc, 2, 4, &first, &last);
+    NAOS_CHECK_UINT_EQ(first, 1);
+    NAOS_CHECK_UINT_EQ(last, 2);
+    amark_document_range_lines(g_doc, 4, 4, &first, &last); /* empty */
+    NAOS_CHECK_UINT_EQ(first, 2);
+    NAOS_CHECK_UINT_EQ(last, 2);
+    amark_document_range_lines(g_doc, 7, 10, &first, &last); /* ends at CR */
+    NAOS_CHECK_UINT_EQ(first, 3);
+    NAOS_CHECK_UINT_EQ(last, 3);
+    amark_document_range_lines(g_doc, 10, 12, &first, &last);
+    NAOS_CHECK_UINT_EQ(first, 4);
+    NAOS_CHECK_UINT_EQ(last, 4);
+}
+
+NAOS_TEST(filename_is_copied)
+{
+    char name[] = "notes.md";
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, name), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_TRUE(g_doc->filename != NULL);
+    NAOS_CHECK_TRUE(g_doc->filename != name);
+    name[0] = 'X';
+    NAOS_CHECK_STR_EQ(g_doc->filename, "notes.md");
+}
+
+NAOS_TEST(empty_filename_is_copied)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, ""), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_TRUE(g_doc->filename != NULL);
+    NAOS_CHECK_STR_EQ(g_doc->filename, "");
+}
+
+NAOS_TEST(no_filename_stays_null)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, NULL), AMARK_ERROR_NONE);
+    NAOS_CHECK_NULL(g_doc->filename);
+}
+
+/* ---- memory (5.1, 5.2, 5.3, 5.5, 2.9, 7.7) ---- */
+
+NAOS_TEST(create_and_destroy_release_everything)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, "a.md"),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_GT(g_state.live, 0);
+    /* The body keeps a copy of the allocator it came from. */
+    NAOS_CHECK_PTR_EQ(g_doc->allocator.ctx, &g_state);
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, g_state.malloc_calls);
+}
+
+NAOS_TEST(destroy_null_calls_nothing)
+{
+    amark_document_destroy(NULL);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, 0);
+}
+
+NAOS_TEST(content_bytes_are_unchanged)
+{
+    unsigned char content[sizeof(k_mixed)];
+    unsigned char before[sizeof(k_mixed)];
+
+    memcpy(content, k_mixed, sizeof(k_mixed));
+    memcpy(before, content, sizeof(content));
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator, content,
+                                              MIXED_LENGTH, 0, MIXED_LENGTH,
+                                              "c.md", &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_TRUE(memcmp(content, before, sizeof(content)) == 0);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_TRUE(memcmp(content, before, sizeof(content)) == 0);
+}
+
+/* Fills g_large with text whose lines end at random with LF, CR or CR LF. */
+static size_t fill_large(void)
+{
+    size_t i = 0;
+    size_t lines = 1;
+    unsigned seed = 12345u;
+
+    while (i < LARGE_INPUT) {
+        unsigned r;
+
+        seed = seed * 1103515245u + 12345u;
+        r = (seed >> 16) % 30u;
+        if (r == 0) {
+            g_large[i++] = '\n';
+            lines++;
+        } else if (r == 1) {
+            g_large[i++] = '\r';
+            if (i < LARGE_INPUT) {
+                g_large[i++] = '\n';
+            }
+            lines++;
+        } else if (r == 2) {
+            g_large[i++] = '\r';
+            if (i < LARGE_INPUT && g_large[i - 1] == '\r') {
+                g_large[i++] = 'x';
+            }
+            lines++;
+        } else {
+            g_large[i++] = (unsigned char)('a' + r);
+        }
+    }
+    return lines;
+}
+
+NAOS_TEST(large_content)
+{
+    size_t lines = fill_large();
+    const amark_node_t *root;
+
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator, g_large,
+                                              LARGE_INPUT, 0, LARGE_INPUT,
+                                              "big.md", &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(
+        amark_line_index_line_count(amark_document_line_index(g_doc)), lines);
+    root = node_at(g_doc, 1);
+    NAOS_CHECK_UINT_EQ(root->start_line, 1);
+    NAOS_CHECK_UINT_EQ(root->end_line,
+                       amark_line_index_line_at(&g_doc->lines,
+                                                LARGE_INPUT - 1));
+}
+
+/* ---- allocation failures (7.8, 7.10) ---- */
+
+/*
+ * Makes the 1st, 2nd, 3rd, ... call to the allocator fail until create
+ * succeeds. Each failure returns NOMEM, stores NULL and leaves no block.
+ */
+static size_t failure_loop(const unsigned char *content, size_t length,
+                           size_t start, size_t end, const char *filename)
+{
+    size_t fail_at;
+    size_t failures = 0;
+
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_document_t sentinel_storage;
+        amark_document_t *doc = &sentinel_storage;
+        amark_error_t err;
+
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        err = amark_document_create(&g_allocator, content, length, start, end,
+                                    filename, &doc);
+        if (err == AMARK_ERROR_NONE) {
+            g_doc = doc;
+            break;
+        }
+        failures++;
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        NAOS_CHECK_NULL(doc);
+        NAOS_CHECK_UINT_EQ(g_state.malloc_calls, fail_at);
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+        NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+    }
+    g_state.fail_at = 0;
+    return failures;
+}
+
+NAOS_TEST(failure_injection_loop)
+{
+    size_t failures = failure_loop((const unsigned char *)k_mixed,
+                                   MIXED_LENGTH, 3, 11, "loop.md");
+
+    /* At least the body and one arena block can fail. */
+    NAOS_CHECK_UINT_GE(failures, 2);
+    check_only_root(3, 11, 2, 4);
+    NAOS_CHECK_STR_EQ(g_doc->filename, "loop.md");
+}
+
+NAOS_TEST(failure_injection_loop_large_content)
+{
+    size_t failures;
+
+    (void)fill_large();
+    failures = failure_loop(g_large, LARGE_INPUT, 0, LARGE_INPUT, "big.md");
+    NAOS_CHECK_UINT_GE(failures, 2);
+    NAOS_REQUIRE_TRUE(g_doc != NULL);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 1);
+}
+
+NAOS_TEST(failure_injection_loop_empty_content)
+{
+    size_t failures = failure_loop(NULL, 0, 0, 0, NULL);
+
+    NAOS_CHECK_UINT_GE(failures, 2);
+    check_only_root(0, 0, 1, 1);
+}
+
+NAOS_SUITE(document,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(whole_content_root),
+    NAOS_ADD_TEST(root_range_is_the_parsed_range_from_the_content_start),
+    NAOS_ADD_TEST(root_ending_with_a_line_ending),
+    NAOS_ADD_TEST(root_ending_between_cr_and_lf),
+    NAOS_ADD_TEST(empty_root_range),
+    NAOS_ADD_TEST(empty_range_at_the_end_of_the_content),
+    NAOS_ADD_TEST(empty_content_with_null_pointer),
+    NAOS_ADD_TEST(empty_content_with_a_pointer),
+    NAOS_ADD_TEST(content_and_line_index_accessors),
+    NAOS_ADD_TEST(range_lines_follow_the_rule),
+    NAOS_ADD_TEST(filename_is_copied),
+    NAOS_ADD_TEST(empty_filename_is_copied),
+    NAOS_ADD_TEST(no_filename_stays_null),
+    NAOS_ADD_TEST(create_and_destroy_release_everything),
+    NAOS_ADD_TEST(destroy_null_calls_nothing),
+    NAOS_ADD_TEST(content_bytes_are_unchanged),
+    NAOS_ADD_TEST(large_content),
+    NAOS_ADD_TEST(failure_injection_loop),
+    NAOS_ADD_TEST(failure_injection_loop_large_content),
+    NAOS_ADD_TEST(failure_injection_loop_empty_content)
+)
+
+/* The default allocator (malloc and free) works too. */
+NAOS_TEST(default_allocator_works)
+{
+    amark_allocator_t allocator = amark_allocator_default();
+    amark_document_t *doc = NULL;
+
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&allocator,
+                                              (const unsigned char *)k_mixed,
+                                              MIXED_LENGTH, 0, MIXED_LENGTH,
+                                              "d.md", &doc),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(doc), 1);
+    amark_document_destroy(doc);
+}
+
+NAOS_SUITE(default_allocator,
+    NAOS_ADD_TEST(default_allocator_works)
+)
+
+NAOS_MAIN(
+    NAOS_ADD_SUITE(document),
+    NAOS_ADD_SUITE(default_allocator)
+)
