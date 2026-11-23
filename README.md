@@ -26,9 +26,11 @@ Amark is under early development (version 0.1.0) and is not usable for
 parsing yet. The repository currently provides the foundation: the build,
 install and package configuration, the test setup, CI, and the internal
 building blocks (allocator abstraction, arena, growable array, line index,
-UTF-8 validation and replacement). The public API so far is
-`amark_version_string()`. The API and ABI will change without notice before
-1.0, and a new minor version may be incompatible with the previous one.
+UTF-8 validation and replacement), the parse configuration, and the syntax
+tree with its read-only public API (see [Public API](#public-api)). There is no public function that
+parses yet, so the tree cannot be obtained from Markdown. The API and ABI will
+change without notice before 1.0, and a new minor version may be incompatible
+with the previous one.
 
 ## Requirements
 
@@ -156,6 +158,66 @@ As a subproject, Amark does not build its tests (so Naos is not fetched),
 defines no install rules, and leaves warnings as warnings, unless you set the
 options below before `add_subdirectory()`. `BUILD_SHARED_LIBS` of the parent
 project selects a static or shared library.
+
+## Public API
+
+Everything public is declared by `#include <amark/amark.h>`, which also
+compiles as C++. All names start with `amark_` (functions and types) or
+`AMARK_` (macros and enumeration constants).
+
+### Configuration
+
+A parse is configured with an `amark_config_t`. Always fill it in with
+`amark_config_init()` first, then change only the fields you need;
+`amark_config_validate()` checks it against the length of the content and
+returns `AMARK_ERROR_NONE` or `AMARK_ERROR_INVALID_CONFIG`. A configuration
+that was not initialized (for example, one filled with zeros) is invalid.
+
+```c
+amark_config_t config;
+
+amark_config_init(&config);
+config.utf8_mode = AMARK_UTF8_REPLACE; /* replace invalid UTF-8 */
+if (amark_config_validate(&config, content_length) != AMARK_ERROR_NONE) {
+    /* the configuration is invalid */
+}
+```
+
+### Reading the tree
+
+A parse gives an `amark_document_t`, used through pointers only, and released
+with `amark_document_destroy()`. Nodes are named by `amark_node_id_t` IDs
+within their document: the root is `amark_document_root(doc)`, and
+`AMARK_NODE_NONE` (0) means "no node". The kind of a node
+(`amark_node_kind()`) is one of the `AMARK_KIND_*` values, which never change
+between versions, or a dialect kind at or above `AMARK_KIND_DIALECT_MIN`; its range (`amark_node_range()`) is the bytes
+`[start, end)` of the content it was parsed from. The reading functions never
+change the document or allocate memory, and return a fixed value
+(`AMARK_NODE_NONE`, `AMARK_KIND_NONE`, 0 or `false`) for a NULL document or
+an ID that names no node.
+
+The parent, the first child and the next sibling are enough to visit every
+node in document order, without recursion or a stack:
+
+```c
+amark_node_id_t root = amark_document_root(doc);
+amark_node_id_t node = root;
+while (node != AMARK_NODE_NONE) {
+    /* visit node */
+    amark_node_id_t next = amark_node_first_child(doc, node);
+    while (next == AMARK_NODE_NONE && node != root) {
+        next = amark_node_next_sibling(doc, node);
+        if (next == AMARK_NODE_NONE) {
+            node = amark_node_parent(doc, node);
+        }
+    }
+    node = next;
+}
+```
+
+See `include/amark/tree.h` for the attributes of each kind (heading level,
+list type, code block fence, link destination and so on) and for the
+diagnostics a document holds.
 
 ## Options
 
