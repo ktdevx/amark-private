@@ -98,3 +98,10 @@ size_t amark_line_index_line_count(const amark_line_index_t *index)
 {
     return index->line_count;
 }
+
+size_t amark_line_index_line_start(const amark_line_index_t *index,
+                                   size_t line)
+{
+    return line <= index->line_count ? index->line_starts[line - 1]
+                                     : index->length;
+}

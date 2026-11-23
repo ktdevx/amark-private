@@ -43,14 +43,14 @@
 
 ### Allowed Dependencies
 - syntax-tree：`document`、`tree_internal`、`config_internal`、`tree_check`（テストだけ）、公開の型
-- project-foundation：`alloc`、`arena`、`array`、`line_index`、`utf8`
+- project-foundation：`alloc`、`arena`、`array`、`line_index`、`utf8`。`line_index` は関数（`amark_line_index_line_start`、`amark_line_index_line_count`、`amark_line_index_line_at`）だけを使い、`amark_line_index_t` の項目は読まない。
 - unicode-tables：`unicode` の `amark_unicode_fold` だけ。`entity` は使わない。
 - C99 の標準ヘッダ：`stdbool.h`、`stddef.h`、`stdint.h`、`string.h`
 - 依存の向きは `parse → block → refdef → definition → line → parse_data → document` の一方向である。`scan` は何にも依存しない。左のものだけが右のものを取り込む。
-- 上流への変更は、次の 2 つに限る。どちらも追加だけで、既存の関数の契約は変えない。
+- 上流への変更は、次の 3 つに限る。どれも追加だけで、既存の関数の契約は変えない。
   - `src/document.h`・`src/document.c`：`parse_data` の項目と、3 つの関数
   - `src/utf8.h`・`src/utf8.c`：`amark_utf8_decode_lossy`
-- 例外：`line.c` は、行の開始位置を O(1) で得るため、`amark_line_index_t` の項目 `line_starts` と `length` を直接読む。行の索引には、行の開始位置を O(1) で返す取得関数がないためである。project-foundation に取得関数が足されるまでの暫定の扱いで、足されたらそれに置き換える（上流への変更として未決）。
+  - `src/line_index.h`・`src/line_index.c`：`amark_line_index_line_start`（行の開始位置を O(1) で返す。ユーザーの承認を得て足した）
 
 ### Revalidation Triggers
 次の変更は、下流の spec（inline-parser、source-text、dialect-extension、spec-conformance）の見直しを要する。
@@ -502,7 +502,7 @@ bool amark_inline_content_at(const amark_document_t *doc, size_t index,
 | Requirements | 2.2, 2.3, 2.4, 5.1, 5.2, 5.3, 15.1, 15.6, 15.8, 15.9 |
 
 **Responsibilities & Constraints**
-- 行の境は、文書の行の索引から求め、解析する範囲で切り詰める。行末記号の判定は、範囲の中のバイトだけで行う。
+- 行の境は、文書の行の索引から `amark_line_index_line_start(index, line)` と `amark_line_index_line_start(index, line + 1)` で求め、解析する範囲で切り詰める。行の索引の項目は直接読まない。行末記号の判定は、範囲の中のバイトだけで行う。
 - 行の記録の意味（下の表）を定める。記録を書くのは BlockParser だけである。
 
 **Contracts**: Service [x]

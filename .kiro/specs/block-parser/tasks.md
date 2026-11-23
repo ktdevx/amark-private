@@ -243,7 +243,7 @@
 - 1.2: clang の ASan のランタイムがこのコンテナにないため、サニタイザの構成は GCC（`-DAMARK_SANITIZE=ON -DCMAKE_C_COMPILER=gcc`）で確かめる。
 - 1.3: `amark_test_dump_blocks(doc, buf, size)`（`tests/support/tree_dump.h`、`amark_test_support` に含まれる）。設定されていない属性は `none`、種類のないリストは `(list)`、短い名前のない種類は `(?)`、info が書かれていれば空でも `info` と書く。
 - 2.1: 解析のデータを作るときの行の内容の終わりは、`src/parse_data.c` の static な `init_records` が範囲の中のバイトだけで求める（依存の向きを守るため line.c を呼ばない）。2.2 の `amark_line_bounds` は、これと同じ `content_end` を返す必要がある（CR と LF の間で切れる範囲でも）。
-- 2.2: `src/line.c` は行の開始位置を O(1) で得るため `line_index` の `line_starts` と `length` を直接読む（行の索引に O(1) の取得関数がないため。上流に足すなら置き換える）。行末記号の判定は `init_records` と 2 か所にあり、`bounds_agree_with_initial_records_for_every_range` で一致を固定している。
+- 2.2（解決済み）: 以前の `src/line.c` は、行の開始位置を O(1) で得るため `line_index` の項目 `line_starts` と `length` を直接読んでいた。ユーザーの承認を得て、project-foundation の行の索引に `amark_line_index_line_start`（行の開始位置を定数時間で返す。行の数 + 1 では長さを返す）を足し、`amark_line_bounds` はこれだけを使うように改めた。src/ の中で `line_index.c` のほかに項目を直接読むところはない。行末記号の判定は、なお 4 か所（`line_index.c` の `ends_line`、`parse_data.c` の `init_records`、`line.c` の `amark_line_bounds`、`definition.c`・`refdef.c` の行をまたぐカーソル）に重複して残る。`line.c` と `init_records` の一致は `bounds_agree_with_initial_records_for_every_range` で固定している。
 - 3.3: HTML の型 7 は spec.txt の文言どおり、名前が pre・script・style・textarea の開始タグを外す（`<pre/>` は 0、`</pre>` は 7）。cmark と commonmark.js はこれを外さないが、spec.txt の例はこの違いによらない。
 - 4.1: ラベルの走査と比較は、行末記号の次の行へ進むとき、その行の記録の `content_start` まで飛ぶ。作った直後の記録は「行の内容の終わり」なので、書いていない行は内容ごと飛ばされる。ブロックの解析は、ラベルを読む前に段落の各行の記録を書く必要がある。解析のデータがないときは、行末記号だけを飛ばす。
 - 5.1: 囲まない dest の丸括弧の入れ子には上限を設けない（spec.txt と design.md にないため。cmark は 32 段）。`amark_refdef_parse` の `last_line` は定義の最後の行、`end` はその行の内容の終わり（後ろの空白を含む）。続きは `last_line + 1` 行の `content_start` から読む。

@@ -31,9 +31,8 @@ bool amark_line_bounds(const amark_document_t *doc, size_t line,
     bytes = amark_document_content(doc);
 
     /* The line in the whole content, cut to the range. */
-    start = index->line_starts[line - 1];
-    end = line < amark_line_index_line_count(index) ? index->line_starts[line]
-                                                    : index->length;
+    start = amark_line_index_line_start(index, line);
+    end = amark_line_index_line_start(index, line + 1);
     if (start < data->range_start) {
         start = data->range_start;
     }
