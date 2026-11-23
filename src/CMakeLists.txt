@@ -11,6 +11,7 @@ set(AMARK_SOURCES
     arena.c
     array.c
     config.c
+    definition.c
     document.c
     entity.c
     line.c
