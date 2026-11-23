@@ -30,3 +30,60 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(AmarkCompileOptions)
 
 add_subdirectory(src)
+
+# Install rules: the library, the public and generated headers, the package
+# files for find_package(Amark) and LICENSE. Internal headers in src/, the
+# test-only libraries, the tests and Naos are never installed.
+if(AMARK_INSTALL)
+    include(GNUInstallDirs)
+    include(CMakePackageConfigHelpers)
+
+    set(AMARK_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/Amark")
+
+    install(TARGETS amark
+        EXPORT AmarkTargets
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+
+    # Public headers (the committed ones and the generated export.h and
+    # version.h).
+    install(
+        DIRECTORY
+            "${PROJECT_SOURCE_DIR}/include/amark/"
+            "${PROJECT_BINARY_DIR}/include/amark/"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/amark"
+        FILES_MATCHING PATTERN "*.h"
+    )
+
+    install(EXPORT AmarkTargets
+        NAMESPACE Amark::
+        DESTINATION "${AMARK_INSTALL_CMAKEDIR}"
+    )
+
+    configure_package_config_file(
+        "${PROJECT_SOURCE_DIR}/cmake/AmarkConfig.cmake.in"
+        "${PROJECT_BINARY_DIR}/AmarkConfig.cmake"
+        INSTALL_DESTINATION "${AMARK_INSTALL_CMAKEDIR}"
+    )
+
+    # Before 1.0 a minor version may break compatibility. Change this to
+    # SameMajorVersion at 1.0.
+    write_basic_package_version_file(
+        "${PROJECT_BINARY_DIR}/AmarkConfigVersion.cmake"
+        VERSION "${PROJECT_VERSION}"
+        COMPATIBILITY SameMinorVersion
+    )
+
+    install(
+        FILES
+            "${PROJECT_BINARY_DIR}/AmarkConfig.cmake"
+            "${PROJECT_BINARY_DIR}/AmarkConfigVersion.cmake"
+        DESTINATION "${AMARK_INSTALL_CMAKEDIR}"
+    )
+
+    install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/amark"
+    )
+endif()

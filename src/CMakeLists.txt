@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 include(GenerateExportHeader)
+include(GNUInstallDirs)
 
 # The library's sources. Both amark and the test-only static library are
 # built from this one list; a new module adds one line here.
@@ -32,6 +33,7 @@ target_include_directories(amark
     PUBLIC
         "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
         "$<BUILD_INTERFACE:${AMARK_GENERATED_INCLUDE_DIR}>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
 )
 
 generate_export_header(amark
