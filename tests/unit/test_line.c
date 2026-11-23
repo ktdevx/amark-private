@@ -6,8 +6,9 @@
 /*
  * Unit tests of the parse data (src/parse_data.h) and the line records
  * (src/line.h): creating the parse data of a document (the parsed range, the
- * number of lines, the initial line records), the inline contents, and
- * allocation failures while creating it.
+ * number of lines, the initial line records), the inline contents,
+ * allocation failures while creating it, the bounds of a line, and reading
+ * and writing the line records.
  */
 
 #include "document.h"
@@ -407,6 +408,335 @@ NAOS_TEST(failed_add_keeps_inline_contents)
     NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), count + 1);
 }
 
+/* ---- the bounds of a line ---- */
+
+/* Gets the bounds of line from g_doc and checks them. */
+static void check_bounds(size_t line, size_t start, size_t content_end,
+                         size_t end)
+{
+    amark_line_bounds_t bounds;
+
+    NAOS_REQUIRE_TRUE(amark_line_bounds(g_doc, line, &bounds));
+    NAOS_CHECK_UINT_EQ(bounds.start, start);
+    NAOS_CHECK_UINT_EQ(bounds.content_end, content_end);
+    NAOS_CHECK_UINT_EQ(bounds.end, end);
+}
+
+/* Checks that line is not covered: false, and *out unchanged. */
+static void check_no_line(size_t line)
+{
+    amark_line_bounds_t bounds;
+    amark_line_record_t record;
+
+    bounds.start = 77;
+    bounds.content_end = 88;
+    bounds.end = 99;
+    record.content_start = 66;
+    record.pad = 5;
+    NAOS_CHECK_FALSE(amark_line_bounds(g_doc, line, &bounds));
+    NAOS_CHECK_FALSE(amark_line_get(g_doc, line, &record));
+    NAOS_CHECK_UINT_EQ(bounds.start, 77);
+    NAOS_CHECK_UINT_EQ(bounds.content_end, 88);
+    NAOS_CHECK_UINT_EQ(bounds.end, 99);
+    NAOS_CHECK_UINT_EQ(record.content_start, 66);
+    NAOS_CHECK_UINT_EQ(record.pad, 5);
+}
+
+/* LF, CR LF, CR, and a last line without a line ending (5.1, 5.2, 5.3). */
+NAOS_TEST(bounds_of_each_line_ending)
+{
+    create_mixed_data(0, MIXED_LENGTH);
+    check_bounds(1, 0, 2, 3);
+    check_bounds(2, 3, 5, 7);
+    check_bounds(3, 7, 9, 10);
+    check_bounds(4, 10, 12, 12);
+}
+
+/* Empty lines with each line ending, one after another. */
+NAOS_TEST(bounds_of_empty_lines)
+{
+    static const char text[] = "\n\r\n\r\r\nx";
+
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator,
+                                              (const unsigned char *)text,
+                                              sizeof(text) - 1, 0,
+                                              sizeof(text) - 1, NULL,
+                                              &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_doc), AMARK_ERROR_NONE);
+    check_bounds(1, 0, 0, 1); /* LF */
+    check_bounds(2, 1, 1, 3); /* CR LF */
+    check_bounds(3, 3, 3, 4); /* CR */
+    check_bounds(4, 4, 4, 6); /* CR LF */
+    check_bounds(5, 6, 7, 7); /* no line ending */
+    check_no_line(6);
+}
+
+/*
+ * Content that ends with a line ending: the empty line after it starts at
+ * the length and the range covers none of its bytes, so it is not a line of
+ * the range.
+ */
+NAOS_TEST(bounds_when_content_ends_with_a_line_ending)
+{
+    create_mixed_data(0, 3);
+    check_bounds(1, 0, 2, 3);
+    check_no_line(2);
+}
+
+/* "d\r\ne": the range starts and ends inside lines (2.3). */
+NAOS_TEST(bounds_cut_by_the_range)
+{
+    create_mixed_data(4, 8);
+    check_no_line(1);
+    check_bounds(2, 4, 5, 7);
+    check_bounds(3, 7, 8, 8);
+    check_no_line(4);
+}
+
+/* "ab\ncd\r": the range ends between the CR and the LF of line 2. */
+NAOS_TEST(bounds_when_range_ends_between_cr_and_lf)
+{
+    create_mixed_data(0, 6);
+    check_bounds(1, 0, 2, 3);
+    check_bounds(2, 3, 5, 6);
+    check_no_line(3);
+}
+
+/*
+ * "\nef\rgh": the range starts at the LF of line 2; that LF alone is the
+ * line ending of an empty line, and the CR before it is not looked at.
+ */
+NAOS_TEST(bounds_when_range_starts_between_cr_and_lf)
+{
+    create_mixed_data(6, MIXED_LENGTH);
+    check_no_line(1);
+    check_bounds(2, 6, 6, 7);
+    check_bounds(3, 7, 9, 10);
+    check_bounds(4, 10, 12, 12);
+}
+
+/* "\r" of line 2 alone: one line whose content is empty. */
+NAOS_TEST(bounds_of_a_range_of_only_a_cr)
+{
+    create_mixed_data(5, 6);
+    check_bounds(2, 5, 5, 6);
+}
+
+/* Inside one line: the bounds are the range itself. */
+NAOS_TEST(bounds_inside_one_line)
+{
+    create_mixed_data(10, 11);
+    check_bounds(4, 10, 11, 11);
+    check_no_line(3);
+}
+
+NAOS_TEST(lines_outside_the_range_are_absent)
+{
+    create_mixed_data(4, 8);
+    check_no_line(0);
+    check_no_line(1);
+    check_no_line(4);
+    check_no_line(5);
+    check_no_line((size_t)-1);
+}
+
+NAOS_TEST(no_lines_in_an_empty_range)
+{
+    create_mixed_data(3, 3);
+    check_no_line(0);
+    check_no_line(1);
+    check_no_line(2);
+}
+
+NAOS_TEST(no_lines_without_parse_data)
+{
+    create_mixed(0, MIXED_LENGTH);
+    check_no_line(1);
+}
+
+NAOS_TEST(no_lines_in_empty_content)
+{
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator, NULL, 0, 0, 0,
+                                              NULL, &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_doc), AMARK_ERROR_NONE);
+    check_no_line(0);
+    check_no_line(1);
+}
+
+static bool is_line_ending_byte(unsigned char c)
+{
+    return c == '\n' || c == '\r';
+}
+
+/*
+ * Checks every line of the range [start, end) of g_doc, whose bytes are
+ * text: the lines are contiguous and cover the range exactly; no content
+ * byte is a line ending byte; what follows the content is exactly one line
+ * ending (LF, CR or CR LF) inside the range, and only the last line may
+ * have none; and the record created with the parse data starts at the end
+ * of the line's content (it agrees with amark_parse_data_create).
+ */
+static void check_lines_of_range(const unsigned char *text, size_t start,
+                                 size_t end)
+{
+    const amark_parse_data_t *data = amark_document_parse_data(g_doc);
+    size_t pos = start;
+    size_t i;
+
+    NAOS_REQUIRE_NOT_NULL(data);
+    for (i = 0; i < data->line_count; i++) {
+        size_t line = data->first_line + i;
+        amark_line_bounds_t bounds;
+        amark_line_record_t record;
+        size_t k;
+
+        NAOS_REQUIRE_TRUE(amark_line_bounds(g_doc, line, &bounds));
+        NAOS_REQUIRE_TRUE(amark_line_get(g_doc, line, &record));
+        NAOS_CHECK_UINT_EQ(bounds.start, pos);
+        NAOS_REQUIRE_UINT_LE(bounds.start, bounds.content_end);
+        NAOS_REQUIRE_UINT_LE(bounds.content_end, bounds.end);
+        NAOS_REQUIRE_UINT_LE(bounds.end, end);
+        for (k = bounds.start; k < bounds.content_end; k++) {
+            NAOS_CHECK_FALSE(is_line_ending_byte(text[k]));
+        }
+        switch (bounds.end - bounds.content_end) {
+        case 0:
+            NAOS_CHECK_UINT_EQ(i, data->line_count - 1);
+            break;
+        case 1:
+            NAOS_CHECK_TRUE(is_line_ending_byte(text[bounds.content_end]));
+            /* A CR is not the line ending when an LF follows in range. */
+            if (text[bounds.content_end] == '\r') {
+                NAOS_CHECK_FALSE(bounds.end < end && text[bounds.end] == '\n');
+            }
+            break;
+        case 2:
+            NAOS_CHECK_UINT_EQ(text[bounds.content_end], '\r');
+            NAOS_CHECK_UINT_EQ(text[bounds.content_end + 1], '\n');
+            break;
+        default:
+            NAOS_FAIL("more than one line ending");
+        }
+        NAOS_CHECK_UINT_EQ(record.content_start, bounds.content_end);
+        NAOS_CHECK_UINT_EQ(record.pad, 0);
+        pos = bounds.end;
+    }
+    NAOS_CHECK_UINT_EQ(pos, end);
+}
+
+/*
+ * For every range of two contents with mixed line endings (ranges cut
+ * between a CR and its LF and ranges starting at the LF of a CR LF
+ * included), the bounds of each line are consistent and agree with the
+ * initial records.
+ */
+NAOS_TEST(bounds_agree_with_initial_records_for_every_range)
+{
+    static const char texts[2][16] = {"ab\ncd\r\nef\rgh", "\r\n\r\r\n\n x\r"};
+    size_t t;
+
+    for (t = 0; t < 2; t++) {
+        const unsigned char *text = (const unsigned char *)texts[t];
+        size_t length = strlen(texts[t]);
+        size_t start;
+        size_t end;
+
+        for (start = 0; start <= length; start++) {
+            for (end = start; end <= length; end++) {
+                NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator, text,
+                                                          length, start, end,
+                                                          NULL, &g_doc),
+                                    AMARK_ERROR_NONE);
+                NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_doc),
+                                    AMARK_ERROR_NONE);
+                check_lines_of_range(text, start, end);
+                amark_document_destroy(g_doc);
+                g_doc = NULL;
+            }
+        }
+    }
+}
+
+/* ---- reading and writing the line records ---- */
+
+NAOS_TEST(records_start_at_the_end_of_the_content)
+{
+    amark_line_record_t record;
+
+    create_mixed_data(0, MIXED_LENGTH);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 1, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 2);
+    NAOS_CHECK_UINT_EQ(record.pad, 0);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 2, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 5);
+    NAOS_CHECK_UINT_EQ(record.pad, 0);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 3, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 9);
+    NAOS_CHECK_UINT_EQ(record.pad, 0);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 4, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 12);
+    NAOS_CHECK_UINT_EQ(record.pad, 0);
+}
+
+NAOS_TEST(written_records_are_read_back)
+{
+    amark_line_record_t record;
+
+    create_mixed_data(4, MIXED_LENGTH);
+    amark_line_set(g_doc, 2, 4, 0);
+    amark_line_set(g_doc, 3, 7, 3);
+    amark_line_set(g_doc, 4, 11, 1);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 2, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 4);
+    NAOS_CHECK_UINT_EQ(record.pad, 0);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 3, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 7);
+    NAOS_CHECK_UINT_EQ(record.pad, 3);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 4, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 11);
+    NAOS_CHECK_UINT_EQ(record.pad, 1);
+
+    /* Writing again replaces the record; the others stay. */
+    amark_line_set(g_doc, 3, 8, 0);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 3, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 8);
+    NAOS_CHECK_UINT_EQ(record.pad, 0);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 2, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 4);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 4, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, 11);
+    NAOS_CHECK_UINT_EQ(record.pad, 1);
+
+    /* The bounds do not depend on the records. */
+    check_bounds(3, 7, 9, 10);
+}
+
+/* The records of a document with many lines are read and written. */
+NAOS_TEST(records_of_many_lines)
+{
+    amark_line_record_t record;
+    size_t line;
+
+    fill_large();
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator, g_large,
+                                              sizeof(g_large), 0,
+                                              sizeof(g_large), NULL, &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_doc), AMARK_ERROR_NONE);
+    for (line = 1; line <= LARGE_LINES; line++) {
+        amark_line_set(g_doc, line, (line - 1) * 2, (unsigned)(line % 4));
+    }
+    for (line = 1; line <= LARGE_LINES; line++) {
+        NAOS_REQUIRE_TRUE(amark_line_get(g_doc, line, &record));
+        NAOS_CHECK_UINT_EQ(record.content_start, (line - 1) * 2);
+        NAOS_CHECK_UINT_EQ(record.pad, line % 4);
+        check_bounds(line, (line - 1) * 2, (line - 1) * 2 + 1, line * 2);
+    }
+    check_no_line(LARGE_LINES + 1);
+}
+
 NAOS_SUITE(line,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -425,7 +755,23 @@ NAOS_SUITE(line,
     NAOS_ADD_TEST(index_at_or_past_the_count_is_absent_and_keeps_out),
     NAOS_ADD_TEST(no_inline_contents_without_parse_data),
     NAOS_ADD_TEST(failure_injection_loop_create),
-    NAOS_ADD_TEST(failed_add_keeps_inline_contents)
+    NAOS_ADD_TEST(failed_add_keeps_inline_contents),
+    NAOS_ADD_TEST(bounds_of_each_line_ending),
+    NAOS_ADD_TEST(bounds_of_empty_lines),
+    NAOS_ADD_TEST(bounds_when_content_ends_with_a_line_ending),
+    NAOS_ADD_TEST(bounds_cut_by_the_range),
+    NAOS_ADD_TEST(bounds_when_range_ends_between_cr_and_lf),
+    NAOS_ADD_TEST(bounds_when_range_starts_between_cr_and_lf),
+    NAOS_ADD_TEST(bounds_of_a_range_of_only_a_cr),
+    NAOS_ADD_TEST(bounds_inside_one_line),
+    NAOS_ADD_TEST(lines_outside_the_range_are_absent),
+    NAOS_ADD_TEST(no_lines_in_an_empty_range),
+    NAOS_ADD_TEST(no_lines_without_parse_data),
+    NAOS_ADD_TEST(no_lines_in_empty_content),
+    NAOS_ADD_TEST(bounds_agree_with_initial_records_for_every_range),
+    NAOS_ADD_TEST(records_start_at_the_end_of_the_content),
+    NAOS_ADD_TEST(written_records_are_read_back),
+    NAOS_ADD_TEST(records_of_many_lines)
 )
 
 NAOS_MAIN(
