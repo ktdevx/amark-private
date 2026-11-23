@@ -31,6 +31,13 @@ include(AmarkCompileOptions)
 
 add_subdirectory(src)
 
+# Tests. Naos is fetched in tests/ and only when AMARK_BUILD_TESTS is ON, so a
+# build without tests needs no network.
+if(AMARK_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 # Install rules: the library, the public and generated headers, the package
 # files for find_package(Amark) and LICENSE. Internal headers in src/, the
 # test-only libraries, the tests and Naos are never installed.

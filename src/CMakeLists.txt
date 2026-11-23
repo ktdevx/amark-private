@@ -48,3 +48,21 @@ if(_amark_type STREQUAL "STATIC_LIBRARY")
     target_compile_definitions(amark PUBLIC AMARK_STATIC_DEFINE)
 endif()
 unset(_amark_type)
+
+# The test-only static library, built from the same sources as amark. Unit
+# tests link it to call internal functions (declared in the headers in src/),
+# whatever the type of amark. It is never installed.
+if(AMARK_BUILD_TESTS)
+    add_library(amark_testing STATIC ${AMARK_SOURCES})
+    amark_target_defaults(amark_testing)
+
+    target_include_directories(amark_testing
+        PUBLIC
+            "${PROJECT_SOURCE_DIR}/include"
+            "${AMARK_GENERATED_INCLUDE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    # AMARK_API expands to nothing in the library and in the tests.
+    target_compile_definitions(amark_testing PUBLIC AMARK_STATIC_DEFINE)
+endif()
