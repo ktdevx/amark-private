@@ -1,0 +1,6 @@
+# Table input data: keep the bytes exactly as downloaded (SHA-256 in tools/data/README.md).
+tools/data/** -text
+
+# Generated tables: always check out with LF so regeneration matches byte for byte.
+src/unicode_tables.h text eol=lf
+src/entity_table.h text eol=lf
