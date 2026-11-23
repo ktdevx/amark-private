@@ -4,7 +4,7 @@
 
 **Purpose**: この spec は、amark のほかのすべての spec が乗る土台を作る。土台は、リポジトリの基盤（ビルド、インストール、テスト、CI、ライセンス）と、内部の部品（確保関数の抽象、アリーナ、可変長の配列、行の索引、UTF-8）からなる。
 
-**Users**: amark の開発者は、この土台の上でモジュールとテストを追加する。利用者は、インストールした amark を `find_package(amark)` で見つけてリンクする。後続の spec は、内部の部品を内部ヘッダ経由で使う。
+**Users**: amark の開発者は、この土台の上でモジュールとテストを追加する。利用者は、インストールした amark を `find_package(Amark)` で見つけてリンクする。後続の spec は、内部の部品を内部ヘッダ経由で使う。
 
 **Impact**: リポジトリには現在 `.kiro` と `.claude` しかない。この spec が、最初のソース、ビルドの設定、CI、LICENSE、README を追加する。`structure.md` に書いた配置と命名は、この設計で確定する。
 
@@ -24,18 +24,18 @@
 
 ### This Spec Owns
 - ビルドの構成：ルートと `src/`、`tests/` の CMakeLists、`cmake/` のモジュール、オプション（`AMARK_BUILD_TESTS`、`AMARK_WARNINGS_AS_ERRORS`、`AMARK_SANITIZE`、`AMARK_INSTALL`）
-- ターゲットの名前：`amark`（別名 `amark::amark`）と、テスト専用の `amark_testing`、`amark_test_support`
+- ターゲットの名前：`amark`（別名 `Amark::amark`）と、テスト専用の `amark_testing`、`amark_test_support`
 - 公開ヘッダの最小の組：`amark/amark.h`、`amark/export.h`（生成）、`amark/version.h`（生成）と、関数 `amark_version_string`
-- パッケージの設定（`amarkConfig.cmake`、版の互換の規則）
+- パッケージの設定（`AmarkConfig.cmake`、版の互換の規則）
 - テストの登録の方法（`amark_add_unit_test`）と、確保の失敗を注入するテスト用の確保関数
 - リポジトリの検査（公開シンボル、グローバルな状態と禁止関数、著作権表示）
 - CI のワークフロー
 - LICENSE、README、CONTRIBUTING（著作権表示の規約）
-- 内部の部品の契約：`status.h`、`alloc.h`、`arena.h`、`array.h`、`line_index.h`、`utf8.h`
+- 内部の部品の契約：`error.h`、`alloc.h`、`arena.h`、`array.h`、`line_index.h`、`utf8.h`
 
 ### Out of Boundary
-- 確保関数の型を公開ヘッダに出すことと、設定の誤りの検査（syntax-tree）。この spec の `amark_allocator` は内部ヘッダにある。
-- 内部の状態（`amark_status`）を公開のエラーの種類に対応づけること（syntax-tree）
+- 確保関数の型を公開ヘッダに出すことと、設定の誤りの検査（syntax-tree）。この spec の `amark_allocator_t` は内部ヘッダにある。
+- 内部の状態（`amark_error_t`）を公開のエラーの種類に対応づけること（syntax-tree）
 - 文書がアリーナをどう持つか、解析の途中の作業用メモリをどう分けるか（syntax-tree、block-parser）
 - 置き換えた結果の位置と原文の位置の対応づけ（置き換えを適用する spec）
 - U+0000 の置き換え、BOM の除去、行末以外の文字の分類
@@ -51,7 +51,7 @@
 ### Revalidation Triggers
 次の変更は、後続の spec に影響する。変更するときは、依存する spec を確かめ直す。
 
-- 内部ヘッダの関数の形、`amark_status` の値、`amark_allocator` のメンバの変更
+- 内部ヘッダの関数の形、`amark_error_t` の値、`amark_allocator_t` のメンバの変更
 - アリーナの整列の保証、配列の伸び方（要素へのポインタが無効になる条件）の変更
 - 行番号の規則（1 始まり、行末の定義）と、UTF-8 の置換の単位の変更
 - ターゲットの名前、オプションの名前と既定値、`AMARK_SOURCES` への追加の方法、`amark_add_unit_test` の引数の変更
@@ -106,7 +106,7 @@ graph LR
     LineIndex[line_index] --> Arena
     Array[array] --> Arena
     Arena --> Alloc[alloc]
-    Alloc --> Status[status]
+    Alloc --> Error[error]
 ```
 
 **Architecture Integration**:
@@ -119,8 +119,9 @@ graph LR
 
 | 決定 | 選んだもの | 採らなかったもの | 理由 |
 |---|---|---|---|
-| ライブラリのターゲット | `amark` 1 つ。種類は `BUILD_SHARED_LIBS` | `amark_static` と `amark_shared` の 2 つ | 利用者は静的でも動的でも `amark::amark` と書ける（2.5、2.6）。CMake の標準の方法である。CI が両方をビルドする。 |
+| ライブラリのターゲット | `amark` 1 つ。種類は `BUILD_SHARED_LIBS` | `amark_static` と `amark_shared` の 2 つ | 利用者は静的でも動的でも `Amark::amark` と書ける（2.5、2.6）。CMake の標準の方法である。CI が両方をビルドする。 |
 | 内部の関数のテスト | 同じソースからテスト専用の静的ライブラリを作る | OBJECT ライブラリの共有、内部のシンボルをテスト用に公開 | 動的ライブラリの公開範囲を変えずに済む。テストの実行ファイルが DLL に依存しないので、Naos のビルド時の検出も安定する。ソースを 2 回コンパイルする費用は小さい。 |
+| 名前の付け方 | CMake のプロジェクトとパッケージは `Amark`（`find_package(Amark)`、`AmarkConfig.cmake`、名前空間 `Amark::`）。ライブラリのターゲットとファイルは `amark`。C の `typedef` した型は末尾に `_t` を付け、構造体と列挙のタグは `_t` を付けない（`typedef struct amark_arena { ... } amark_arena_t;`） | パッケージも `amark` にそろえる | プロジェクトの名前に合わせる。型と関数・変数を名前の形で見分けられる。`_t` で終わる名前は POSIX が予約しているが、`amark_` で始まるので衝突しない。 |
 | エクスポートマクロ | `GenerateExportHeader` で `amark/export.h` を生成 | 手書きのヘッダ | brief の方針に合う。コンパイラごとの属性と、静的ライブラリ用の定義（`AMARK_STATIC_DEFINE`）を CMake が扱う。 |
 | 確保関数の形 | `allocate` と `release` の 2 つと文脈の値 | `realloc` を加えた 3 つ | brief の「malloc と free」に合う。配列はアリーナの上にあるので、`realloc` が要らない。 |
 | 配列・索引・置換の結果の置き場所 | アリーナだけ | 確保関数から直接、または両方に対応 | 「資源はすべて文書かアリーナに属する」に合う。個別の解放がなくなり、解放もれが起きない。両方に対応する抽象は、今は使い道がない。 |
@@ -153,14 +154,14 @@ graph LR
 ├── .gitignore                        # build/ など
 ├── cmake/
 │   ├── AmarkCompileOptions.cmake     # amark_target_defaults()：C99、警告、公開範囲、サニタイザ
-│   ├── amarkConfig.cmake.in          # パッケージの設定のひな形
+│   ├── AmarkConfig.cmake.in          # パッケージの設定のひな形
 │   └── version.h.in                  # amark/version.h のひな形
 ├── include/amark/
 │   └── amark.h                       # 公開ヘッダの入口。export.h と version.h を取り込み、amark_version_string を宣言
 ├── src/
 │   ├── CMakeLists.txt                # AMARK_SOURCES、amark と amark_testing の定義、生成ヘッダ
 │   ├── version.c                     # amark_version_string
-│   ├── status.h                      # amark_status
+│   ├── error.h                       # amark_error_t
 │   ├── alloc.h / alloc.c             # 確保関数の抽象、あふれを検査する計算
 │   ├── arena.h / arena.c             # アリーナ
 │   ├── array.h / array.c             # 可変長の配列
@@ -177,7 +178,7 @@ graph LR
 │   │   ├── test_line_index.c
 │   │   └── test_utf8.c
 │   ├── public/
-│   │   ├── test_version.c            # amark::amark にリンクする公開 API のテスト
+│   │   ├── test_version.c            # Amark::amark にリンクする公開 API のテスト
 │   │   └── header_cxx.cpp            # 公開ヘッダを C++ で取り込めることの確認
 │   ├── checks/
 │   │   ├── CheckExports.cmake        # 動的ライブラリの公開シンボルを一覧と比べる
@@ -194,7 +195,7 @@ graph LR
 生成するヘッダ（`amark/export.h`、`amark/version.h`）は、ビルドのディレクトリの `include/amark/` に作る。リポジトリにはコミットしない。
 
 ### Modified Files
-- `.kiro/steering/structure.md` — 冒頭の注（「最初の spec の設計で確定させる」）を消し、`tests/` の下の配置（`unit/`、`public/`、`support/`、`checks/`、`consumer/`）を書き足す。実装の最後に行う。
+- `.kiro/steering/structure.md` — 命名の規約（CMake のパッケージ名 `Amark`、`typedef` した型の `_t`）は設計の段階で書き足した。実装では、冒頭の注（「最初の spec の設計で確定させる」）を消し、`tests/` の下の配置（`unit/`、`public/`、`support/`、`checks/`、`consumer/`）を書き足す。実装の最後に行う。
 
 ### 後続の spec がモジュールを足す方法
 1. `src/` に `.c` と内部ヘッダを置き、`src/CMakeLists.txt` の `AMARK_SOURCES` に 1 行足す。
@@ -247,10 +248,10 @@ flowchart LR
 | 1.8 | 古い CMake では失敗 | BuildConfig | `cmake_minimum_required(VERSION 3.21)` |
 | 1.9 | C99 のコンパイラと CMake だけで足りる | BuildConfig | `LANGUAGES C`、Naos はテストのときだけ |
 | 2.1, 2.2 | インストールするものとしないもの | PackageConfig | `install(TARGETS/DIRECTORY/EXPORT)`、内部ヘッダは対象外 |
-| 2.3, 2.5 | `find_package(amark)` とターゲット | PackageConfig | `amark::amark`、`amarkConfig.cmake` |
+| 2.3, 2.5 | `find_package(Amark)` とターゲット | PackageConfig | `Amark::amark`、`AmarkConfig.cmake` |
 | 2.4 | 版の互換の判定 | PackageConfig | `SameMinorVersion` |
-| 2.6 | 直接取り込んでも同じ名前 | BuildConfig | `add_library(amark::amark ALIAS amark)` |
-| 2.7 | 版を 1 か所で定義 | BuildConfig、PublicHeaders | `project(amark VERSION ...)`、`version.h.in` |
+| 2.6 | 直接取り込んでも同じ名前 | BuildConfig | `add_library(Amark::amark ALIAS amark)` |
+| 2.7 | 版を 1 か所で定義 | BuildConfig、PublicHeaders | `project(Amark VERSION ...)`、`version.h.in` |
 | 3.1, 3.5 | Naos の固定、テストが無効なら取り込まない | TestHarness | `FetchContent_Declare` とコミットのハッシュ |
 | 3.2, 3.3 | `ctest` とテストの登録 | TestHarness | `amark_add_unit_test`、`naos_add_executable` |
 | 3.4, 3.6, 3.7 | テストのオプションと既定値 | BuildConfig | `AMARK_BUILD_TESTS`（既定は `PROJECT_IS_TOP_LEVEL`） |
@@ -263,7 +264,7 @@ flowchart LR
 | 5.2, 5.3 | 著作権表示の規約と適用 | RepoDocs、RepoChecks | `CONTRIBUTING.md`、`CheckLicenseHeaders.cmake` |
 | 5.4, 5.5 | README と手順 | RepoDocs、CI | `README.md`。CI は README と同じコマンドを使う |
 | 6.1, 6.2, 6.3, 6.4, 6.7 | 確保関数の選択と文脈の値 | Allocator | `amark_allocator_resolve`、`amark_alloc`、`amark_free` |
-| 6.5, 6.6 | 失敗とあふれ | Allocator | `amark_status`、`amark_alloc_array`、`amark_size_mul` |
+| 6.5, 6.6 | 失敗とあふれ | Allocator | `amark_error_t`、`amark_alloc_array`、`amark_size_mul` |
 | 7.1, 7.2, 7.7, 7.8 | アリーナからの確保 | Arena | `amark_arena_alloc` |
 | 7.3, 7.4, 7.9 | アリーナの解放と確保元 | Arena | `amark_arena_destroy`、`amark_arena_init` |
 | 7.5, 7.6 | アリーナの失敗とあふれ | Arena | `amark_arena_alloc` の戻り値 |
@@ -278,10 +279,10 @@ flowchart LR
 | 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9 | UTF-8 の置換 | Utf8 | `amark_utf8_replace` |
 | 12.1, 12.3, 12.4, 12.7 | 状態なし、禁止関数なし、再帰なし | 全部品、RepoChecks | `CheckObjects.cmake`、レビュー |
 | 12.2 | 決定的 | 全部品 | 入力と確保関数だけに依存する契約 |
-| 12.5 | 失敗の原因を区別 | Status | `AMARK_STATUS_NOMEM`、`AMARK_STATUS_OVERFLOW` |
+| 12.5 | 失敗の原因を区別 | Error | `AMARK_ERROR_NOMEM`、`AMARK_ERROR_OVERFLOW` |
 | 12.6 | Markdown を知らない | 全部品 | 依存の向き |
 | 12.8 | 公開ヘッダに現れない | BuildConfig、RepoChecks | 内部ヘッダは `src/`、`CheckExports.cmake` |
-| 12.9, 12.10 | 単体テストと解放もれ | TestHarness、UnitTests | `amark_test_alloc`、失敗の注入の繰り返し |
+| 12.9, 12.10 | 単体テストと解放もれ | TestHarness、UnitTests | `amark_test_alloc_t`、失敗の注入の繰り返し |
 
 ## Components and Interfaces
 
@@ -295,8 +296,8 @@ flowchart LR
 | ConsumerProject | テスト | インストールした amark を使う小さなプロジェクト | 4.6、2.3、2.4、2.6 | PackageConfig (P0) | Batch |
 | CI | 運用 | 全構成でのビルドとテスト | 4.1–4.7 の各項 | GitHub Actions (P0) | Batch |
 | RepoDocs | 文書 | LICENSE、README、CONTRIBUTING | 5.1、5.2、5.4、5.5 | — | — |
-| Status | 内部の部品 | 失敗の種類 | 12.5 | — | Service |
-| Allocator | 内部の部品 | 確保関数の抽象 | 6.1–6.7 の各項 | Status (P0) | Service |
+| Error | 内部の部品 | 失敗の種類 | 12.5 | — | Service |
+| Allocator | 内部の部品 | 確保関数の抽象 | 6.1–6.7 の各項 | Error (P0) | Service |
 | Arena | 内部の部品 | まとめて確保し、まとめて解放する | 7.1–7.9 の各項 | Allocator (P0) | Service、State |
 | Array | 内部の部品 | 伸びる配列、スタック | 8.1–8.9 の各項 | Arena (P0) | Service、State |
 | LineIndex | 内部の部品 | オフセットから行番号 | 9.1–9.11 の各項 | Arena (P0) | Service |
@@ -312,7 +313,7 @@ flowchart LR
 | Requirements | 1.1, 1.2, 1.3, 1.4, 1.6, 1.7, 1.8, 1.9, 2.6, 2.7, 3.4, 3.6, 3.7, 3.9 |
 
 **Responsibilities & Constraints**
-- `cmake_minimum_required(VERSION 3.21)`、`project(amark VERSION 0.1.0 LANGUAGES C)`。版はここだけで定義する。
+- `cmake_minimum_required(VERSION 3.21)`、`project(Amark VERSION 0.1.0 LANGUAGES C)`。版はここだけで定義する。
 - オプション：
 
 | オプション | 既定値 | 意味 |
@@ -330,7 +331,7 @@ flowchart LR
   - `AMARK_WARNINGS_AS_ERRORS` が ON なら、`COMPILE_WARNING_AS_ERROR` に相当する指定（GCC と Clang は `-Werror`、MSVC は `/WX`）
 - `AMARK_SANITIZE` が ON のとき、ルートのディレクトリの範囲で `-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer` をコンパイルとリンクの両方に加える。Naos にも同じ指定がかかる。
 - `src/CMakeLists.txt` は、`AMARK_SOURCES` を 1 つの一覧として定義し、そこから 2 つのライブラリを作る。
-  - `amark`：種類は `BUILD_SHARED_LIBS` に従う。別名 `amark::amark`。`VERSION` はプロジェクトの版、`SOVERSION` は `0`。
+  - `amark`：種類は `BUILD_SHARED_LIBS` に従う。別名 `Amark::amark`。`VERSION` はプロジェクトの版、`SOVERSION` は `0`。
   - `amark_testing`：`AMARK_BUILD_TESTS` が ON のときだけ作る静的ライブラリ。`AMARK_STATIC_DEFINE` を PUBLIC に定義し、`src/` を PUBLIC の取り込み先にする。インストールしない。
 - amark が最上位のとき、`CMAKE_RUNTIME_OUTPUT_DIRECTORY` を `<build>/bin` にする。
 
@@ -382,13 +383,13 @@ AMARK_API const char *amark_version_string(void);
 
 | Field | Detail |
 |-------|--------|
-| Intent | インストールと、`find_package(amark)` 用の設定を提供する |
+| Intent | インストールと、`find_package(Amark)` 用の設定を提供する |
 | Requirements | 2.1, 2.2, 2.3, 2.4, 2.5 |
 
 **Responsibilities & Constraints**
-- インストールするもの：`amark` のライブラリ（`LIBDIR`、DLL は `BINDIR`）、`include/amark/*.h` と生成ヘッダ（`INCLUDEDIR/amark`）、`amarkTargets.cmake`・`amarkConfig.cmake`・`amarkConfigVersion.cmake`（`LIBDIR/cmake/amark`）、`LICENSE`（`DATADIR/licenses/amark`）。
+- インストールするもの：`amark` のライブラリ（`LIBDIR`、DLL は `BINDIR`）、`include/amark/*.h` と生成ヘッダ（`INCLUDEDIR/amark`）、`AmarkTargets.cmake`・`AmarkConfig.cmake`・`AmarkConfigVersion.cmake`（`LIBDIR/cmake/Amark`）、`LICENSE`（`DATADIR/licenses/amark`）。
 - インストールしないもの：`src/` の内部ヘッダ、`amark_testing`、`amark_test_support`、テスト、Naos。
-- エクスポートの名前空間は `amark::`。利用者は `target_link_libraries(app PRIVATE amark::amark)` と書く。取り込み先と `AMARK_STATIC_DEFINE` は、ターゲットの PUBLIC の設定として伝わる。
+- エクスポートの名前空間は `Amark::`。利用者は `target_link_libraries(app PRIVATE Amark::amark)` と書く。取り込み先と `AMARK_STATIC_DEFINE` は、ターゲットの PUBLIC の設定として伝わる。
 - 版の互換は `SameMinorVersion` とする。1.0 前はマイナー版で互換が壊れうるためである。1.0 のときに `SameMajorVersion` へ変える。
 - 1 つのインストール先には、静的か動的のどちらか一方を置く。
 
@@ -427,7 +428,7 @@ AMARK_API const char *amark_version_string(void);
 # 内部の関数を試すテスト。amark_testing と amark_test_support にリンクする。
 amark_add_unit_test(<name> SOURCES <source>... [LIBRARIES <library>...])
 
-# 公開 API だけを試すテスト。amark::amark にリンクする。
+# 公開 API だけを試すテスト。Amark::amark にリンクする。
 amark_add_public_test(<name> SOURCES <source>...)
 ```
 どちらも `naos_add_executable` を呼び、`amark_target_defaults` を適用する。CTest の名前は `<name>.<suite>.<test>` になる。
@@ -440,10 +441,10 @@ typedef struct amark_test_alloc {
     size_t live;          /* 確保して、まだ解放していないかたまりの数 */
     size_t fail_at;       /* この回の allocate を失敗させる。0 なら失敗させない */
     size_t ctx_mismatch;  /* 文脈の値が違っていた回数 */
-} amark_test_alloc;
+} amark_test_alloc_t;
 
-void amark_test_alloc_init(amark_test_alloc *state);
-amark_allocator amark_test_allocator(amark_test_alloc *state);
+void amark_test_alloc_init(amark_test_alloc_t *state);
+amark_allocator_t amark_test_allocator(amark_test_alloc_t *state);
 ```
 - Postconditions: `amark_test_allocator` が返す確保関数は、実際の確保を `malloc` と `free` で行い、`state` を文脈の値として受け取って数を更新する。
 - 失敗の注入の型：`fail_at` を 1 から順に増やしながら操作を繰り返し、操作が成功するまで続ける。毎回、後始末のあとに `live == 0` を確かめる。
@@ -489,7 +490,7 @@ amark_allocator amark_test_allocator(amark_test_alloc *state);
 ##### Batch / Job Contract
 - Trigger: CI が `cmake -S tests/consumer -B build-consumer` を実行する。
 - Input / validation:
-  - `AMARK_CONSUMER_MODE=package`（既定）：`find_package(amark 0.1 REQUIRED)` を呼ぶ。`CMAKE_PREFIX_PATH` でインストール先を渡す。続けて `find_package(amark 99.0 QUIET)` が見つからないことを確かめ、見つかったら構成を失敗させる。
+  - `AMARK_CONSUMER_MODE=package`（既定）：`find_package(Amark 0.1 REQUIRED)` を呼ぶ。`CMAKE_PREFIX_PATH` でインストール先を渡す。続けて `find_package(Amark 99.0 QUIET)` が見つからないことを確かめ、見つかったら構成を失敗させる。
   - `AMARK_CONSUMER_MODE=subdirectory`：`add_subdirectory(<amark のソース> amark)` を呼ぶ。そのあと、`AMARK_BUILD_TESTS` が OFF で、Naos のターゲットが存在しないことを確かめる。
 - Output: `main.c` が `amark_version_string()` と `AMARK_VERSION_STRING` を比べ、一致すれば 0 を返す。`add_test` で登録し、`ctest` で実行する。
 - Windows の動的ライブラリでは、`$<TARGET_RUNTIME_DLLS:consumer>` をビルドの後に実行ファイルの隣へ写す。
@@ -536,19 +537,19 @@ amark_allocator amark_test_allocator(amark_test_alloc *state);
    * SPDX-License-Identifier: MIT
    */
   ```
-  あわせて、命名（`amark_`、`AMARK_`）、モジュールとテストを足す手順、禁止事項（グローバルな状態、`abort`・`exit`・`longjmp`、再帰、`assert`）を書く。
+  あわせて、命名（`amark_`、`AMARK_`、`typedef` した型の末尾の `_t`）、モジュールとテストを足す手順、禁止事項（グローバルな状態、`abort`・`exit`・`longjmp`、再帰、`assert`）を書く。
 - `README.md`：概要、状態（開発中）、必要な道具、構成・ビルド・テスト・インストールのコマンド、`find_package` と `add_subdirectory` での使い方、オプションの表、ライセンス。
 
 ### 内部の部品
 
 内部の部品に共通の決まりは次のとおりである（12.1、12.2、12.4、12.6、12.7）。
 - 可変の静的な状態を持たない。結果は、引数と確保関数の動作だけで決まる。
-- 失敗は `amark_status` で返す。失敗しない関数は、値を直接返す。
+- 失敗は `amark_error_t` で返す。失敗しない関数は、値を直接返す。
 - 前提条件（NULL でない、範囲の中など）は呼び出す側が守る。部品は検査せず、`assert` も使わない。
 - バイト列は `const unsigned char *` と `size_t` の長さで受け取る。長さが 0 のとき、ポインタは NULL でもよい。
 - 構造体の中身は `src/` の中で見えるが、後続の spec はメンバを直接読み書きせず、関数を使う。
 
-#### Status
+#### Error
 
 | Field | Detail |
 |-------|--------|
@@ -558,12 +559,12 @@ amark_allocator amark_test_allocator(amark_test_alloc *state);
 **Contracts**: Service [x]
 
 ```c
-/* src/status.h */
-typedef enum amark_status {
-    AMARK_STATUS_OK = 0,
-    AMARK_STATUS_NOMEM,     /* 確保関数が失敗した */
-    AMARK_STATUS_OVERFLOW   /* 大きさの計算があふれた */
-} amark_status;
+/* src/error.h */
+typedef enum amark_error {
+    AMARK_ERROR_NONE = 0,
+    AMARK_ERROR_NOMEM,     /* 確保関数が失敗した */
+    AMARK_ERROR_OVERFLOW   /* 大きさの計算があふれた */
+} amark_error_t;
 ```
 - syntax-tree は、この 2 つの失敗を公開のエラーの種類に対応づける。必要なら、値を足してよい。
 
@@ -576,7 +577,7 @@ typedef enum amark_status {
 
 **Responsibilities & Constraints**
 - `malloc` と `free` を呼ぶのは、このモジュールの既定の確保関数だけである。
-- `amark_allocator` は値として写して持つ。確保と解放には、同じ値（同じ関数の組と同じ文脈の値）を使う。
+- `amark_allocator_t` は値として写して持つ。確保と解放には、同じ値（同じ関数の組と同じ文脈の値）を使う。
 
 **Dependencies**
 - Inbound: Arena — かたまりの確保と解放 (P0)
@@ -587,24 +588,24 @@ typedef enum amark_status {
 ##### Service Interface
 ```c
 /* src/alloc.h */
-typedef void *(*amark_allocate_fn)(void *ctx, size_t size);  /* 失敗したら NULL */
-typedef void (*amark_release_fn)(void *ctx, void *ptr);      /* ptr は NULL でない */
+typedef void *(*amark_allocate_fn_t)(void *ctx, size_t size);  /* 失敗したら NULL */
+typedef void (*amark_release_fn_t)(void *ctx, void *ptr);      /* ptr は NULL でない */
 
 typedef struct amark_allocator {
-    amark_allocate_fn allocate;
-    amark_release_fn release;
+    amark_allocate_fn_t allocate;
+    amark_release_fn_t release;
     void *ctx;
-} amark_allocator;
+} amark_allocator_t;
 
 /* malloc と free を使う既定の確保関数を返す。ctx は NULL。 */
-amark_allocator amark_allocator_default(void);
+amark_allocator_t amark_allocator_default(void);
 
 /* requested が NULL なら既定の確保関数を、そうでなければ *requested の写しを返す。 */
-amark_allocator amark_allocator_resolve(const amark_allocator *requested);
+amark_allocator_t amark_allocator_resolve(const amark_allocator_t *requested);
 
-amark_status amark_alloc(const amark_allocator *allocator, size_t size, void **out);
-amark_status amark_alloc_array(const amark_allocator *allocator, size_t count, size_t elem_size, void **out);
-void amark_free(const amark_allocator *allocator, void *ptr);
+amark_error_t amark_alloc(const amark_allocator_t *allocator, size_t size, void **out);
+amark_error_t amark_alloc_array(const amark_allocator_t *allocator, size_t count, size_t elem_size, void **out);
+void amark_free(const amark_allocator_t *allocator, void *ptr);
 
 /* あふれたら false を返し、*out を変えない。 */
 bool amark_size_add(size_t a, size_t b, size_t *out);
@@ -612,8 +613,8 @@ bool amark_size_mul(size_t a, size_t b, size_t *out);
 ```
 - Preconditions: `allocator` と `out` は NULL でない。`requested` が NULL でないとき、`allocate` と `release` は両方とも NULL でない（この検査は syntax-tree が行う）。
 - Postconditions:
-  - `amark_alloc`：成功すると `*out` は NULL でない。`size` が 0 のときは 1 バイトを要求する。確保関数が NULL を返すと `AMARK_STATUS_NOMEM` を返し、`*out` を NULL にする。
-  - `amark_alloc_array`：`count * elem_size` があふれると、確保関数を呼ばずに `AMARK_STATUS_OVERFLOW` を返す。
+  - `amark_alloc`：成功すると `*out` は NULL でない。`size` が 0 のときは 1 バイトを要求する。確保関数が NULL を返すと `AMARK_ERROR_NOMEM` を返し、`*out` を NULL にする。
+  - `amark_alloc_array`：`count * elem_size` があふれると、確保関数を呼ばずに `AMARK_ERROR_OVERFLOW` を返す。
   - `amark_free`：`ptr` が NULL なら何もしない。そうでなければ `release(ctx, ptr)` を 1 回呼ぶ。
 - Invariants: `ctx` は変更せずに渡す。
 
@@ -640,22 +641,22 @@ bool amark_size_mul(size_t a, size_t b, size_t *out);
 ##### Service Interface
 ```c
 /* src/arena.h */
-typedef struct amark_arena_block amark_arena_block;
+typedef struct amark_arena_block amark_arena_block_t;
 
 typedef struct amark_arena {
-    amark_allocator allocator;
-    amark_arena_block *current;   /* 新しい確保に使うかたまり。なければ NULL */
+    amark_allocator_t allocator;
+    amark_arena_block_t *current;   /* 新しい確保に使うかたまり。なければ NULL */
     size_t next_block_size;
-} amark_arena;
+} amark_arena_t;
 
 /* 確保は行わない。allocator の写しを持つ。 */
-void amark_arena_init(amark_arena *arena, const amark_allocator *allocator);
+void amark_arena_init(amark_arena_t *arena, const amark_allocator_t *allocator);
 
-amark_status amark_arena_alloc(amark_arena *arena, size_t size, void **out);
-amark_status amark_arena_alloc_array(amark_arena *arena, size_t count, size_t elem_size, void **out);
+amark_error_t amark_arena_alloc(amark_arena_t *arena, size_t size, void **out);
+amark_error_t amark_arena_alloc_array(amark_arena_t *arena, size_t count, size_t elem_size, void **out);
 
 /* すべてのかたまりを確保関数に返し、arena を init の直後と同じ状態に戻す。 */
-void amark_arena_destroy(amark_arena *arena);
+void amark_arena_destroy(amark_arena_t *arena);
 ```
 - Preconditions: `arena` は `amark_arena_init` で初期化してある。
 - Postconditions:
@@ -667,7 +668,7 @@ void amark_arena_destroy(amark_arena *arena);
 ##### State Management
 - かたまりの大きさ：最初は 4096 バイト。新しいかたまりを得るたびに 2 倍にし、1 MiB で止める。これで、確保関数の呼び出しの回数は確保の回数より十分に少なくなる（7.8）。
 - 現在のかたまりに入らない要求のうち、次のかたまりの大きさも超えるものは、専用のかたまりを得てリストの現在のかたまりの後ろにつなぐ。現在のかたまりの残りは引き続き使う（7.7）。
-- かたまりの大きさは、ヘッダと整列の分を `amark_size_add` で加えて求める。あふれたら `AMARK_STATUS_OVERFLOW` を返す（7.6）。
+- かたまりの大きさは、ヘッダと整列の分を `amark_size_add` で加えて求める。あふれたら `AMARK_ERROR_OVERFLOW` を返す（7.6）。
 - 解放は、リストを先頭から順にたどる繰り返しで行う（7.9）。
 - Concurrency: 1 つのアリーナを複数のスレッドから同時に使わない。別々のアリーナは、別々のスレッドで同時に使える。
 
@@ -687,29 +688,29 @@ void amark_arena_destroy(amark_arena *arena);
 ```c
 /* src/array.h */
 typedef struct amark_array {
-    amark_arena *arena;
+    amark_arena_t *arena;
     void *data;
     size_t len;
     size_t cap;
     size_t elem_size;
-} amark_array;
+} amark_array_t;
 
 /* 確保は行わない。elem_size は 1 以上。 */
-void amark_array_init(amark_array *array, amark_arena *arena, size_t elem_size);
+void amark_array_init(amark_array_t *array, amark_arena_t *arena, size_t elem_size);
 
 /* *elem（elem_size バイト）を末尾に写す。 */
-amark_status amark_array_push(amark_array *array, const void *elem);
+amark_error_t amark_array_push(amark_array_t *array, const void *elem);
 
 /* 容量を min_cap 以上にする。長さは変えない。 */
-amark_status amark_array_reserve(amark_array *array, size_t min_cap);
+amark_error_t amark_array_reserve(amark_array_t *array, size_t min_cap);
 
-size_t amark_array_len(const amark_array *array);
+size_t amark_array_len(const amark_array_t *array);
 
 /* index 番目の要素へのポインタを返す。index は len より小さい。 */
-void *amark_array_at(const amark_array *array, size_t index);
+void *amark_array_at(const amark_array_t *array, size_t index);
 
 /* 空なら false を返す。そうでなければ末尾の要素を *out に写して（out が NULL なら写さない）取り除き、true を返す。 */
-bool amark_array_pop(amark_array *array, void *out);
+bool amark_array_pop(amark_array_t *array, void *out);
 ```
 - Postconditions:
   - `push` と `reserve` が失敗したとき、`data`、`len`、`cap` は呼び出しの前と同じである（8.5）。
@@ -718,7 +719,7 @@ bool amark_array_pop(amark_array *array, void *out);
 
 ##### State Management
 - 伸び方：容量が足りないとき、新しい容量を `max(8, cap * 2, min_cap)` とし、アリーナから新しい場所を得て写す。古い場所はアリーナに残り、アリーナの解放で消える。残る量の合計は最後の容量より小さいので、時間もメモリも要素の数にほぼ比例する（8.7）。
-- 新しい容量とそのバイト数は `amark_size_mul` で求める。あふれたら、確保を試みずに `AMARK_STATUS_OVERFLOW` を返す（8.6）。
+- 新しい容量とそのバイト数は `amark_size_mul` で求める。あふれたら、確保を試みずに `AMARK_ERROR_OVERFLOW` を返す（8.6）。
 - 配列そのものの解放はない。アリーナと一緒に消える。
 
 #### LineIndex
@@ -740,22 +741,22 @@ typedef struct amark_line_index {
     const size_t *line_starts;  /* 各行の最初のバイトのオフセット。昇順。line_starts[0] は 0 */
     size_t line_count;          /* 1 以上 */
     size_t length;              /* バイト列の長さ */
-} amark_line_index;
+} amark_line_index_t;
 
-amark_status amark_line_index_build(amark_line_index *index, amark_arena *arena,
+amark_error_t amark_line_index_build(amark_line_index_t *index, amark_arena_t *arena,
                                     const unsigned char *bytes, size_t length);
 
 /* offset を含む行の番号を返す。最初の行は 1。offset は length 以下。 */
-size_t amark_line_index_line_at(const amark_line_index *index, size_t offset);
+size_t amark_line_index_line_at(const amark_line_index_t *index, size_t offset);
 
-size_t amark_line_index_line_count(const amark_line_index *index);
+size_t amark_line_index_line_count(const amark_line_index_t *index);
 ```
 - 行の規則：行末は、LF、後ろに LF が続かない CR、CR と LF の組である。行末の記号は、それが終わらせる行に属する。次の行は、行末の直後のバイトから始まる。したがって `line_count` は「行末の数 + 1」である。
   - 長さ 0 のバイト列：1 行。オフセット 0 は行 1。
   - `"a\n"`：2 行。オフセット 0 と 1 は行 1、オフセット 2（長さに等しい）は行 2。
   - `"a\r\nb"`：2 行。CR（1）と LF（2）は行 1、`b`（3）は行 2。
 - Postconditions:
-  - `build`：バイト列を 2 回走査する。1 回目で行を数え、2 回目で表を埋める。確保はアリーナから 1 回だけ行う。失敗したときは何も確保しておらず、`*index` を変えない（9.10）。行の数に `size_t` の大きさを掛けたバイト数があふれたら `AMARK_STATUS_OVERFLOW` を返す。
+  - `build`：バイト列を 2 回走査する。1 回目で行を数え、2 回目で表を埋める。確保はアリーナから 1 回だけ行う。失敗したときは何も確保しておらず、`*index` を変えない（9.10）。行の数に `size_t` の大きさを掛けたバイト数があふれたら `AMARK_ERROR_OVERFLOW` を返す。
   - `line_at`：`line_starts` を二分探索し、`line_starts[i] <= offset` を満たす最大の `i` に 1 を足して返す（9.8）。
 - Invariants: バイト列を変更しない。バイトの値だけを見るので、不正な UTF-8 でも同じ規則で動く（9.11）。索引はバイト列へのポインタを持たない。
 
@@ -791,10 +792,10 @@ typedef struct amark_utf8_replaced {
     const unsigned char *bytes;   /* 結果。replacement_count が 0 のときは入力と同じポインタ */
     size_t length;
     size_t replacement_count;     /* 出力した U+FFFD の数 */
-} amark_utf8_replaced;
+} amark_utf8_replaced_t;
 
-amark_status amark_utf8_replace(amark_arena *arena, const unsigned char *bytes, size_t length,
-                                amark_utf8_replaced *out);
+amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *bytes, size_t length,
+                                amark_utf8_replaced_t *out);
 ```
 - `amark_utf8_validate`
   - 不正とするもの：最短でない符号化（`C0`、`C1` で始まる列、`E0 80..9F`、`F0 80..8F`）、サロゲート（`ED A0..BF`）、U+10FFFF を超える値（`F4 90..BF`、`F5..FF`）、途中で切れた列、先頭バイトのない継続バイト。
@@ -805,7 +806,7 @@ amark_status amark_utf8_replace(amark_arena *arena, const unsigned char *bytes, 
 - `amark_utf8_replace`
   - 置換の単位：不正な列の極大の部分列 1 つにつき、U+FFFD（`EF BF BD`）を 1 つ出す。極大の部分列とは、正しい列の先頭として続けられる最長の部分、または、それがなければ 1 バイトである。例：`E2 82`（途中で切れた 3 バイトの列）は 1 つ、`F0 80 80` は 3 つ（`F0 80` は正しい列の先頭にならないため、3 バイトをそれぞれ置き換える）、`C0 AF` は 2 つ。
   - 手順：1 回目の走査で結果の長さと置換の数を求める。置換の数が 0 なら、確保せずに入力のポインタと長さを返す（11.5）。そうでなければ、アリーナから 1 回だけ確保し、2 回目の走査で書く。
-  - 結果の長さは `amark_size_add` で積算する。あふれたら `AMARK_STATUS_OVERFLOW` を返す。失敗したときは何も確保しておらず、`*out` を変えない（11.8）。
+  - 結果の長さは `amark_size_add` で積算する。あふれたら `AMARK_ERROR_OVERFLOW` を返す。失敗したときは何も確保しておらず、`*out` を変えない（11.8）。
   - 結果は常に正しい UTF-8 である。入力は変更しない。
 - Invariants: どの関数も、時間はバイト列の長さにほぼ比例する。
 
@@ -816,7 +817,7 @@ amark_status amark_utf8_replace(amark_arena *arena, const unsigned char *bytes, 
 ## Error Handling
 
 ### Error Strategy
-- 内部の部品の失敗は 2 種類だけである。確保関数の失敗（`AMARK_STATUS_NOMEM`）と、大きさのあふれ（`AMARK_STATUS_OVERFLOW`）。どちらも戻り値で伝える。
+- 内部の部品の失敗は 2 種類だけである。確保関数の失敗（`AMARK_ERROR_NOMEM`）と、大きさのあふれ（`AMARK_ERROR_OVERFLOW`）。どちらも戻り値で伝える。
 - 失敗した操作は、対象の状態を変えない（アリーナ、配列、索引、置換の結果のどれも）。呼び出す側は、アリーナを解放するだけで後始末ができる。
 - 前提条件の違反は失敗として扱わない。動作を定めず、テスト、サニタイザ、レビューで見つける。
 - ビルドの構成の誤り（古い CMake、対応していないコンパイラでのサニタイザ）は、構成のときに `FATAL_ERROR` で止め、原因と直し方をメッセージに書く。
@@ -835,7 +836,7 @@ amark_status amark_utf8_replace(amark_arena *arena, const unsigned char *bytes, 
 - **test_utf8**：1〜4 バイトの各範囲の境界（U+007F、U+0080、U+07FF、U+0800、U+FFFF、U+10000、U+10FFFF）、U+0000 と U+FEFF が正しい。不正の各種類について、`error_offset` が最初の不正な列を指す。デコードが検査済みの全境界で正しい値と長さを返す。置換が Unicode 標準の例と一致し、結果が検査を通り、入力が変わらない。正しい入力では `replacement_count == 0` で、ポインタが入力と同じで、確保がない。確保の失敗で `NOMEM` を返し、`live` が増えない（10.1–10.9、11.1–11.9）。
 - **失敗の注入**：確保を行うすべての操作について、`fail_at` を 1 から順に増やす繰り返しで、各回の後始末のあとに `live == 0` を確かめる（12.9、12.10）。
 
-### Public API Tests（`tests/public/`、`amark::amark` にリンク）
+### Public API Tests（`tests/public/`、`Amark::amark` にリンク）
 - **test_version**：`amark_version_string()` が `AMARK_VERSION_STRING` と一致する。静的と動的の両方の構成で走る（1.5、2.7）。
 - **header_cxx**：`<amark/amark.h>` を C++ で取り込み、`amark_version_string` を呼んでリンクできる。C++ のコンパイラがあるときだけビルドする（1.5）。
 
@@ -845,8 +846,8 @@ amark_status amark_utf8_replace(amark_arena *arena, const unsigned char *bytes, 
 ### Integration Tests（CI）
 - 10 個の構成で、構成 → ビルド → テスト → インストール → 利用側のビルドと実行（1.1、1.2、2.1–2.5、4.1–4.3、4.6）。
 - インストール先に内部ヘッダ（`arena.h` など）とテスト用のファイルがないことを、利用側の構成で確かめる（2.2）。
-- `find_package(amark 99.0)` が見つからない（2.4）。
-- サブプロジェクトとして取り込んだとき、同じ `amark::amark` が使え、テストと Naos が取り込まれない（2.6、3.5、3.7、1.7）。
+- `find_package(Amark 99.0)` が見つからない（2.4）。
+- サブプロジェクトとして取り込んだとき、同じ `Amark::amark` が使え、テストと Naos が取り込まれない（2.6、3.5、3.7、1.7）。
 - サニタイザの構成で全テストが通る（3.9、4.4）。
 - CMake 3.21 で構成・ビルド・テストが通る（1.8 の下限の確認）。
 

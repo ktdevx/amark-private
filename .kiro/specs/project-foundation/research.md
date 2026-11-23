@@ -71,7 +71,7 @@
 - **Alternatives Considered**:
   1. `amark` 1 つ（`BUILD_SHARED_LIBS`）
   2. `amark_static` と `amark_shared`
-- **Selected Approach**: 1。別名 `amark::amark` を用意する。
+- **Selected Approach**: 1。別名 `Amark::amark` を用意する。
 - **Rationale**: 利用者が、インストールでも直接の取り込みでも、静的でも動的でも、同じ名前を使える。
 - **Trade-offs**: 両方を配布するには 2 回ビルドする。
 - **Follow-up**: 1 つのインストール先に両方を置く必要が出たら、設定ファイルを分ける方法を別に検討する。
