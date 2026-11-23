@@ -872,7 +872,7 @@ amark_tree_check_result_t amark_tree_check_subtree(const amark_document_t *doc,
 ### ビルドとテスト
 
 #### BuildAndChecks
-- `src/CMakeLists.txt` の `AMARK_SOURCES` に 6 つのソースを足す。
+- `src/CMakeLists.txt` の `AMARK_SOURCES` に 5 つのソース（`config.c`、`document.c`、`node.c`、`tree.c`、`tree_check.c`）を足す。
 - `tests/checks/exported_symbols.txt` に、Config・Document・NodeReader の節で `AMARK_API` を付けた 37 個の関数の名前を足す（設定 2、文書 3、種類 2、たどる 4、ノードの情報 6、属性 20）。`checks.exports` がこの一覧とライブラリの一致を確かめる（12.5）。
 - `checks.objects` が、可変の静的データと `abort`・`exit`・`longjmp` の参照がないことを確かめる（12.6）。新しい検査は足さない。
 
