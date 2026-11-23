@@ -156,6 +156,8 @@ unset(_amark_data_test)
 amark_add_public_test(test_version SOURCES public/test_version.c)
 # Named test_public_config: test_config is the unit test of the same module.
 amark_add_public_test(test_public_config SOURCES public/test_config.c)
+# Named test_public_parse: test_parse is the unit test of the same module.
+amark_add_public_test(test_public_parse SOURCES public/test_parse.c)
 
 # amark_target_defaults sets only C properties (C99 and so on); its warning
 # flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The

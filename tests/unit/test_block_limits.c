@@ -12,7 +12,9 @@
  * (runs of blank lines and of ">" lines after deep lists, many definitions,
  * many lazy continuation lines, "- - - ... a", the continuation lines of a
  * deep list, and runs of "["). Time is not measured: these inputs end well
- * within the time limit of CI only if the parse is close to linear.
+ * within the time limit of CI only if the parse is close to linear. Also:
+ * runs of blank lines give the tree of one, and a failure injected at each
+ * allocation of a parse of every kind of block leaves nothing behind.
  *
  * The inputs are built in memory with the counting allocator, every parsed
  * document goes through amark_tree_check, and teardown checks that no block
@@ -902,6 +904,170 @@ NAOS_TEST(runs_of_blank_lines_give_the_tree_of_one)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Allocation failures                                                    */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * A document with every kind of block: ATX and setext headings, a thematic
+ * break, indented and fenced code (with an info string), an HTML block,
+ * link reference definitions (one over two lines, and duplicates, also
+ * across the repeats below), a block quote with a lazy continuation line
+ * and a list in it, a tight bullet list with an ordered list nested in it
+ * and a lazy line in an item, a loose ordered list with a bullet list
+ * nested in it, followed by a run of blank lines that reaches the cutoff,
+ * and paragraphs.
+ */
+static const char k_every_block[] =
+    "# ATX heading\n"
+    "Setext heading\n"
+    "--------------\n"
+    "\n"
+    "***\n"
+    "\n"
+    "    indented code\n"
+    "      more code\n"
+    "\n"
+    "```c info\n"
+    "fenced code\n"
+    "```\n"
+    "\n"
+    "<div>\n"
+    "html block\n"
+    "</div>\n"
+    "\n"
+    "[foo]: /url \"title\"\n"
+    "[Foo]: /other\n"
+    "[bar]:\n"
+    "  /bar\n"
+    "\n"
+    "> quoted line\n"
+    "lazy continuation\n"
+    "> - item in a quote\n"
+    "\n"
+    "- tight a\n"
+    "lazy line of an item\n"
+    "- tight b\n"
+    "  1. nested ordered\n"
+    "  2. nested ordered\n"
+    "- tight c\n"
+    "\n"
+    "1) loose one\n"
+    "\n"
+    "2) loose two\n"
+    "   - nested bullet\n"
+    "\n"
+    "\n"
+    "   \n"
+    "\n"
+    "paragraph after the blank lines\n"
+    "with a second line\n";
+
+/* The tree of one copy of k_every_block (the root left out). */
+#define EVERY_BLOCK_TREE                                                     \
+    " (h 1 atx) (h 2 setext) (hr) (code indented) (code fenced ` 3 info)"     \
+    " (html) (def)"                                                         \
+    " (def) (def) (bq (p) (ul - tight (li (p))))"                            \
+    " (ul - tight (li (p)) (li (p) (ol 1 . tight (li (p)) (li (p))))"         \
+    " (li (p))) (ol 1 ) loose (li (p)) (li (p) (ul - tight (li (p)))))"     \
+    " (p)"
+
+/* Copies of k_every_block in the input: enough to grow the arena of the
+ * document several times and the scratch arrays of the parser. */
+#define EVERY_BLOCK_COPIES 64
+
+/* Large enough for the dump of the input of EVERY_BLOCK_COPIES copies. */
+#define EVERY_BLOCK_DUMP_SIZE ((size_t)64 * 1024)
+
+static char g_dump_want[EVERY_BLOCK_DUMP_SIZE];
+static char g_dump_got[EVERY_BLOCK_DUMP_SIZE];
+
+NAOS_TEST(every_block_kind_parses_with_one_copy)
+{
+    input_begin(sizeof(k_every_block) - 1);
+    APPEND(k_every_block);
+    parse_and_dump(g_dump_want, sizeof(g_dump_want));
+    NAOS_CHECK_STR_EQ(g_dump_want, "(doc" EVERY_BLOCK_TREE ")");
+}
+
+/* Requires dump to be the tree of EVERY_BLOCK_COPIES copies. */
+static void check_every_block_copies(const char *dump)
+{
+    static const char tree[] = EVERY_BLOCK_TREE;
+    size_t i;
+
+    NAOS_REQUIRE_TRUE(strncmp(dump, "(doc", 4) == 0);
+    dump += 4;
+    for (i = 0; i < EVERY_BLOCK_COPIES; i++) {
+        NAOS_TRACE_PUSH("copy %lu", (unsigned long)i);
+        NAOS_REQUIRE_TRUE(strncmp(dump, tree, sizeof(tree) - 1) == 0);
+        dump += sizeof(tree) - 1;
+        NAOS_TRACE_POP();
+    }
+    NAOS_CHECK_STR_EQ(dump, ")");
+}
+
+/*
+ * Makes the n-th allocation of the parse fail, for n = 1, 2, 3, ... until
+ * the parse succeeds. Every failed parse must return AMARK_ERROR_NOMEM, set
+ * *out to NULL and leave no block but the input; the parse that succeeds
+ * must give the tree of a parse with no failure, and leave no block but the
+ * input once the document is destroyed.
+ */
+NAOS_TEST(allocation_failure_at_every_call_with_every_block_kind)
+{
+    size_t unconstrained_calls;
+    size_t before;
+    size_t n;
+    bool succeeded = false;
+
+    input_begin((sizeof(k_every_block) - 1) * EVERY_BLOCK_COPIES);
+    REPEAT(k_every_block, EVERY_BLOCK_COPIES);
+
+    /* The tree and the number of allocations with no failure. */
+    before = g_state.malloc_calls;
+    parse_and_dump(g_dump_want, sizeof(g_dump_want));
+    check_every_block_copies(g_dump_want);
+    unconstrained_calls = g_state.malloc_calls - before;
+    /* The arena of the document and the scratch arrays grow several
+     * times, so there are many allocations to fail. */
+    NAOS_CHECK_UINT_GE(unconstrained_calls, 10);
+    reset_doc();
+
+    for (n = 1; !succeeded && n <= unconstrained_calls + 1; n++) {
+        amark_error_t err;
+
+        NAOS_TRACE_PUSH("allocation %lu", (unsigned long)n);
+        g_state.fail_at = g_state.malloc_calls + n;
+        err = parse_input(0, 0);
+        g_state.fail_at = 0;
+        if (err == AMARK_ERROR_NONE) {
+            amark_tree_check_result_t check;
+
+            succeeded = true;
+            NAOS_REQUIRE_TRUE(g_doc != NULL && g_doc != k_sentinel);
+            check = amark_tree_check(g_doc);
+            NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+            NAOS_CHECK_UINT_EQ(check.node, AMARK_NODE_NONE);
+            NAOS_REQUIRE_UINT_LT(amark_test_dump_blocks(g_doc, g_dump_got,
+                                                        sizeof(g_dump_got)),
+                                 sizeof(g_dump_got));
+            NAOS_CHECK_STR_EQ(g_dump_got, g_dump_want);
+            reset_doc();
+        } else {
+            NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+            NAOS_CHECK_NULL(g_doc);
+            /* Only the input is left. */
+            NAOS_CHECK_UINT_EQ(g_state.live, 1);
+        }
+        NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+        NAOS_TRACE_POP();
+    }
+    /* The parse succeeds once no allocation fails, and not before. */
+    NAOS_CHECK_TRUE(succeeded);
+    NAOS_CHECK_UINT_EQ(n, unconstrained_calls + 2);
+}
+
+/* ---------------------------------------------------------------------- */
 
 NAOS_SUITE(limits,
     NAOS_SET_SETUP(counting),
@@ -943,9 +1109,17 @@ NAOS_SUITE(blank_line_cutoff,
     NAOS_ADD_TEST(runs_of_blank_lines_give_the_tree_of_one)
 )
 
+NAOS_SUITE(allocation_failures,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(every_block_kind_parses_with_one_copy),
+    NAOS_ADD_TEST(allocation_failure_at_every_call_with_every_block_kind)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(limits),
     NAOS_ADD_SUITE(deep_nesting),
     NAOS_ADD_SUITE(large_inputs),
-    NAOS_ADD_SUITE(blank_line_cutoff)
+    NAOS_ADD_SUITE(blank_line_cutoff),
+    NAOS_ADD_SUITE(allocation_failures)
 )
