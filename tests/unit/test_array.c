@@ -633,7 +633,7 @@ NAOS_TEST(reserve_size_max_is_overflow)
     NAOS_REQUIRE_INT_EQ(push_patterns(&array, 3), AMARK_ERROR_NONE);
     before = snapshot(&array);
     NAOS_CHECK_INT_EQ(amark_array_reserve(&array, SIZE_MAX),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_TRUE(unchanged(&array, &before));
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, before.malloc_calls);
     NAOS_CHECK_TRUE(contents_intact(&array, 3));
@@ -653,13 +653,13 @@ NAOS_TEST(reserve_overflow_boundary)
     before = snapshot(&array);
     NAOS_CHECK_INT_EQ(
         amark_array_reserve(&array, SIZE_MAX / sizeof(elem24_t) + 1),
-        AMARK_ERROR_OVERFLOW);
+        AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_TRUE(unchanged(&array, &before));
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
 
     amark_array_init(&array, &g_arena, 8);
     NAOS_CHECK_INT_EQ(amark_array_reserve(&array, SIZE_MAX / 8 + 1),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_UINT_EQ(array.cap, 0);
     NAOS_CHECK_NULL(array.data);
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
@@ -672,7 +672,7 @@ NAOS_TEST(reserve_size_max_of_bytes_is_overflow)
     /* SIZE_MAX one-byte elements: the byte size fits, the arena's does not. */
     amark_array_init(&array, &g_arena, 1);
     NAOS_CHECK_INT_EQ(amark_array_reserve(&array, SIZE_MAX),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_UINT_EQ(array.cap, 0);
     NAOS_CHECK_NULL(array.data);
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
@@ -695,14 +695,16 @@ NAOS_TEST(push_when_the_capacity_cannot_double_is_overflow)
     array.len = SIZE_MAX / 2 + 1;
     array.cap = SIZE_MAX / 2 + 1;
     before = snapshot(&array);
-    NAOS_CHECK_INT_EQ(amark_array_push(&array, &value), AMARK_ERROR_OVERFLOW);
+    NAOS_CHECK_INT_EQ(amark_array_push(&array, &value),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_TRUE(unchanged(&array, &before));
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
 
     array.len = SIZE_MAX;
     array.cap = SIZE_MAX;
     before = snapshot(&array);
-    NAOS_CHECK_INT_EQ(amark_array_push(&array, &value), AMARK_ERROR_OVERFLOW);
+    NAOS_CHECK_INT_EQ(amark_array_push(&array, &value),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_TRUE(unchanged(&array, &before));
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
 }

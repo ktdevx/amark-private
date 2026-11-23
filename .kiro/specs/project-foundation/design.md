@@ -31,11 +31,11 @@
 - リポジトリの検査（公開シンボル、グローバルな状態と禁止関数、著作権表示）
 - CI のワークフロー
 - LICENSE、README、CONTRIBUTING（著作権表示の規約）
-- 内部の部品の契約：`error.h`、`alloc.h`、`arena.h`、`array.h`、`line_index.h`、`utf8.h`
+- 内部の部品の契約：`amark/error.h`（syntax-tree で公開ヘッダに移した）、`alloc.h`、`arena.h`、`array.h`、`line_index.h`、`utf8.h`
 
 ### Out of Boundary
-- 確保関数の型を公開ヘッダに出すことと、設定の誤りの検査（syntax-tree）。この spec の `amark_allocator_t` は内部ヘッダにある。
-- 内部の状態（`amark_error_t`）を公開のエラーの種類に対応づけること（syntax-tree）
+- 確保関数の型を公開ヘッダに出すことと、設定の誤りの検査（syntax-tree）。syntax-tree が `amark_allocator_t` などの型を `include/amark/allocator.h` に移し、`src/alloc.h` はそれを取り込む。
+- エラーの型を公開すること（syntax-tree）。syntax-tree が `amark_error_t` を `include/amark/error.h` に移し、ライブラリ全体で 1 つの型にした。
 - 文書がアリーナをどう持つか、解析の途中の作業用メモリをどう分けるか（syntax-tree、block-parser）
 - 置き換えた結果の位置と原文の位置の対応づけ（置き換えを適用する spec）
 - U+0000 の置き換え、BOM の除去、行末以外の文字の分類
@@ -157,11 +157,11 @@ graph LR
 │   ├── AmarkConfig.cmake.in          # パッケージの設定のひな形
 │   └── version.h.in                  # amark/version.h のひな形
 ├── include/amark/
-│   └── amark.h                       # 公開ヘッダの入口。export.h と version.h を取り込み、amark_version_string を宣言
+│   ├── amark.h                       # 公開ヘッダの入口。export.h と version.h を取り込み、amark_version_string を宣言
+│   └── error.h                       # amark_error_t（syntax-tree で src/ から移した）
 ├── src/
 │   ├── CMakeLists.txt                # AMARK_SOURCES、amark と amark_testing の定義、生成ヘッダ
 │   ├── version.c                     # amark_version_string
-│   ├── error.h                       # amark_error_t
 │   ├── alloc.h / alloc.c             # 確保関数の抽象、あふれを検査する計算
 │   ├── arena.h / arena.c             # アリーナ
 │   ├── array.h / array.c             # 可変長の配列
@@ -279,7 +279,7 @@ flowchart LR
 | 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9 | UTF-8 の置換 | Utf8 | `amark_utf8_replace` |
 | 12.1, 12.3, 12.4, 12.7 | 状態なし、禁止関数なし、再帰なし | 全部品、RepoChecks | `CheckObjects.cmake`、レビュー |
 | 12.2 | 決定的 | 全部品 | 入力と確保関数だけに依存する契約 |
-| 12.5 | 失敗の原因を区別 | Error | `AMARK_ERROR_NOMEM`、`AMARK_ERROR_OVERFLOW` |
+| 12.5 | 失敗の原因を区別 | Error | `AMARK_ERROR_NOMEM`、`AMARK_ERROR_LIMIT_EXCEEDED` |
 | 12.6 | Markdown を知らない | 全部品 | 依存の向き |
 | 12.8 | 公開ヘッダに現れない | BuildConfig、RepoChecks | 内部ヘッダは `src/`、`CheckExports.cmake` |
 | 12.9, 12.10 | 単体テストと解放もれ | TestHarness、UnitTests | `amark_test_alloc_t`、失敗の注入の繰り返し |
@@ -559,14 +559,16 @@ amark_allocator_t amark_test_allocator(amark_test_alloc_t *state);
 **Contracts**: Service [x]
 
 ```c
-/* src/error.h */
+/* include/amark/error.h（syntax-tree で src/ から公開ヘッダに移した） */
 typedef enum amark_error {
     AMARK_ERROR_NONE = 0,
-    AMARK_ERROR_NOMEM,     /* 確保関数が失敗した */
-    AMARK_ERROR_OVERFLOW   /* 大きさの計算があふれた */
+    AMARK_ERROR_INVALID_INPUT = 1,  /* 入力の制約違反 */
+    AMARK_ERROR_INVALID_CONFIG = 2, /* 設定の誤り */
+    AMARK_ERROR_LIMIT_EXCEEDED = 3, /* 資源の上限の超過（大きさの計算のあふれを含む） */
+    AMARK_ERROR_NOMEM = 4           /* 確保関数が失敗した */
 } amark_error_t;
 ```
-- syntax-tree は、この 2 つの失敗を公開のエラーの種類に対応づける。必要なら、値を足してよい。
+- 内部の部品が返すのは、このうち `AMARK_ERROR_NOMEM`（確保関数が失敗した）と `AMARK_ERROR_LIMIT_EXCEEDED`（大きさの計算があふれた）の 2 つの失敗である。syntax-tree が型を公開ヘッダに移し、ライブラリ全体で 1 つのエラーの型にした。
 
 #### Allocator
 
@@ -587,7 +589,7 @@ typedef enum amark_error {
 
 ##### Service Interface
 ```c
-/* src/alloc.h */
+/* src/alloc.h（3 つの型は syntax-tree が include/amark/allocator.h に移し、src/alloc.h はそれを取り込む） */
 typedef void *(*amark_malloc_fn_t)(void *ctx, size_t size);  /* 失敗したら NULL */
 typedef void (*amark_free_fn_t)(void *ctx, void *ptr);        /* ptr は NULL でない */
 
@@ -614,7 +616,7 @@ bool amark_size_mul(size_t a, size_t b, size_t *out);
 - Preconditions: `allocator` と `out` は NULL でない。`requested` が NULL でないとき、`malloc_fn` と `free_fn` は両方とも NULL でない（この検査は syntax-tree が行う）。
 - Postconditions:
   - `amark_malloc`：成功すると `*out` は NULL でない。`size` が 0 のときは 1 バイトを要求する。確保関数が NULL を返すと `AMARK_ERROR_NOMEM` を返し、`*out` を NULL にする。
-  - `amark_malloc_array`：`count * elem_size` があふれると、確保関数を呼ばずに `AMARK_ERROR_OVERFLOW` を返す。
+  - `amark_malloc_array`：`count * elem_size` があふれると、確保関数を呼ばずに `AMARK_ERROR_LIMIT_EXCEEDED` を返す。
   - `amark_free`：`ptr` が NULL なら何もしない。そうでなければ `free_fn(ctx, ptr)` を 1 回呼ぶ。
 - Invariants: `ctx` は変更せずに渡す。
 
@@ -661,14 +663,14 @@ void amark_arena_deinit(amark_arena_t *arena);
 - Preconditions: `arena` は `amark_arena_init` で初期化してある。
 - Postconditions:
   - `amark_arena_alloc`：成功すると、`*out` は `size` バイト以上で、`AMARK_ARENA_ALIGN` の倍数の位置を指す。内容は初期化しない。`size` が 0 のときは 1 バイトとして扱う。
-  - 失敗（`NOMEM`、`OVERFLOW`）のとき、`*out` は NULL で、アリーナの状態は呼び出しの前と同じである。それまでに返したメモリは有効なままである。
+  - 失敗（`NOMEM`、`LIMIT_EXCEEDED`）のとき、`*out` は NULL で、アリーナの状態は呼び出しの前と同じである。それまでに返したメモリは有効なままである。
   - `amark_arena_deinit`：確保関数から得たかたまりの数だけ `free_fn` を呼ぶ。2 回続けて呼んでも安全である。
 - Invariants: `AMARK_ARENA_ALIGN` は、`long long`、`long double`、`void *`、関数ポインタを含む共用体の整列である（C99 には `max_align_t` がないため）。
 
 ##### State Management
 - かたまりの大きさ：最初は 4096 バイト。新しいかたまりを得るたびに 2 倍にし、1 MiB で止める。これで、確保関数の呼び出しの回数は確保の回数より十分に少なくなる（7.8）。
 - 現在のかたまりに入らない要求のうち、次のかたまりの大きさも超えるものは、専用のかたまりを得てリストの現在のかたまりの後ろにつなぐ。現在のかたまりの残りは引き続き使う（7.7）。
-- かたまりの大きさは、ヘッダと整列の分を `amark_size_add` で加えて求める。あふれたら `AMARK_ERROR_OVERFLOW` を返す（7.6）。
+- かたまりの大きさは、ヘッダと整列の分を `amark_size_add` で加えて求める。あふれたら `AMARK_ERROR_LIMIT_EXCEEDED` を返す（7.6）。
 - 解放は、リストを先頭から順にたどる繰り返しで行う（7.9）。
 - Concurrency: 1 つのアリーナを複数のスレッドから同時に使わない。別々のアリーナは、別々のスレッドで同時に使える。
 
@@ -719,7 +721,7 @@ bool amark_array_pop(amark_array_t *array, void *out);
 
 ##### State Management
 - 伸び方：容量が足りないとき、新しい容量を `max(8, cap * 2, min_cap)` とし、アリーナから新しい場所を得て写す。古い場所はアリーナに残り、アリーナの解放で消える。残る量の合計は最後の容量より小さいので、時間もメモリも要素の数にほぼ比例する（8.7）。
-- 新しい容量とそのバイト数は `amark_size_mul` で求める。あふれたら、確保を試みずに `AMARK_ERROR_OVERFLOW` を返す（8.6）。
+- 新しい容量とそのバイト数は `amark_size_mul` で求める。あふれたら、確保を試みずに `AMARK_ERROR_LIMIT_EXCEEDED` を返す（8.6）。
 - 配列そのものの解放はない。アリーナと一緒に消える。
 
 #### LineIndex
@@ -756,7 +758,7 @@ size_t amark_line_index_line_count(const amark_line_index_t *index);
   - `"a\n"`：2 行。オフセット 0 と 1 は行 1、オフセット 2（長さに等しい）は行 2。
   - `"a\r\nb"`：2 行。CR（1）と LF（2）は行 1、`b`（3）は行 2。
 - Postconditions:
-  - `build`：バイト列を 2 回走査する。1 回目で行を数え、2 回目で表を埋める。確保はアリーナから 1 回だけ行う。失敗したときは何も確保しておらず、`*index` を変えない（9.10）。行の数に `size_t` の大きさを掛けたバイト数があふれたら `AMARK_ERROR_OVERFLOW` を返す。
+  - `build`：バイト列を 2 回走査する。1 回目で行を数え、2 回目で表を埋める。確保はアリーナから 1 回だけ行う。失敗したときは何も確保しておらず、`*index` を変えない（9.10）。行の数に `size_t` の大きさを掛けたバイト数があふれたら `AMARK_ERROR_LIMIT_EXCEEDED` を返す。
   - `line_at`：`line_starts` を二分探索し、`line_starts[i] <= offset` を満たす最大の `i` に 1 を足して返す（9.8）。
 - Invariants: バイト列を変更しない。バイトの値だけを見るので、不正な UTF-8 でも同じ規則で動く（9.11）。索引はバイト列へのポインタを持たない。
 
@@ -806,7 +808,7 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *byte
 - `amark_utf8_replace`
   - 置換の単位：不正な列の極大の部分列 1 つにつき、U+FFFD（`EF BF BD`）を 1 つ出す。極大の部分列とは、正しい列の先頭として続けられる最長の部分、または、それがなければ 1 バイトである。例：`E2 82`（途中で切れた 3 バイトの列）は 1 つ、`F0 80 80` は 3 つ（`F0 80` は正しい列の先頭にならないため、3 バイトをそれぞれ置き換える）、`C0 AF` は 2 つ。
   - 手順：1 回目の走査で結果の長さと置換の数を求める。置換の数が 0 なら、確保せずに入力のポインタと長さを返す（11.5）。そうでなければ、アリーナから 1 回だけ確保し、2 回目の走査で書く。
-  - 結果の長さは `amark_size_add` で積算する。あふれたら `AMARK_ERROR_OVERFLOW` を返す。失敗したときは何も確保しておらず、`*out` を変えない（11.8）。
+  - 結果の長さは `amark_size_add` で積算する。あふれたら `AMARK_ERROR_LIMIT_EXCEEDED` を返す。失敗したときは何も確保しておらず、`*out` を変えない（11.8）。
   - 結果は常に正しい UTF-8 である。入力は変更しない。
 - Invariants: どの関数も、時間はバイト列の長さにほぼ比例する。
 
@@ -817,7 +819,7 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *byte
 ## Error Handling
 
 ### Error Strategy
-- 内部の部品の失敗は 2 種類だけである。確保関数の失敗（`AMARK_ERROR_NOMEM`）と、大きさのあふれ（`AMARK_ERROR_OVERFLOW`）。どちらも戻り値で伝える。
+- 内部の部品の失敗は 2 種類だけである。確保関数の失敗（`AMARK_ERROR_NOMEM`）と、大きさのあふれ（`AMARK_ERROR_LIMIT_EXCEEDED`）。どちらも戻り値で伝える。
 - 失敗した操作は、対象の状態を変えない（アリーナ、配列、索引、置換の結果のどれも）。呼び出す側は、アリーナを解放するだけで後始末ができる。
 - 前提条件の違反は失敗として扱わない。動作を定めず、テスト、サニタイザ、レビューで見つける。
 - ビルドの構成の誤り（古い CMake、対応していないコンパイラでのサニタイザ）は、構成のときに `FATAL_ERROR` で止め、原因と直し方をメッセージに書く。
@@ -829,9 +831,9 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *byte
 ## Testing Strategy
 
 ### Unit Tests（`tests/unit/`、`amark_testing` にリンク）
-- **test_alloc**：既定の確保関数で確保と解放ができる。指定した確保関数だけが呼ばれ、文脈の値がそのまま渡る（`ctx_mismatch == 0`）。確保関数が NULL を返すと `NOMEM`。`amark_malloc_array(SIZE_MAX, 2)` は確保関数を呼ばずに `OVERFLOW`。`amark_free(NULL)` は確保関数を呼ばない。`amark_size_add` と `amark_size_mul` の境界（6.1–6.7）。
-- **test_arena**：返した位置が `AMARK_ARENA_ALIGN` の倍数。小さな確保 10,000 回で、確保関数の呼び出しが 100 回より少ない。先に書いた内容が、後の確保のあとも変わらない。1 MiB を超える確保が成功し、その後の小さな確保も成功する。`deinit` のあと `live == 0`。途中の確保を失敗させても、それまでのメモリが読め、`deinit` で `live == 0`。`size` が `SIZE_MAX` で `OVERFLOW`（7.1–7.9）。
-- **test_array**：追加した順に読める。容量が広がっても値が変わらない。`pop` が逆順に返し、空で false。要素の大きさが 1、8、24 バイトの型で動く。伸びるときの確保を失敗させると、`len` と中身が変わらない。`reserve(SIZE_MAX)` が `OVERFLOW`。100,000 個の追加で、確保関数の呼び出しの回数が要素の数に比べて十分に少ない（8.1–8.9）。
+- **test_alloc**：既定の確保関数で確保と解放ができる。指定した確保関数だけが呼ばれ、文脈の値がそのまま渡る（`ctx_mismatch == 0`）。確保関数が NULL を返すと `NOMEM`。`amark_malloc_array(SIZE_MAX, 2)` は確保関数を呼ばずに `LIMIT_EXCEEDED`。`amark_free(NULL)` は確保関数を呼ばない。`amark_size_add` と `amark_size_mul` の境界（6.1–6.7）。
+- **test_arena**：返した位置が `AMARK_ARENA_ALIGN` の倍数。小さな確保 10,000 回で、確保関数の呼び出しが 100 回より少ない。先に書いた内容が、後の確保のあとも変わらない。1 MiB を超える確保が成功し、その後の小さな確保も成功する。`deinit` のあと `live == 0`。途中の確保を失敗させても、それまでのメモリが読め、`deinit` で `live == 0`。`size` が `SIZE_MAX` で `LIMIT_EXCEEDED`（7.1–7.9）。
+- **test_array**：追加した順に読める。容量が広がっても値が変わらない。`pop` が逆順に返し、空で false。要素の大きさが 1、8、24 バイトの型で動く。伸びるときの確保を失敗させると、`len` と中身が変わらない。`reserve(SIZE_MAX)` が `LIMIT_EXCEEDED`。100,000 個の追加で、確保関数の呼び出しの回数が要素の数に比べて十分に少ない（8.1–8.9）。
 - **test_line_index**：空、行末なし、LF、CR、CRLF、混在、連続する行末、行末で終わる入力、行末だけの入力について、すべてのオフセットの行番号を、1 バイトずつ数える単純な参照実装と比べる。`line_count`。不正な UTF-8 を含む入力。確保の失敗で `NOMEM` を返し、`live` が増えない（9.1–9.11）。
 - **test_utf8**：1〜4 バイトの各範囲の境界（U+007F、U+0080、U+07FF、U+0800、U+FFFF、U+10000、U+10FFFF）、U+0000 と U+FEFF が正しい。不正の各種類について、`error_offset` が最初の不正な列を指す。デコードが検査済みの全境界で正しい値と長さを返す。置換が Unicode 標準の例と一致し、結果が検査を通り、入力が変わらない。正しい入力では `replacement_count == 0` で、ポインタが入力と同じで、確保がない。確保の失敗で `NOMEM` を返し、`live` が増えない（10.1–10.9、11.1–11.9）。
 - **失敗の注入**：確保を行うすべての操作について、`fail_at` を 1 から順に増やす繰り返しで、各回の後始末のあとに `live == 0` を確かめる（12.9、12.10）。

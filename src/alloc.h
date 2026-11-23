@@ -9,31 +9,14 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "error.h"
+#include <amark/allocator.h>
+#include <amark/error.h>
 
 /*
  * The allocator abstraction. Every allocation and release in the library
- * goes through an amark_allocator_t; only this module calls the standard
- * malloc and free.
+ * goes through an amark_allocator_t (defined in <amark/allocator.h>); only
+ * this module calls the standard malloc and free.
  */
-
-/* Returns a block of at least size bytes, or NULL on failure. */
-typedef void *(*amark_malloc_fn_t)(void *ctx, size_t size);
-
-/* Releases a block returned by the matching malloc_fn. ptr is not NULL. */
-typedef void (*amark_free_fn_t)(void *ctx, void *ptr);
-
-/*
- * A pair of functions and the context value passed unchanged to each call.
- * The members end in _fn because some C runtimes define malloc and free as
- * macros. Keep a copy by value and release with the same value used to
- * allocate.
- */
-typedef struct amark_allocator {
-    amark_malloc_fn_t malloc_fn;
-    amark_free_fn_t free_fn;
-    void *ctx;
-} amark_allocator_t;
 
 /* Returns the default allocator, which uses malloc and free. ctx is NULL. */
 amark_allocator_t amark_allocator_default(void);
@@ -56,7 +39,7 @@ amark_error_t amark_malloc(const amark_allocator_t *allocator, size_t size,
 
 /*
  * Allocates count * elem_size bytes, as amark_malloc does. If the product
- * overflows, stores NULL in *out and returns AMARK_ERROR_OVERFLOW without
+ * overflows, stores NULL in *out and returns AMARK_ERROR_LIMIT_EXCEEDED without
  * calling the allocator.
  */
 amark_error_t amark_malloc_array(const amark_allocator_t *allocator,

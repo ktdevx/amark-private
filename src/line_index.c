@@ -40,13 +40,13 @@ amark_error_t amark_line_index_build(amark_line_index_t *index,
     for (i = 0; i < length; i++) {
         if (ends_line(bytes, length, i)) {
             if (!amark_size_add(line_count, 1, &line_count)) {
-                return AMARK_ERROR_OVERFLOW;
+                return AMARK_ERROR_LIMIT_EXCEEDED;
             }
         }
     }
 
     if (!amark_size_mul(line_count, sizeof(size_t), &table_bytes)) {
-        return AMARK_ERROR_OVERFLOW;
+        return AMARK_ERROR_LIMIT_EXCEEDED;
     }
     err = amark_arena_alloc(arena, table_bytes, &mem);
     if (err != AMARK_ERROR_NONE) {

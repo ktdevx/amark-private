@@ -62,7 +62,11 @@ its root and requires both lines within the first 5 lines of every
   ```
 
 - File names are lowercase with underscores (`line_index.c`). A module is a
-  `.c` file and an internal header of the same name in `src/`.
+  `.c` file and an internal header of the same name in `src/`. If the module
+  also has a public header of that name in `include/amark/`, the internal
+  header takes the suffix `_internal` (`config.c`, `src/config_internal.h`
+  and `include/amark/config.h`), so that no installed file shares a name
+  with an internal header.
 - CMake: the project and package are `Amark` (`find_package(Amark)`,
   `AmarkConfig.cmake`), the library target and file are `amark`, and users
   link `Amark::amark`. Options and CMake functions of Amark start with
@@ -80,7 +84,7 @@ use:
   variables that change. Read-only tables (`static const`) are fine.
 - **`abort`, `exit`, `_Exit`, `setjmp`, `longjmp`** and their variants
   (`_exit`, `quick_exit`, `sigsetjmp`, `siglongjmp`). Report failures through
-  return values (`amark_error_t` in `src/error.h`).
+  return values (`amark_error_t` in `include/amark/error.h`).
 - **`assert`.** It calls `abort`. Preconditions are the caller's
   responsibility; tests and sanitizers catch violations.
 - **Recursion.** Use loops and explicit stacks, also for traversal and

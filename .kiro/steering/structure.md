@@ -23,7 +23,7 @@
 
 ### ライブラリのソース
 **Location**: `/src/`
-**Purpose**: 実装と内部ヘッダ。内部ヘッダはインストールしない。1 つのモジュールは、`.c` と内部ヘッダの組にする。ライブラリのターゲット（`amark` と、テスト専用の `amark_testing`）は `src/CMakeLists.txt` で定義する。
+**Purpose**: 実装と内部ヘッダ。内部ヘッダはインストールしない。1 つのモジュールは、`.c` と同じ名前の内部ヘッダの組にする。同じ名前の公開ヘッダが `include/amark/` にもあるモジュールでは、内部ヘッダの名前に `_internal` を付ける（`config.c`、`src/config_internal.h`、`include/amark/config.h`）。インストールされるファイルが内部ヘッダと同じ名前にならないようにするため。ライブラリのターゲット（`amark` と、テスト専用の `amark_testing`）は `src/CMakeLists.txt` で定義する。
 **Example**: `src/arena.c` と `src/arena.h`
 
 ### 生成した表

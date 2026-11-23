@@ -8,8 +8,9 @@
 
 #include <stddef.h>
 
+#include <amark/error.h>
+
 #include "arena.h"
-#include "error.h"
 
 /*
  * The line index. It records where each line of a byte sequence starts and
@@ -41,8 +42,8 @@ typedef struct amark_line_index {
  * Builds *index for the length bytes at bytes, which are not changed. The
  * bytes are scanned twice (count the lines, then fill the table) and the
  * table is allocated from arena once. On failure, returns AMARK_ERROR_NOMEM
- * (the arena could not allocate) or AMARK_ERROR_OVERFLOW (the table size in
- * bytes does not fit in size_t); nothing is allocated and *index is
+ * (the arena could not allocate) or AMARK_ERROR_LIMIT_EXCEEDED (the table size
+ * in bytes does not fit in size_t); nothing is allocated and *index is
  * unchanged.
  */
 amark_error_t amark_line_index_build(amark_line_index_t *index,

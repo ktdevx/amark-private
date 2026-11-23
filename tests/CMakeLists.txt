@@ -123,6 +123,10 @@ amark_add_unit_test(test_line_index SOURCES unit/test_line_index.c)
 amark_add_unit_test(test_utf8 SOURCES unit/test_utf8.c)
 amark_add_unit_test(test_unicode SOURCES unit/test_unicode.c)
 amark_add_unit_test(test_entity SOURCES unit/test_entity.c)
+amark_add_unit_test(test_config SOURCES unit/test_config.c)
+amark_add_unit_test(test_document SOURCES unit/test_document.c)
+amark_add_unit_test(test_tree SOURCES unit/test_tree.c)
+amark_add_unit_test(test_tree_check SOURCES unit/test_tree_check.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
@@ -135,6 +139,8 @@ unset(_amark_data_test)
 
 # Public API tests (tests/public/), linked to Amark::amark.
 amark_add_public_test(test_version SOURCES public/test_version.c)
+# Named test_public_config: test_config is the unit test of the same module.
+amark_add_public_test(test_public_config SOURCES public/test_config.c)
 
 # amark_target_defaults sets only C properties (C99 and so on); its warning
 # flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The

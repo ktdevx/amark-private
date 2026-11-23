@@ -62,7 +62,7 @@ amark_error_t amark_malloc_array(const amark_allocator_t *allocator,
 
     if (!amark_size_mul(count, elem_size, &size)) {
         *out = NULL;
-        return AMARK_ERROR_OVERFLOW;
+        return AMARK_ERROR_LIMIT_EXCEEDED;
     }
     return amark_malloc(allocator, size, out);
 }

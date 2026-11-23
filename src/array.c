@@ -35,7 +35,7 @@ amark_error_t amark_array_reserve(amark_array_t *array, size_t min_cap)
 
     /* new_cap = max(8, cap * 2, min_cap) */
     if (!amark_size_mul(array->cap, 2, &new_cap)) {
-        return AMARK_ERROR_OVERFLOW;
+        return AMARK_ERROR_LIMIT_EXCEEDED;
     }
     if (new_cap < AMARK_ARRAY_MIN_CAP) {
         new_cap = AMARK_ARRAY_MIN_CAP;
@@ -44,7 +44,7 @@ amark_error_t amark_array_reserve(amark_array_t *array, size_t min_cap)
         new_cap = min_cap;
     }
     if (!amark_size_mul(new_cap, array->elem_size, &bytes)) {
-        return AMARK_ERROR_OVERFLOW;
+        return AMARK_ERROR_LIMIT_EXCEEDED;
     }
 
     err = amark_arena_alloc(array->arena, bytes, &data);
@@ -68,7 +68,7 @@ amark_error_t amark_array_push(amark_array_t *array, const void *elem)
         amark_error_t err;
 
         if (!amark_size_add(array->len, 1, &min_cap)) {
-            return AMARK_ERROR_OVERFLOW;
+            return AMARK_ERROR_LIMIT_EXCEEDED;
         }
         err = amark_array_reserve(array, min_cap);
         if (err != AMARK_ERROR_NONE) {

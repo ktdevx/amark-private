@@ -43,7 +43,7 @@ static amark_error_t amark_arena_new_block(amark_arena_t *arena,
 
     if (!amark_size_add(AMARK_ARENA_HEADER_SIZE, capacity, &total)) {
         *out = NULL;
-        return AMARK_ERROR_OVERFLOW;
+        return AMARK_ERROR_LIMIT_EXCEEDED;
     }
     err = amark_malloc(&arena->allocator, total, &memory);
     if (err != AMARK_ERROR_NONE) {
@@ -78,7 +78,7 @@ amark_error_t amark_arena_alloc(amark_arena_t *arena, size_t size, void **out)
     /* Round up to a multiple of the alignment, so that used stays aligned. */
     if (!amark_size_add(size, AMARK_ARENA_ALIGN - 1, &rounded)) {
         *out = NULL;
-        return AMARK_ERROR_OVERFLOW;
+        return AMARK_ERROR_LIMIT_EXCEEDED;
     }
     rounded -= rounded % AMARK_ARENA_ALIGN;
 
@@ -137,7 +137,7 @@ amark_error_t amark_arena_alloc_array(amark_arena_t *arena, size_t count,
 
     if (!amark_size_mul(count, elem_size, &size)) {
         *out = NULL;
-        return AMARK_ERROR_OVERFLOW;
+        return AMARK_ERROR_LIMIT_EXCEEDED;
     }
     return amark_arena_alloc(arena, size, out);
 }

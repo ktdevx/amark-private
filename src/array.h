@@ -9,8 +9,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include <amark/error.h>
+
 #include "arena.h"
-#include "error.h"
 
 /*
  * A growable array of elements of one size, stored in an arena. It also
@@ -43,8 +44,8 @@ void amark_array_init(amark_array_t *array, amark_arena_t *arena,
 /*
  * Copies elem_size bytes from elem to the end of the array, growing the
  * capacity if needed. On failure, returns AMARK_ERROR_NOMEM (the arena could
- * not allocate) or AMARK_ERROR_OVERFLOW (the new capacity in bytes does not
- * fit in size_t; nothing is allocated), and the data, length and capacity
+ * not allocate) or AMARK_ERROR_LIMIT_EXCEEDED (the new capacity in bytes does
+ * not fit in size_t; nothing is allocated), and the data, length and capacity
  * are unchanged. A growth moves the elements, so pointers returned by
  * amark_array_at before it are no longer valid.
  */

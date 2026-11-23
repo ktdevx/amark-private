@@ -8,8 +8,12 @@
 #ifndef AMARK_AMARK_H
 #define AMARK_AMARK_H
 
-#include <amark/export.h>  /* AMARK_API (generated) */
-#include <amark/version.h> /* AMARK_VERSION_* (generated) */
+#include <amark/allocator.h> /* amark_allocator_t */
+#include <amark/config.h>    /* amark_config_t */
+#include <amark/error.h>     /* amark_error_t */
+#include <amark/export.h>    /* AMARK_API (generated) */
+#include <amark/tree.h>      /* amark_document_t, amark_node_id_t */
+#include <amark/version.h>   /* AMARK_VERSION_* (generated) */
 
 #ifdef __cplusplus
 extern "C" {
