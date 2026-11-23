@@ -136,3 +136,39 @@ if(CMAKE_CXX_COMPILER)
         CXX_EXTENSIONS OFF
     )
 endif()
+
+# Repository checks (tests/checks/), cmake -P scripts that read the built
+# libraries with nm. Registered on Linux only, and only where nm is found.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(CMAKE_NM)
+        set(AMARK_NM "${CMAKE_NM}")
+    else()
+        find_program(AMARK_NM nm)
+    endif()
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND AMARK_NM)
+    # The exported symbols of the shared library match the list exactly.
+    get_target_property(_amark_type amark TYPE)
+    if(_amark_type STREQUAL "SHARED_LIBRARY")
+        add_test(NAME checks.exports
+            COMMAND "${CMAKE_COMMAND}"
+                "-DNM=${AMARK_NM}"
+                "-DLIBRARY=$<TARGET_FILE:amark>"
+                "-DSYMBOLS_FILE=${CMAKE_CURRENT_SOURCE_DIR}/checks/exported_symbols.txt"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckExports.cmake"
+        )
+    endif()
+    unset(_amark_type)
+
+    # No mutable static data, no abort/exit/longjmp, malloc/free only in
+    # alloc.c. Sanitizers add static data and references, and link-time
+    # optimization hides local symbols from nm, so not with either of them.
+    if(NOT AMARK_SANITIZE AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+        add_test(NAME checks.objects
+            COMMAND "${CMAKE_COMMAND}"
+                "-DNM=${AMARK_NM}"
+                "-DLIBRARY=$<TARGET_FILE:amark_testing>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckObjects.cmake"
+        )
+    endif()
+endif()
