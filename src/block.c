@@ -537,6 +537,37 @@ typedef enum continue_result {
 } continue_result_t;
 
 /*
+ * Whether the rest of the line starts with a block quote marker: at most 3
+ * columns of indentation, then '>'.
+ */
+static bool at_quote_marker(const block_parser_t *p)
+{
+    const amark_line_pos_t *pos = &p->pos;
+
+    return pos->indent < CODE_INDENT && !pos->blank &&
+           p->bytes[pos->first_nonspace] == '>';
+}
+
+/*
+ * Consumes a block quote marker (at_quote_marker is true): the indentation,
+ * the '>', and one column of a following space or tab. A tab is consumed by
+ * columns, so a tab wider than one column leaves the rest of its columns as
+ * pad, which counts as indentation of what follows.
+ */
+static void consume_quote_marker(block_parser_t *p)
+{
+    amark_line_pos_t *pos = &p->pos;
+
+    amark_line_pos_advance(pos, p->bytes, pos->indent,
+                           AMARK_ADVANCE_COLUMNS);
+    amark_line_pos_advance(pos, p->bytes, 1, AMARK_ADVANCE_BYTES);
+    if (pos->offset < pos->content_end &&
+        (p->bytes[pos->offset] == ' ' || p->bytes[pos->offset] == '\t')) {
+        amark_line_pos_advance(pos, p->bytes, 1, AMARK_ADVANCE_COLUMNS);
+    }
+}
+
+/*
  * The continuation of a code block. Indented: 4 columns of indentation, or
  * a blank line, whose white space it consumes whole. Fenced: a closing fence
  * (at most 3 columns of indentation, the same character, at least as long)
@@ -608,6 +639,16 @@ static continue_result_t continue_block(block_parser_t *p, size_t index)
         }
         return CONTINUE_YES;
     case AMARK_KIND_BLOCK_QUOTE:
+        /*
+         * A line with the marker continues the quote, which then ends at
+         * least at the end of that line's content.
+         */
+        if (!at_quote_marker(p)) {
+            return CONTINUE_NO;
+        }
+        consume_quote_marker(p);
+        block->end = p->pos.content_end;
+        return CONTINUE_YES;
     case AMARK_KIND_LIST:
     case AMARK_KIND_LIST_ITEM:
         /*
@@ -652,6 +693,34 @@ static amark_error_t open_line_leaf(block_parser_t *p, size_t *container,
     p->line_taken = true;
     *container = index;
     *result = START_LEAF;
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Starts a block quote if the rest of the line starts with its marker. The
+ * caller has checked that the indentation is at most 3 columns. The quote
+ * starts at '>' and its node is made now; the marker is consumed, and the
+ * starts are looked for again inside the quote. The quote ends at least at
+ * the end of the line's content.
+ */
+static amark_error_t start_block_quote(block_parser_t *p, size_t *container,
+                                       start_result_t *result)
+{
+    size_t index;
+    amark_error_t err;
+
+    if (!at_quote_marker(p)) {
+        return AMARK_ERROR_NONE;
+    }
+    err = push_block(p, *container, AMARK_KIND_BLOCK_QUOTE, true,
+                     p->pos.first_nonspace, &index);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    consume_quote_marker(p);
+    stack_at(p, index)->end = p->pos.content_end;
+    *container = index;
+    *result = START_CONTAINER;
     return AMARK_ERROR_NONE;
 }
 
@@ -887,6 +956,10 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
          * yet leave the line to become paragraph text.
          */
         if (shallow) {
+            err = start_block_quote(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
             err = start_atx_heading(p, container, result);
             if (err != AMARK_ERROR_NONE || *result != START_NONE) {
                 return err;
@@ -1097,8 +1170,22 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
         }
     }
 
-    /* 3. Add the rest of the line. */
+    /*
+     * 3. Add the rest of the line. A line on which some open block did not
+     * match, which opened nothing, and which is not blank while the
+     * innermost open block is a paragraph, is a lazy continuation line: it
+     * is paragraph text (the starts that cannot interrupt a paragraph were
+     * not tried, and a setext underline needs every block matched), so it
+     * goes to the paragraph and nothing closes. Its record is its first
+     * non-space byte, and the paragraph's end reaches its containers when
+     * the paragraph closes.
+     */
     amark_line_pos_find_nonspace(&p->pos, p->bytes);
+    if (!p->all_matched && container == matched && !p->pos.blank &&
+        stack_at(p, stack_top(p))->kind == AMARK_KIND_PARAGRAPH) {
+        paragraph_add_line(p, stack_top(p));
+        return AMARK_ERROR_NONE;
+    }
     return add_line(p, container);
 }
 

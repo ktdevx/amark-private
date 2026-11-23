@@ -6,11 +6,12 @@
 /*
  * Unit tests of the block parser (src/block.h), calling amark_block_parse
  * directly on a document made with amark_document_create and
- * amark_parse_data_create: paragraphs and blank lines, thematic breaks and
- * ATX headings, code blocks, HTML blocks, link reference definitions and
- * setext headings, the ranges and lines of their nodes, their attributes,
- * the definition table, their inline contents, the line records, ranges
- * that start past offset 0, the line position (the cached search for the
+ * amark_parse_data_create, or through amark_parse: paragraphs and blank
+ * lines, thematic breaks and ATX headings, code blocks, HTML blocks, link
+ * reference definitions and setext headings, block quotes and lazy
+ * continuation lines, the ranges and lines of their nodes, their
+ * attributes, the definition table, their inline contents, the line
+ * records, ranges that start past offset 0, the line position (the cached search for the
  * first non-space byte and the two advances), the node count and nesting
  * depth limits, and allocation failures. Every parsed document goes
  * through amark_tree_check.
@@ -1699,6 +1700,553 @@ NAOS_TEST(allocation_failure_with_definitions_and_setext)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Block quotes and lazy continuation lines                               */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Parses length bytes at bytes through amark_parse with g_allocator and the
+ * two limits, into g_doc. The bytes must outlive g_doc.
+ */
+static amark_error_t parse_public(const char *bytes, size_t length,
+                                  size_t max_depth, size_t max_nodes)
+{
+    amark_config_t config;
+
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    config.max_nesting_depth = max_depth;
+    config.max_node_count = max_nodes;
+    return amark_parse(bytes, length, &config, &g_doc);
+}
+
+/*
+ * Parses through amark_parse with no limits, requires success and a tree
+ * that passes the tree check.
+ */
+static void parse_public_ok(const char *bytes, size_t length)
+{
+    amark_tree_check_result_t check;
+
+    NAOS_REQUIRE_INT_EQ(parse_public(bytes, length, 0, 0), AMARK_ERROR_NONE);
+    check = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(check.node, AMARK_NODE_NONE);
+}
+
+#define PARSE_PUBLIC(s) parse_public_ok((s), sizeof(s) - 1)
+
+/* Returns the nth (from 0) child of node; it must exist. */
+static amark_node_id_t nth_child(amark_node_id_t node, size_t nth)
+{
+    amark_node_id_t child = amark_node_first_child(g_doc, node);
+
+    while (nth > 0) {
+        NAOS_REQUIRE_UINT_NE(child, AMARK_NODE_NONE);
+        child = amark_node_next_sibling(g_doc, child);
+        nth--;
+    }
+    NAOS_REQUIRE_UINT_NE(child, AMARK_NODE_NONE);
+    return child;
+}
+
+NAOS_TEST(block_quote_of_one_line_and_its_marker_forms)
+{
+    /* "> a": the quote starts at '>', the paragraph after "> ". */
+    PARSE_PUBLIC("> a");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 3, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
+    check_content(0, nth_child(root_child(0), 0), 2, 3);
+    check_record(1, 2, 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    reset_doc();
+
+    /* No space after the marker. */
+    PARSE_PUBLIC(">a");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 2, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 1, 2, 1, 1);
+    check_record(1, 1, 0);
+    reset_doc();
+
+    /* 3 columns of indentation: the quote starts at '>'. */
+    PARSE_PUBLIC("   > a");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 3, 6, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 5, 6, 1, 1);
+    check_record(1, 5, 0);
+    reset_doc();
+
+    /* Only one space after '>' is the marker's. */
+    PARSE_PUBLIC(">  a");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 3, 4, 1, 1);
+    check_record(1, 3, 0);
+    reset_doc();
+
+    /* 4 columns: indented code. */
+    PARSE_PUBLIC("    > a");
+    check_dump("(doc (code indented))");
+    reset_doc();
+
+    /* A marker with nothing after it is an empty quote. */
+    PARSE_PUBLIC(">");
+    check_dump("(doc (bq))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 1, 1, 1);
+    check_record(1, 1, 0);
+}
+
+NAOS_TEST(block_quote_over_several_lines)
+{
+    /* "> a\n" 0-3, ">b\n" 4-6, "   > c\n" 7-13. */
+    PARSE_PUBLIC("> a\n>b\n   > c\n");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 13, 1, 3);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 13, 1, 3);
+    check_content(0, nth_child(root_child(0), 0), 2, 13);
+    check_record(1, 2, 0);
+    check_record(2, 5, 0);
+    check_record(3, 12, 0);
+}
+
+NAOS_TEST(marker_only_line_ends_the_paragraph)
+{
+    /* "> a\n" 0-3, ">\n" 4-5, "> b" 6-8. */
+    PARSE_PUBLIC("> a\n>\n> b");
+    check_dump("(doc (bq (p) (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 9, 1, 3);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_PARAGRAPH, 8, 9, 3, 3);
+    check_record(1, 2, 0);
+    check_record(2, 5, 0);
+    check_record(3, 8, 0);
+    reset_doc();
+
+    /* The last line with a marker ends the quote, empty or not. */
+    PARSE_PUBLIC("> a\n>\n");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 5, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
+    check_record(2, 5, 0);
+    reset_doc();
+
+    /* With white space after the marker: "> a\n" 0-3, ">  \n" 4-7. */
+    PARSE_PUBLIC("> a\n>  \n");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 7, 1, 2);
+    check_record(2, 7, 0);
+}
+
+NAOS_TEST(blank_line_ends_a_block_quote)
+{
+    /* "> a\n" 0-3, "\n" 4, "> b" 5-7. */
+    PARSE_PUBLIC("> a\n\n> b");
+    check_dump("(doc (bq (p)) (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 3, 1, 1);
+    check_node(root_child(1), AMARK_KIND_BLOCK_QUOTE, 5, 8, 3, 3);
+    check_record(2, 4, 0);
+    check_record(3, 7, 0);
+}
+
+NAOS_TEST(nested_block_quotes)
+{
+    /*
+     * "> > a\n" 0-5, "> b\n" 6-9, ">> c" 10-13. The second line lacks the
+     * inner marker but continues the inner paragraph lazily.
+     */
+    PARSE_PUBLIC("> > a\n> b\n>> c");
+    check_dump("(doc (bq (bq (p))))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 14, 1, 3);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_BLOCK_QUOTE, 2, 14, 1,
+               3);
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_PARAGRAPH, 4, 14, 1, 3);
+    check_record(1, 4, 0);
+    check_record(2, 8, 0);
+    check_record(3, 13, 0);
+    reset_doc();
+
+    /*
+     * "> > a\n" 0-5, ">\n" 6-7, "> b" 8-10: the marker-only line closes
+     * the inner quote, and "b" is a paragraph of the outer one.
+     */
+    PARSE_PUBLIC("> > a\n>\n> b");
+    check_dump("(doc (bq (bq (p)) (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 11, 1, 3);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_BLOCK_QUOTE, 2, 5, 1,
+               1);
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_PARAGRAPH, 10, 11, 3,
+               3);
+    check_record(2, 7, 0);
+    reset_doc();
+
+    /* A quote interrupts a paragraph: "> a\n" 0-3, "> > b" 4-8. */
+    PARSE_PUBLIC("> a\n> > b");
+    check_dump("(doc (bq (p) (bq (p))))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_BLOCK_QUOTE, 6, 9, 2,
+               2);
+    reset_doc();
+
+    /* Markers only: "> >" 0-2. */
+    PARSE_PUBLIC("> >");
+    check_dump("(doc (bq (bq)))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_BLOCK_QUOTE, 2, 3, 1,
+               1);
+}
+
+NAOS_TEST(lazy_continuation_lines)
+{
+    /* "> a\n" 0-3, "b\n" 4-5, "  c" 6-8. */
+    PARSE_PUBLIC("> a\nb\n  c");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 9, 1, 3);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 9, 1, 3);
+    check_content(0, nth_child(root_child(0), 0), 2, 9);
+    check_record(1, 2, 0);
+    check_record(2, 4, 0);
+    check_record(3, 8, 0);
+    reset_doc();
+
+    /* Both quotes take the lazy line: "> > a\n" 0-5, "b" 6. */
+    PARSE_PUBLIC("> > a\nb");
+    check_dump("(doc (bq (bq (p))))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 7, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_BLOCK_QUOTE, 2, 7, 1,
+               2);
+    check_record(2, 6, 0);
+    reset_doc();
+
+    /* Indented lazy lines are not code: "> a\n" 0-3, "\tb" 4-5. */
+    PARSE_PUBLIC("> a\n\tb");
+    check_dump("(doc (bq (p)))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 6, 1, 2);
+    check_record(2, 5, 0);
+    reset_doc();
+
+    /* "> a\n" 0-3, "    b" 4-8. */
+    PARSE_PUBLIC("> a\n    b");
+    check_dump("(doc (bq (p)))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 9, 1, 2);
+    check_record(2, 8, 0);
+    reset_doc();
+
+    /*
+     * Condition 7 of HTML does not interrupt a paragraph, so the line is
+     * lazy: "> a\n" 0-3, "<span>" 4-9.
+     */
+    PARSE_PUBLIC("> a\n<span>");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 10, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 10, 1, 2);
+    check_record(2, 4, 0);
+    reset_doc();
+
+    /* A blank line is never lazy: "> a\n" 0-3, "\n" 4, "b" 5. */
+    PARSE_PUBLIC("> a\n\nb");
+    check_dump("(doc (bq (p)) (p))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 3, 1, 1);
+}
+
+NAOS_TEST(lazy_line_is_not_a_setext_underline)
+{
+    /* Example 92: "> Foo\n" 0-5, "---" 6-8. */
+    PARSE_PUBLIC("> Foo\n---");
+    check_dump("(doc (bq (p)) (hr))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 5, 1, 1);
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 6, 9, 2, 2);
+    check_record(2, 6, 0);
+    reset_doc();
+
+    /* Example 93: "> foo\n" 0-5, "bar\n" 6-9, "===" 10-12. */
+    PARSE_PUBLIC("> foo\nbar\n===");
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 13, 1, 3);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 13, 1, 3);
+    check_content(0, nth_child(root_child(0), 0), 2, 13);
+    check_record(3, 10, 0);
+    reset_doc();
+
+    /* Example 101. */
+    PARSE_PUBLIC("> foo\n-----");
+    check_dump("(doc (bq (p)) (hr))");
+    reset_doc();
+
+    /* With the marker it underlines: "> a\n" 0-3, "> ---" 4-8. */
+    PARSE_PUBLIC("> a\n> ---");
+    check_dump("(doc (bq (h 2 setext)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 9, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_HEADING, 2, 9, 1, 2);
+    check_content(0, nth_child(root_child(0), 0), 2, 3);
+    check_record(2, 6, 0);
+    reset_doc();
+
+    PARSE_PUBLIC("> a\n> ===");
+    check_dump("(doc (bq (h 1 setext)))");
+}
+
+NAOS_TEST(lines_that_start_blocks_are_not_lazy)
+{
+    PARSE_PUBLIC("> a\n# h");
+    check_dump("(doc (bq (p)) (h 1 atx))");
+    reset_doc();
+
+    PARSE_PUBLIC("> a\n***");
+    check_dump("(doc (bq (p)) (hr))");
+    reset_doc();
+
+    PARSE_PUBLIC("> a\n```");
+    check_dump("(doc (bq (p)) (code fenced ` 3))");
+    reset_doc();
+
+    /* "> a\n" 0-3, "<div>" 4-8. */
+    PARSE_PUBLIC("> a\n<div>");
+    check_dump("(doc (bq (p)) (html))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 3, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HTML_BLOCK, 4, 9, 2, 2);
+}
+
+NAOS_TEST(unmatched_block_quote_closes_its_leaf)
+{
+    /* Only a paragraph takes lazy lines: "> ```\n" 0-5, "foo" 6-8. */
+    PARSE_PUBLIC("> ```\nfoo");
+    check_dump("(doc (bq (code fenced ` 3)) (p))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 5, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_CODE_BLOCK, 2, 5, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 6, 9, 2, 2);
+    reset_doc();
+
+    PARSE_PUBLIC(">     code\nfoo");
+    check_dump("(doc (bq (code indented)) (p))");
+    reset_doc();
+
+    PARSE_PUBLIC(">     code\n    more");
+    check_dump("(doc (bq (code indented)) (code indented))");
+    reset_doc();
+
+    PARSE_PUBLIC("> <div>\nfoo");
+    check_dump("(doc (bq (html)) (p))");
+    reset_doc();
+
+    /*
+     * A closing fence inside the quote: "> ```\n" 0-5, "> a\n" 6-9,
+     * "> ```\n" 10-15, "b" 16.
+     */
+    PARSE_PUBLIC("> ```\n> a\n> ```\nb");
+    check_dump("(doc (bq (code fenced ` 3)) (p))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 15, 1, 3);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_CODE_BLOCK, 2, 15, 1,
+               3);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 16, 17, 4, 4);
+    check_record(2, 8, 0);
+    check_record(3, 12, 0);
+}
+
+NAOS_TEST(tab_after_the_marker)
+{
+    /*
+     * ">\tfoo": '>' takes 1 column of the tab; the paragraph starts at its
+     * first non-space byte.
+     */
+    PARSE_PUBLIC(">\tfoo");
+    check_dump("(doc (bq (p)))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 5, 1, 1);
+    check_record(1, 2, 0);
+    reset_doc();
+
+    /*
+     * Example 6, ">\t\tfoo": after '>' and 1 column of the first tab, 6
+     * columns of indentation; the 4 of the code end inside the second tab,
+     * at offset 2, with 2 columns left.
+     */
+    PARSE_PUBLIC(">\t\tfoo");
+    check_dump("(doc (bq (code indented)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 6, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_CODE_BLOCK, 2, 6, 1, 1);
+    check_record(1, 2, 2);
+    reset_doc();
+
+    /* The next line the same: ">\t\tfoo\n" 0-6, ">\t\tbar" 7-12. */
+    PARSE_PUBLIC(">\t\tfoo\n>\t\tbar");
+    check_dump("(doc (bq (code indented)))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_CODE_BLOCK, 2, 13, 1,
+               2);
+    check_record(2, 9, 2);
+}
+
+NAOS_TEST(html_line_with_a_prefix_ending_inside_a_tab)
+{
+    /*
+     * ">\t<div>\n" 0-7, ">\tb" 8-10: the block starts after the prefix, on
+     * the tab with its 2 columns left.
+     */
+    PARSE_PUBLIC(">\t<div>\n>\tb");
+    check_dump("(doc (bq (html)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 11, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_HTML_BLOCK, 1, 11, 1,
+               2);
+    check_record(1, 1, 2);
+    check_record(2, 9, 2);
+}
+
+NAOS_TEST(definitions_in_a_block_quote)
+{
+    amark_node_id_t def;
+
+    /* "> [a]: /u\n" 0-9, "> b" 10-12. */
+    PARSE_PUBLIC("> [a]: /u\n> b");
+    check_dump("(doc (bq (def) (p)))");
+    def = nth_child(root_child(0), 0);
+    check_node(def, AMARK_KIND_LINK_REFERENCE_DEFINITION, 2, 9, 1, 1);
+    check_definition(def, 3, 4, 7, 9, false, 0, 0);
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_PARAGRAPH, 12, 13, 2,
+               2);
+    check_content(0, nth_child(root_child(0), 1), 12, 13);
+    NAOS_CHECK_UINT_EQ(definition_count(), 1);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 3, 4), def);
+    reset_doc();
+
+    /*
+     * Over three lines, each with the marker: "> [a]:\n" 0-6, "> /u\n"
+     * 7-11, "> 't'" 12-16.
+     */
+    PARSE_PUBLIC("> [a]:\n> /u\n> 't'");
+    check_dump("(doc (bq (def)))");
+    def = nth_child(root_child(0), 0);
+    check_node(def, AMARK_KIND_LINK_REFERENCE_DEFINITION, 2, 17, 1, 3);
+    check_definition(def, 3, 4, 9, 11, true, 15, 16);
+    reset_doc();
+
+    /* With a lazy line: "> [a]:\n" 0-6, "/u" 7-8. */
+    PARSE_PUBLIC("> [a]:\n/u");
+    check_dump("(doc (bq (def)))");
+    def = nth_child(root_child(0), 0);
+    check_node(def, AMARK_KIND_LINK_REFERENCE_DEFINITION, 2, 9, 1, 2);
+    check_definition(def, 3, 4, 7, 9, false, 0, 0);
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 9, 1, 2);
+    check_record(2, 7, 0);
+    reset_doc();
+
+    /*
+     * An underline after definitions only: "> [a]: /u\n" 0-9, "> ===" 10-14;
+     * the underline becomes the paragraph.
+     */
+    PARSE_PUBLIC("> [a]: /u\n> ===");
+    check_dump("(doc (bq (def) (p)))");
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_PARAGRAPH, 12, 15, 2,
+               2);
+}
+
+NAOS_TEST(block_quote_with_crlf_in_a_range_starting_inside_a_line)
+{
+    /*
+     * "x> a\r\n" 0-5, "> b\r\n" 6-10; the range starts at 1, which is
+     * column 0.
+     */
+    PARSE_RANGE("x> a\r\n> b\r\n", 1, 11);
+    check_dump("(doc (bq (p)))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 1, 9, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 3, 9, 1, 2);
+    check_record(1, 3, 0);
+    check_record(2, 8, 0);
+}
+
+NAOS_TEST(nesting_depth_limit_with_block_quotes)
+{
+    /* "> > a": quotes at depths 1 and 2, the paragraph at 3. */
+    NAOS_CHECK_INT_EQ(parse_public("> > a", 5, 2, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(g_doc == NULL);
+    NAOS_REQUIRE_INT_EQ(parse_public("> > a", 5, 3, 0), AMARK_ERROR_NONE);
+    check_dump("(doc (bq (bq (p))))");
+    reset_doc();
+
+    /* Without the paragraph, depth 2 is enough. */
+    NAOS_REQUIRE_INT_EQ(parse_public("> >", 3, 2, 0), AMARK_ERROR_NONE);
+    check_dump("(doc (bq (bq)))");
+    reset_doc();
+    NAOS_CHECK_INT_EQ(parse_public("> >", 3, 1, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+}
+
+NAOS_TEST(node_count_limit_counts_block_quotes)
+{
+    /* The root, the quote and the paragraph. */
+    NAOS_CHECK_INT_EQ(parse_public("> a", 3, 0, 2),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_REQUIRE_INT_EQ(parse_public("> a", 3, 0, 3), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+}
+
+#define DEEP 10000
+
+/* DEEP markers, "a", a line ending and the lazy line "b". */
+static char g_deep[DEEP + 3];
+
+NAOS_TEST(deeply_nested_block_quotes)
+{
+    amark_node_id_t node;
+    size_t i;
+
+    memset(g_deep, '>', DEEP);
+    memcpy(g_deep + DEEP, "a\nb", 3);
+
+    /* The paragraph is at depth DEEP + 1. */
+    NAOS_CHECK_INT_EQ(parse_public(g_deep, sizeof(g_deep), DEEP, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_REQUIRE_INT_EQ(parse_public(g_deep, sizeof(g_deep), DEEP + 1, 0),
+                        AMARK_ERROR_NONE);
+    reset_doc();
+
+    parse_public_ok(g_deep, sizeof(g_deep));
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), DEEP + 2);
+    node = amark_document_root(g_doc);
+    for (i = 0; i < DEEP; i++) {
+        amark_range_t range;
+
+        node = amark_node_first_child(g_doc, node);
+        NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node),
+                             AMARK_KIND_BLOCK_QUOTE);
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+        NAOS_REQUIRE_UINT_EQ(range.start, i);
+        NAOS_REQUIRE_UINT_EQ(range.end, DEEP + 3);
+        NAOS_REQUIRE_UINT_EQ(amark_node_next_sibling(g_doc, node),
+                             AMARK_NODE_NONE);
+    }
+    check_node(amark_node_first_child(g_doc, node), AMARK_KIND_PARAGRAPH,
+               DEEP, DEEP + 3, 1, 2);
+    check_record(1, DEEP, 0);
+    check_record(2, DEEP + 2, 0);
+}
+
+NAOS_TEST(allocation_failure_with_block_quotes)
+{
+    static const char k_input[] = "> a\n> > b\nc\n\n> [x]: /u\n";
+    size_t fail_at;
+    amark_error_t err = AMARK_ERROR_NOMEM;
+
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        set_content(k_input, sizeof(k_input) - 1);
+        err = parse_buffer(0, g_length, 0, 0);
+        g_state.fail_at = 0;
+        amark_arena_deinit(&g_scratch);
+        if (err == AMARK_ERROR_NONE) {
+            break;
+        }
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_REQUIRE_UINT_EQ(g_state.live, 0);
+    }
+    NAOS_REQUIRE_INT_EQ(err, AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_GT(fail_at, 1);
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    check_dump("(doc (bq (p) (bq (p))) (bq (def)))");
+    NAOS_CHECK_UINT_EQ(definition_count(), 1);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Parsed ranges that do not start at offset 0                           */
 /* ---------------------------------------------------------------------- */
 
@@ -2157,6 +2705,28 @@ NAOS_SUITE(block_definitions,
     NAOS_ADD_TEST(allocation_failure_with_definitions_and_setext)
 )
 
+NAOS_SUITE(block_quotes,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(block_quote_of_one_line_and_its_marker_forms),
+    NAOS_ADD_TEST(block_quote_over_several_lines),
+    NAOS_ADD_TEST(marker_only_line_ends_the_paragraph),
+    NAOS_ADD_TEST(blank_line_ends_a_block_quote),
+    NAOS_ADD_TEST(nested_block_quotes),
+    NAOS_ADD_TEST(lazy_continuation_lines),
+    NAOS_ADD_TEST(lazy_line_is_not_a_setext_underline),
+    NAOS_ADD_TEST(lines_that_start_blocks_are_not_lazy),
+    NAOS_ADD_TEST(unmatched_block_quote_closes_its_leaf),
+    NAOS_ADD_TEST(tab_after_the_marker),
+    NAOS_ADD_TEST(html_line_with_a_prefix_ending_inside_a_tab),
+    NAOS_ADD_TEST(definitions_in_a_block_quote),
+    NAOS_ADD_TEST(block_quote_with_crlf_in_a_range_starting_inside_a_line),
+    NAOS_ADD_TEST(nesting_depth_limit_with_block_quotes),
+    NAOS_ADD_TEST(node_count_limit_counts_block_quotes),
+    NAOS_ADD_TEST(deeply_nested_block_quotes),
+    NAOS_ADD_TEST(allocation_failure_with_block_quotes)
+)
+
 NAOS_SUITE(block_ranges,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -2194,6 +2764,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(block_paragraphs),
     NAOS_ADD_SUITE(block_leaves),
     NAOS_ADD_SUITE(block_definitions),
+    NAOS_ADD_SUITE(block_quotes),
     NAOS_ADD_SUITE(block_ranges),
     NAOS_ADD_SUITE(block_limits)
 )
