@@ -206,7 +206,7 @@
   - _Depends: 9.1_
   - _Requirements: 19.1, 19.5_
 
-- [ ] 9.5 List items の例を確かめる
+- [x] 9.5 List items の例を確かめる
   - List items（48 個）の例を、9.3 と同じファイルに足す
   - 完了の状態：spec.txt のコンテナの単体テストで 3 つの節の 99 個の例がすべて通る
   - _Depends: 9.3_

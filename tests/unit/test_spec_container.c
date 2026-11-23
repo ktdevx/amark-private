@@ -21,11 +21,11 @@
  * shows a right arrow, and other bytes outside ASCII as octal escapes of
  * their UTF-8 encoding.
  *
- * Sections: Block quotes and Lists. Whether a list is tight or loose is read
- * from the HTML (whether "<p>" wraps the content of its items); the bullet
- * character, the delimiter and the start number of a list, the style of
- * headings and code blocks, and the "(def)" nodes are decided from the input
- * by the rules of the specification.
+ * Sections: Block quotes, List items and Lists. Whether a list is tight or
+ * loose is read from the HTML (whether "<p>" wraps the content of its
+ * items); the bullet character, the delimiter and the start number of a
+ * list, the style of headings and code blocks, and the "(def)" nodes are
+ * decided from the input by the rules of the specification.
  */
 
 #include "test_alloc.h"
@@ -207,6 +207,169 @@ NAOS_TEST(spec_block_quotes)
     CHECK_EXAMPLES(examples);
 }
 
+/* List items (examples 253-300). */
+NAOS_TEST(spec_list_items)
+{
+    static const spec_example_t examples[] = {
+        {253,
+         "A paragraph\nwith two lines.\n\n    indented code\n\n"
+         "> A block quote.\n",
+         "(doc (p) (code indented) (bq (p)))"},
+        {254,
+         "1.  A paragraph\n    with two lines.\n\n        indented code\n\n"
+         "    > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {255,
+         "- one\n\n two\n",
+         "(doc (ul - tight (li (p))) (p))"},
+        {256,
+         "- one\n\n  two\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {257,
+         " -    one\n\n     two\n",
+         "(doc (ul - tight (li (p))) (code indented))"},
+        {258,
+         " -    one\n\n      two\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {259,
+         "   > > 1.  one\n>>\n>>     two\n",
+         "(doc (bq (bq (ol 1 . loose (li (p) (p))))))"},
+        {260,
+         ">>- one\n>>\n  >  > two\n",
+         "(doc (bq (bq (ul - tight (li (p))) (p))))"},
+        {261,
+         "-one\n\n2.two\n",
+         "(doc (p) (p))"},
+        {262,
+         "- foo\n\n\n  bar\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {263,
+         "1.  foo\n\n    ```\n    bar\n    ```\n\n    baz\n\n    > bam\n",
+         "(doc (ol 1 . loose (li (p) (code fenced ` 3) (p) (bq (p)))))"},
+        {264,
+         "- Foo\n\n      bar\n\n\n      baz\n",
+         "(doc (ul - loose (li (p) (code indented))))"},
+        {265,
+         "123456789. ok\n",
+         "(doc (ol 123456789 . tight (li (p))))"},
+        {266,
+         "1234567890. not ok\n",
+         "(doc (p))"},
+        {267,
+         "0. ok\n",
+         "(doc (ol 0 . tight (li (p))))"},
+        {268,
+         "003. ok\n",
+         "(doc (ol 3 . tight (li (p))))"},
+        {269,
+         "-1. not ok\n",
+         "(doc (p))"},
+        {270,
+         "- foo\n\n      bar\n",
+         "(doc (ul - loose (li (p) (code indented))))"},
+        {271,
+         "  10.  foo\n\n           bar\n",
+         "(doc (ol 10 . loose (li (p) (code indented))))"},
+        {272,
+         "    indented code\n\nparagraph\n\n    more code\n",
+         "(doc (code indented) (p) (code indented))"},
+        {273,
+         "1.     indented code\n\n   paragraph\n\n       more code\n",
+         "(doc (ol 1 . loose (li (code indented) (p) (code indented))))"},
+        {274,
+         "1.      indented code\n\n   paragraph\n\n       more code\n",
+         "(doc (ol 1 . loose (li (code indented) (p) (code indented))))"},
+        {275,
+         "   foo\n\nbar\n",
+         "(doc (p) (p))"},
+        {276,
+         "-    foo\n\n  bar\n",
+         "(doc (ul - tight (li (p))) (p))"},
+        {277,
+         "-  foo\n\n   bar\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {278,
+         "-\n  foo\n-\n  ```\n  bar\n  ```\n-\n      baz\n",
+         "(doc (ul - tight (li (p)) (li (code fenced ` 3)) (li"
+         " (code indented))))"},
+        {279,
+         "-   \n  foo\n",
+         "(doc (ul - tight (li (p))))"},
+        {280,
+         "-\n\n  foo\n",
+         "(doc (ul - tight (li)) (p))"},
+        {281,
+         "- foo\n-\n- bar\n",
+         "(doc (ul - tight (li (p)) (li) (li (p))))"},
+        {282,
+         "- foo\n-   \n- bar\n",
+         "(doc (ul - tight (li (p)) (li) (li (p))))"},
+        {283,
+         "1. foo\n2.\n3. bar\n",
+         "(doc (ol 1 . tight (li (p)) (li) (li (p))))"},
+        {284,
+         "*\n",
+         "(doc (ul * tight (li)))"},
+        {285,
+         "foo\n*\n\nfoo\n1.\n",
+         "(doc (p) (p))"},
+        {286,
+         " 1.  A paragraph\n     with two lines.\n\n"
+         "         indented code\n\n     > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {287,
+         "  1.  A paragraph\n      with two lines.\n\n"
+         "          indented code\n\n      > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {288,
+         "   1.  A paragraph\n       with two lines.\n\n"
+         "           indented code\n\n       > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {289,
+         "    1.  A paragraph\n        with two lines.\n\n"
+         "            indented code\n\n        > A block quote.\n",
+         "(doc (code indented))"},
+        {290,
+         "  1.  A paragraph\nwith two lines.\n\n          indented code\n\n"
+         "      > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {291,
+         "  1.  A paragraph\n    with two lines.\n",
+         "(doc (ol 1 . tight (li (p))))"},
+        {292,
+         "> 1. > Blockquote\ncontinued here.\n",
+         "(doc (bq (ol 1 . tight (li (bq (p))))))"},
+        {293,
+         "> 1. > Blockquote\n> continued here.\n",
+         "(doc (bq (ol 1 . tight (li (bq (p))))))"},
+        {294,
+         "- foo\n  - bar\n    - baz\n      - boo\n",
+         "(doc (ul - tight (li (p) (ul - tight (li (p) (ul - tight (li"
+         " (p) (ul - tight (li (p))))))))))"},
+        {295,
+         "- foo\n - bar\n  - baz\n   - boo\n",
+         "(doc (ul - tight (li (p)) (li (p)) (li (p)) (li (p))))"},
+        {296,
+         "10) foo\n    - bar\n",
+         "(doc (ol 10 ) tight (li (p) (ul - tight (li (p))))))"},
+        {297,
+         "10) foo\n   - bar\n",
+         "(doc (ol 10 ) tight (li (p))) (ul - tight (li (p))))"},
+        {298,
+         "- - foo\n",
+         "(doc (ul - tight (li (ul - tight (li (p))))))"},
+        {299,
+         "1. - 2. foo\n",
+         "(doc (ol 1 . tight (li (ul - tight (li (ol 2 . tight (li"
+         " (p))))))))"},
+        {300,
+         "- # Foo\n- Bar\n  ---\n  baz\n",
+         "(doc (ul - tight (li (h 1 atx)) (li (h 2 setext) (p))))"},
+    };
+
+    CHECK_EXAMPLES(examples);
+}
+
 /* Lists (examples 301-326). */
 NAOS_TEST(spec_lists)
 {
@@ -304,6 +467,7 @@ NAOS_SUITE(spec_container_blocks,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
     NAOS_ADD_TEST(spec_block_quotes),
+    NAOS_ADD_TEST(spec_list_items),
     NAOS_ADD_TEST(spec_lists)
 )
 
