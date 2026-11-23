@@ -56,7 +56,7 @@
   - _Requirements: 1.8, 7.1, 7.2, 7.3, 7.4, 7.5, 7.8, 8.1, 8.2, 8.3, 8.4, 8.5, 8.7, 8.8, 8.9_
 
 - [ ] 3. 参照する関数の単体テスト
-- [ ] 3.1 判定と case folding の単体テストを作る
+- [x] 3.1 判定と case folding の単体テストを作る
   - テストのターゲットに入力データの場所をコンパイルの定義として渡し、内部の関数のテストとして登録する
   - テストが UCD の 2 ファイルを自分で 1 行ずつ読み、0 から U+10FFFF までのコードポイントごとの期待値を作る。生成物と生成スクリプトは使わない。読み取りで確保したものは teardown で解放する
   - 全コードポイントで、句読点の判定、空白の判定、畳み込み（戻り値の数と値）が期待値と一致し、2 つの判定が同時に真にならないことを確かめる。畳み込みの出力の後ろに番兵を置き、戻り値より後ろが書かれていないことを確かめる
@@ -104,3 +104,4 @@
 - 1.2: `tools/gen_tables.py` を取り込むと `tools/__pycache__` ができる（`.gitignore` に設定がない）。自己テストや CTest から実行するときは `python3 -B` か `sys.dont_write_bytecode` を使う。読み取りの関数は `read_inputs(data_dir) -> Inputs`（`punctuation`、`space`、`fold_simple`、`fold_full`、`entities`、`unicode_version`、`entities_sha256`）、入力の不備は `InputError`。
 - 1.3: 生成物は型を定義しない。`unicode.c` と `entity.c` は、設計の 4 つの typedef を定義してから `unicode_tables.h` / `entity_table.h` を取り込む。内容が同じ生成物は書き直さない（更新の時刻を保つ）。
 - 2.1: この環境の clang には ASan の実行時ライブラリがない（`AMARK_SANITIZE=ON` と clang ではリンクに失敗する。既存のコードでも同じ）。ASan・UBSan の構成は GCC（`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++`）で確かめる。clang の ASan は CI の sanitizer ジョブで確かめる。
+- 3.1: テストの `.c` は MSVC の `fopen`（C4996）のために、`_MSC_VER` のときだけ先頭で `_CRT_SECURE_NO_WARNINGS` を定義する。ファイルは `"rb"` で開いて CR を除く。`AMARK_TEST_DATA_DIR` は `target_compile_definitions` でテストのターゲットごとに渡す（3.2 では `test_entity` にも渡す）。
