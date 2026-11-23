@@ -5,8 +5,9 @@
 
 /*
  * Unit tests of the tree check (src/tree_check.h): the structure, range,
- * line and nesting conditions, the first violation in document order, the
- * subtree check, and that the check changes nothing and allocates nothing.
+ * line, nesting and attribute conditions, the first violation in document
+ * order, the subtree check, that the check changes nothing and allocates
+ * nothing, and that it ends on trees of a million nodes and on cycles.
  * Valid trees are built with the tree builder (src/tree.h); broken trees are
  * made by passing wrong ranges to it or by writing the node fields through
  * the internal layout (src/document.h).
@@ -19,6 +20,7 @@
 
 #include <naos/naos.h>
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -175,6 +177,12 @@ static void build_valid(void)
                          N_ORPHAN);
     amark_tree_remove(g_doc, N_REMOVED);
     amark_tree_remove(g_doc, N_REMOVED_PARENT);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, N_HEADING, 1,
+                                               AMARK_HEADING_ATX),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_list(g_doc, N_LIST, AMARK_LIST_BULLET,
+                                            '-', 0, AMARK_LIST_TIGHT),
+                        AMARK_ERROR_NONE);
     NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_doc), N_COUNT);
 }
 
@@ -860,6 +868,11 @@ NAOS_TEST(after_set_range_and_set_kind)
     other = add(N_ROOT, AMARK_KIND_PARAGRAPH, 7, 12);
     amark_tree_set_kind(g_doc, para, AMARK_KIND_HEADING,
                         AMARK_NODE_CLASS_AUTO);
+    check_links_and_lines_hold();
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, para);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, para, 2,
+                                               AMARK_HEADING_SETEXT),
+                        AMARK_ERROR_NONE);
     CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
     amark_tree_set_kind(g_doc, other, AMARK_KIND_TEXT, AMARK_NODE_CLASS_AUTO);
     check_links_and_lines_hold();
@@ -939,7 +952,12 @@ NAOS_TEST(after_wrap)
     w3 = wrap(t[4], t[4], AMARK_KIND_DIALECT_MIN, AMARK_NODE_CLASS_INLINE, 8,
               10);
     CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
-    (void)wrap(w1, w3, AMARK_KIND_LINK, AMARK_NODE_CLASS_AUTO, 0, 10);
+    w1 = wrap(w1, w3, AMARK_KIND_LINK, AMARK_NODE_CLASS_AUTO, 0, 10);
+    check_links_and_lines_hold();
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, w1);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, w1, AMARK_LINK_INLINE,
+                                            NULL, NULL, AMARK_NODE_NONE),
+                        AMARK_ERROR_NONE);
     CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
     (void)wrap(para, para, AMARK_KIND_BLOCK_QUOTE, AMARK_NODE_CLASS_AUTO, 0,
                12);
@@ -975,7 +993,770 @@ NAOS_TEST(after_removing_and_wrapping)
     amark_tree_set_range(g_doc, para, 0, 7);
     amark_tree_set_kind(g_doc, para, AMARK_KIND_HEADING,
                         AMARK_NODE_CLASS_AUTO);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, para, 1,
+                                               AMARK_HEADING_SETEXT),
+                        AMARK_ERROR_NONE);
     CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+}
+
+/* ---- ATTRIBUTE (6.5, 6.6, 6.7) ---- */
+
+/* Eight lines of ten bytes: "abcdefghi\n" eight times. */
+static const char k_full[] =
+    "abcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\n"
+    "abcdefghi\nabcdefghi\nabcdefghi\nabcdefghi\n";
+#define FULL_LENGTH (sizeof(k_full) - 1)
+
+/*
+ * The valid tree with every kind and every attribute. IDs in document
+ * order; the ranges follow the tree, not the bytes of k_full.
+ *
+ *   1 document [0,80)
+ *     2 heading [0,10) ATX 1
+ *       3 text [0,2)
+ *       4 emphasis [2,6)
+ *         5 strong [2,6)
+ *           6 text [2,6)
+ *       7 hard break [6,7)
+ *       8 soft break [7,8)
+ *       9 backslash escape [8,9)
+ *       10 character reference [9,10)
+ *     11 heading [10,14) setext 2
+ *     12 block quote [14,30)
+ *       13 list [14,22) bullet '-' tight
+ *         14 list item [14,22)
+ *           15 paragraph [14,22)
+ *             16 code span [14,16)
+ *             17 raw HTML [16,18)
+ *             18 autolink [18,20) URI
+ *             19 autolink [20,22) email
+ *       20 list [22,30) ordered ')' 7 loose
+ *         21 list item [22,30)
+ *           22 thematic break [22,24)
+ *           23 HTML block [24,30)
+ *     24 code block [30,40) fenced '`' 3, info [33,34)
+ *     25 code block [40,44) indented
+ *     26 link reference definition [44,56) label [45,46) dest [48,50)
+ *        title [51,54)
+ *     27 link reference definition [56,60) label [56,57) dest [58,58)
+ *     28 paragraph [60,79)
+ *       29 link [60,66) inline, dest [62,64) title [64,66)
+ *         30 text [60,61)
+ *       31 image [66,70) full -> 26
+ *         32 text [66,67)
+ *       33 link [70,74) collapsed -> 27
+ *       34 link [74,76) shortcut -> 26
+ *       35 image [76,78) inline, dest [77,77), no title
+ *       36 dialect inline [78,79) with data
+ *     37 dialect block [79,80) with data
+ */
+enum {
+    F_ROOT = 1,
+    F_ATX,
+    F_TEXT1,
+    F_EMPH,
+    F_STRONG,
+    F_TEXT2,
+    F_HARD,
+    F_SOFT,
+    F_ESCAPE,
+    F_CHARREF,
+    F_SETEXT,
+    F_QUOTE,
+    F_BULLET,
+    F_ITEM1,
+    F_PARA1,
+    F_CODE_SPAN,
+    F_RAW,
+    F_URI,
+    F_EMAIL,
+    F_ORDERED,
+    F_ITEM2,
+    F_BREAK,
+    F_HTML,
+    F_FENCED,
+    F_INDENTED,
+    F_DEF1,
+    F_DEF2,
+    F_PARA2,
+    F_LINK_INLINE,
+    F_TEXT3,
+    F_IMAGE_FULL,
+    F_TEXT4,
+    F_LINK_COLLAPSED,
+    F_LINK_SHORTCUT,
+    F_IMAGE_INLINE,
+    F_DINLINE,
+    F_DBLOCK,
+    F_COUNT = F_DBLOCK
+};
+
+static amark_range_t range_of(size_t start, size_t end)
+{
+    amark_range_t r;
+
+    r.start = start;
+    r.end = end;
+    return r;
+}
+
+/* The attribute element of node id, through the internal layout. */
+static amark_node_attr_t *attr_at(amark_node_id_t id)
+{
+    return (amark_node_attr_t *)amark_array_at(&g_doc->attrs,
+                                               node_at(id)->attr);
+}
+
+static void build_full(void)
+{
+    static const unsigned char k_data[] = {0xff, 0x00, 0x07};
+    amark_range_t a;
+    amark_range_t b;
+    amark_range_t c;
+
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&g_allocator,
+                                              (const unsigned char *)k_full,
+                                              FULL_LENGTH, 0, FULL_LENGTH,
+                                              "full.md", &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_HEADING, 0, 10), F_ATX);
+    NAOS_REQUIRE_UINT_EQ(add(F_ATX, AMARK_KIND_TEXT, 0, 2), F_TEXT1);
+    NAOS_REQUIRE_UINT_EQ(add(F_ATX, AMARK_KIND_EMPHASIS, 2, 6), F_EMPH);
+    NAOS_REQUIRE_UINT_EQ(add(F_EMPH, AMARK_KIND_STRONG, 2, 6), F_STRONG);
+    NAOS_REQUIRE_UINT_EQ(add(F_STRONG, AMARK_KIND_TEXT, 2, 6), F_TEXT2);
+    NAOS_REQUIRE_UINT_EQ(add(F_ATX, AMARK_KIND_HARD_BREAK, 6, 7), F_HARD);
+    NAOS_REQUIRE_UINT_EQ(add(F_ATX, AMARK_KIND_SOFT_BREAK, 7, 8), F_SOFT);
+    NAOS_REQUIRE_UINT_EQ(add(F_ATX, AMARK_KIND_BACKSLASH_ESCAPE, 8, 9),
+                         F_ESCAPE);
+    NAOS_REQUIRE_UINT_EQ(add(F_ATX, AMARK_KIND_CHARACTER_REFERENCE, 9, 10),
+                         F_CHARREF);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_HEADING, 10, 14), F_SETEXT);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_BLOCK_QUOTE, 14, 30),
+                         F_QUOTE);
+    NAOS_REQUIRE_UINT_EQ(add(F_QUOTE, AMARK_KIND_LIST, 14, 22), F_BULLET);
+    NAOS_REQUIRE_UINT_EQ(add(F_BULLET, AMARK_KIND_LIST_ITEM, 14, 22),
+                         F_ITEM1);
+    NAOS_REQUIRE_UINT_EQ(add(F_ITEM1, AMARK_KIND_PARAGRAPH, 14, 22),
+                         F_PARA1);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA1, AMARK_KIND_CODE_SPAN, 14, 16),
+                         F_CODE_SPAN);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA1, AMARK_KIND_RAW_HTML, 16, 18), F_RAW);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA1, AMARK_KIND_AUTOLINK, 18, 20), F_URI);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA1, AMARK_KIND_AUTOLINK, 20, 22), F_EMAIL);
+    NAOS_REQUIRE_UINT_EQ(add(F_QUOTE, AMARK_KIND_LIST, 22, 30), F_ORDERED);
+    NAOS_REQUIRE_UINT_EQ(add(F_ORDERED, AMARK_KIND_LIST_ITEM, 22, 30),
+                         F_ITEM2);
+    NAOS_REQUIRE_UINT_EQ(add(F_ITEM2, AMARK_KIND_THEMATIC_BREAK, 22, 24),
+                         F_BREAK);
+    NAOS_REQUIRE_UINT_EQ(add(F_ITEM2, AMARK_KIND_HTML_BLOCK, 24, 30),
+                         F_HTML);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_CODE_BLOCK, 30, 40),
+                         F_FENCED);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_CODE_BLOCK, 40, 44),
+                         F_INDENTED);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_LINK_REFERENCE_DEFINITION,
+                             44, 56),
+                         F_DEF1);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_LINK_REFERENCE_DEFINITION,
+                             56, 60),
+                         F_DEF2);
+    NAOS_REQUIRE_UINT_EQ(add(F_ROOT, AMARK_KIND_PARAGRAPH, 60, 79), F_PARA2);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA2, AMARK_KIND_LINK, 60, 66),
+                         F_LINK_INLINE);
+    NAOS_REQUIRE_UINT_EQ(add(F_LINK_INLINE, AMARK_KIND_TEXT, 60, 61),
+                         F_TEXT3);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA2, AMARK_KIND_IMAGE, 66, 70),
+                         F_IMAGE_FULL);
+    NAOS_REQUIRE_UINT_EQ(add(F_IMAGE_FULL, AMARK_KIND_TEXT, 66, 67),
+                         F_TEXT4);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA2, AMARK_KIND_LINK, 70, 74),
+                         F_LINK_COLLAPSED);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA2, AMARK_KIND_LINK, 74, 76),
+                         F_LINK_SHORTCUT);
+    NAOS_REQUIRE_UINT_EQ(add(F_PARA2, AMARK_KIND_IMAGE, 76, 78),
+                         F_IMAGE_INLINE);
+    NAOS_REQUIRE_UINT_EQ(add_class(F_PARA2, AMARK_KIND_DIALECT_MIN,
+                                   AMARK_NODE_CLASS_INLINE, 78, 79),
+                         F_DINLINE);
+    NAOS_REQUIRE_UINT_EQ(add_class(F_ROOT, AMARK_KIND_DIALECT_MIN + 1,
+                                   AMARK_NODE_CLASS_BLOCK, 79, 80),
+                         F_DBLOCK);
+    NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_doc), F_COUNT);
+
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, F_ATX, 1,
+                                               AMARK_HEADING_ATX),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, F_SETEXT, 2,
+                                               AMARK_HEADING_SETEXT),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_list(g_doc, F_BULLET,
+                                            AMARK_LIST_BULLET, '-', 0,
+                                            AMARK_LIST_TIGHT),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_list(g_doc, F_ORDERED,
+                                            AMARK_LIST_ORDERED, ')', 7,
+                                            AMARK_LIST_LOOSE),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_autolink(g_doc, F_URI,
+                                                AMARK_AUTOLINK_URI),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_autolink(g_doc, F_EMAIL,
+                                                AMARK_AUTOLINK_EMAIL),
+                        AMARK_ERROR_NONE);
+    a = range_of(33, 34);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_code_block(g_doc, F_FENCED,
+                                                  AMARK_CODE_BLOCK_FENCED,
+                                                  '`', 3, &a),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_code_block(g_doc, F_INDENTED,
+                                                  AMARK_CODE_BLOCK_INDENTED,
+                                                  0, 0, NULL),
+                        AMARK_ERROR_NONE);
+    a = range_of(45, 46);
+    b = range_of(48, 50);
+    c = range_of(51, 54);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_definition(g_doc, F_DEF1, &a, &b, &c),
+                        AMARK_ERROR_NONE);
+    a = range_of(56, 57);
+    b = range_of(58, 58);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_definition(g_doc, F_DEF2, &a, &b,
+                                                  NULL),
+                        AMARK_ERROR_NONE);
+    a = range_of(62, 64);
+    b = range_of(64, 66);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, F_LINK_INLINE,
+                                            AMARK_LINK_INLINE, &a, &b,
+                                            AMARK_NODE_NONE),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, F_IMAGE_FULL,
+                                            AMARK_LINK_FULL, NULL, NULL,
+                                            F_DEF1),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, F_LINK_COLLAPSED,
+                                            AMARK_LINK_COLLAPSED, NULL, NULL,
+                                            F_DEF2),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, F_LINK_SHORTCUT,
+                                            AMARK_LINK_SHORTCUT, NULL, NULL,
+                                            F_DEF1),
+                        AMARK_ERROR_NONE);
+    a = range_of(77, 77);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, F_IMAGE_INLINE,
+                                            AMARK_LINK_INLINE, &a, NULL,
+                                            AMARK_NODE_NONE),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, F_DINLINE, k_data,
+                                                    sizeof(k_data)),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, F_DBLOCK, k_data,
+                                                    sizeof(k_data)),
+                        AMARK_ERROR_NONE);
+}
+
+NAOS_TEST(full_tree_has_no_violation)
+{
+    amark_node_id_t id;
+    amark_kind_t kind;
+    unsigned kinds = 0;
+
+    build_full();
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    for (id = F_ROOT; id <= F_COUNT; id++) {
+        CHECK_SUBTREE(id, AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    }
+    /* The tree holds all 22 CommonMark kinds. */
+    for (kind = AMARK_KIND_DOCUMENT; kind <= AMARK_KIND_CHARACTER_REFERENCE;
+         kind++) {
+        int found = 0;
+
+        if (!amark_kind_is_core(kind)) {
+            continue;
+        }
+        for (id = F_ROOT; id <= F_COUNT; id++) {
+            if (node_at(id)->kind == kind) {
+                found = 1;
+            }
+        }
+        NAOS_CHECK_INT_EQ(found, 1);
+        kinds++;
+    }
+    NAOS_CHECK_UINT_EQ(kinds, 22);
+}
+
+/*
+ * Each mutation breaks one condition of node id's attribute element; the
+ * element is restored after each check.
+ */
+static amark_node_attr_t g_saved_attr;
+
+static void save_attr(amark_node_id_t id)
+{
+    g_saved_attr = *attr_at(id);
+}
+
+static void expect_attribute(amark_node_id_t id)
+{
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, id);
+    CHECK_SUBTREE(id, AMARK_TREE_VIOLATION_ATTRIBUTE, id);
+    *attr_at(id) = g_saved_attr;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+}
+
+static void expect_valid(amark_node_id_t id)
+{
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    *attr_at(id) = g_saved_attr;
+}
+
+/* The attribute index of node id is 0 or out of the attribute array. */
+static void check_attr_indices(amark_node_id_t id)
+{
+    uint32_t saved = node_at(id)->attr;
+    size_t len = amark_array_len(&g_doc->attrs);
+
+    node_at(id)->attr = 0;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, id);
+    node_at(id)->attr = (uint32_t)len;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, id);
+    CHECK_SUBTREE(id, AMARK_TREE_VIOLATION_ATTRIBUTE, id);
+    node_at(id)->attr = UINT32_MAX;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, id);
+    node_at(id)->attr = saved;
+}
+
+NAOS_TEST(attribute_heading_conditions)
+{
+    build_full();
+    check_attr_indices(F_ATX);
+    check_attr_indices(F_SETEXT);
+
+    save_attr(F_ATX);
+    attr_at(F_ATX)->heading.level = 0;
+    expect_attribute(F_ATX);
+    attr_at(F_ATX)->heading.level = 7;
+    expect_attribute(F_ATX);
+    attr_at(F_ATX)->heading.level = 6;
+    expect_valid(F_ATX);
+    attr_at(F_ATX)->heading.style = AMARK_HEADING_STYLE_NONE;
+    expect_attribute(F_ATX);
+    attr_at(F_ATX)->heading.style = (amark_heading_style_t)3;
+    expect_attribute(F_ATX);
+
+    save_attr(F_SETEXT);
+    attr_at(F_SETEXT)->heading.level = 3;
+    expect_attribute(F_SETEXT);
+    attr_at(F_SETEXT)->heading.level = 0;
+    expect_attribute(F_SETEXT);
+    attr_at(F_SETEXT)->heading.level = 1;
+    expect_valid(F_SETEXT);
+}
+
+NAOS_TEST(attribute_list_conditions)
+{
+    build_full();
+    check_attr_indices(F_BULLET);
+    check_attr_indices(F_ORDERED);
+
+    save_attr(F_BULLET);
+    attr_at(F_BULLET)->list.type = AMARK_LIST_TYPE_NONE;
+    expect_attribute(F_BULLET);
+    attr_at(F_BULLET)->list.type = (amark_list_type_t)3;
+    expect_attribute(F_BULLET);
+    attr_at(F_BULLET)->list.marker = '.';
+    expect_attribute(F_BULLET);
+    attr_at(F_BULLET)->list.marker = 'x';
+    expect_attribute(F_BULLET);
+    attr_at(F_BULLET)->list.marker = '\0';
+    expect_attribute(F_BULLET);
+    attr_at(F_BULLET)->list.marker = '+';
+    expect_valid(F_BULLET);
+    attr_at(F_BULLET)->list.marker = '*';
+    expect_valid(F_BULLET);
+    attr_at(F_BULLET)->list.spacing = AMARK_LIST_SPACING_NONE;
+    expect_attribute(F_BULLET);
+    attr_at(F_BULLET)->list.spacing = (amark_list_spacing_t)3;
+    expect_attribute(F_BULLET);
+    attr_at(F_BULLET)->list.spacing = AMARK_LIST_LOOSE;
+    expect_valid(F_BULLET);
+
+    save_attr(F_ORDERED);
+    attr_at(F_ORDERED)->list.marker = '-';
+    expect_attribute(F_ORDERED);
+    attr_at(F_ORDERED)->list.marker = '(';
+    expect_attribute(F_ORDERED);
+    attr_at(F_ORDERED)->list.marker = '.';
+    expect_valid(F_ORDERED);
+    attr_at(F_ORDERED)->list.spacing = AMARK_LIST_SPACING_NONE;
+    expect_attribute(F_ORDERED);
+}
+
+NAOS_TEST(attribute_code_block_conditions)
+{
+    amark_opt_range_t *info;
+
+    build_full();
+    check_attr_indices(F_FENCED);
+    check_attr_indices(F_INDENTED);
+
+    save_attr(F_FENCED);
+    info = &attr_at(F_FENCED)->code_block.info;
+    attr_at(F_FENCED)->code_block.style = AMARK_CODE_BLOCK_STYLE_NONE;
+    expect_attribute(F_FENCED);
+    attr_at(F_FENCED)->code_block.style = (amark_code_block_style_t)3;
+    expect_attribute(F_FENCED);
+    attr_at(F_FENCED)->code_block.fence_char = '-';
+    expect_attribute(F_FENCED);
+    attr_at(F_FENCED)->code_block.fence_char = '\0';
+    expect_attribute(F_FENCED);
+    attr_at(F_FENCED)->code_block.fence_char = '~';
+    expect_valid(F_FENCED);
+    attr_at(F_FENCED)->code_block.fence_length = 2;
+    expect_attribute(F_FENCED);
+    attr_at(F_FENCED)->code_block.fence_length = 0;
+    expect_attribute(F_FENCED);
+    attr_at(F_FENCED)->code_block.fence_length = 1000;
+    expect_valid(F_FENCED);
+    /* The info outside the node, reversed, and at the node's edges. */
+    info->start = 29;
+    expect_attribute(F_FENCED);
+    info->end = 41;
+    expect_attribute(F_FENCED);
+    info->end = FULL_LENGTH + 1;
+    expect_attribute(F_FENCED);
+    info->start = 34;
+    info->end = 33;
+    expect_attribute(F_FENCED);
+    info->start = 30;
+    info->end = 40;
+    expect_valid(F_FENCED);
+    info->start = 40;
+    info->end = 40;
+    expect_valid(F_FENCED);
+    info->present = false;
+    expect_valid(F_FENCED);
+
+    /* An indented code block: the fence is not checked; a range it holds
+     * must still be a range in the content. */
+    save_attr(F_INDENTED);
+    info = &attr_at(F_INDENTED)->code_block.info;
+    attr_at(F_INDENTED)->code_block.style = AMARK_CODE_BLOCK_STYLE_NONE;
+    expect_attribute(F_INDENTED);
+    info->present = true;
+    info->start = 42;
+    info->end = 41;
+    expect_attribute(F_INDENTED);
+    info->present = true;
+    info->start = 42;
+    info->end = FULL_LENGTH + 1;
+    expect_attribute(F_INDENTED);
+}
+
+NAOS_TEST(attribute_link_conditions)
+{
+    static const amark_node_id_t k_links[] = {
+        F_LINK_INLINE, F_IMAGE_FULL, F_LINK_COLLAPSED, F_LINK_SHORTCUT,
+        F_IMAGE_INLINE
+    };
+    amark_node_attr_t *a;
+    size_t i;
+
+    build_full();
+    for (i = 0; i < sizeof(k_links) / sizeof(k_links[0]); i++) {
+        check_attr_indices(k_links[i]);
+        save_attr(k_links[i]);
+        attr_at(k_links[i])->link.form = AMARK_LINK_FORM_NONE;
+        expect_attribute(k_links[i]);
+        save_attr(k_links[i]);
+        attr_at(k_links[i])->link.form = (amark_link_form_t)5;
+        expect_attribute(k_links[i]);
+    }
+
+    /* The inline form: dest and title inside the node, no target. */
+    save_attr(F_LINK_INLINE);
+    a = attr_at(F_LINK_INLINE);
+    a->link.destination.start = 59;
+    expect_attribute(F_LINK_INLINE);
+    a->link.destination.end = 67;
+    expect_attribute(F_LINK_INLINE);
+    a->link.destination.start = 64;
+    a->link.destination.end = 63;
+    expect_attribute(F_LINK_INLINE);
+    a->link.title.start = 59;
+    expect_attribute(F_LINK_INLINE);
+    a->link.title.end = 67;
+    expect_attribute(F_LINK_INLINE);
+    a->link.title.start = 66;
+    a->link.title.end = 65;
+    expect_attribute(F_LINK_INLINE);
+    a->link.definition = F_DEF1;
+    expect_attribute(F_LINK_INLINE);
+    a->link.destination.start = 60;
+    a->link.title.end = 66;
+    expect_valid(F_LINK_INLINE);
+    a->link.title.present = false;
+    expect_valid(F_LINK_INLINE);
+
+    /* The reference forms: a link reference definition as the target, no
+     * dest or title. */
+    save_attr(F_IMAGE_FULL);
+    a = attr_at(F_IMAGE_FULL);
+    a->link.definition = AMARK_NODE_NONE;
+    expect_attribute(F_IMAGE_FULL);
+    a->link.definition = F_PARA2;
+    expect_attribute(F_IMAGE_FULL);
+    a->link.definition = F_ROOT;
+    expect_attribute(F_IMAGE_FULL);
+    a->link.definition = F_COUNT + 1;
+    expect_attribute(F_IMAGE_FULL);
+    a->link.definition = UINT32_MAX;
+    expect_attribute(F_IMAGE_FULL);
+    a->link.destination.present = true;
+    a->link.destination.start = 67;
+    a->link.destination.end = 68;
+    expect_attribute(F_IMAGE_FULL);
+    a->link.title.present = true;
+    a->link.title.start = 67;
+    a->link.title.end = 68;
+    expect_attribute(F_IMAGE_FULL);
+    a->link.definition = F_DEF2;
+    expect_valid(F_IMAGE_FULL);
+
+    save_attr(F_LINK_SHORTCUT);
+    attr_at(F_LINK_SHORTCUT)->link.definition = F_LINK_SHORTCUT;
+    expect_attribute(F_LINK_SHORTCUT);
+
+    /* A target that was removed is not a link reference definition: the
+     * link that names it violates. */
+    amark_tree_remove(g_doc, F_DEF2);
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, F_LINK_COLLAPSED);
+    CHECK_SUBTREE(F_LINK_COLLAPSED, AMARK_TREE_VIOLATION_ATTRIBUTE,
+                  F_LINK_COLLAPSED);
+    attr_at(F_LINK_COLLAPSED)->link.definition = F_DEF1;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+}
+
+NAOS_TEST(attribute_definition_conditions)
+{
+    amark_node_attr_t *a;
+
+    build_full();
+    check_attr_indices(F_DEF1);
+    check_attr_indices(F_DEF2);
+
+    save_attr(F_DEF1);
+    a = attr_at(F_DEF1);
+    a->definition.label.present = false;
+    expect_attribute(F_DEF1);
+    a->definition.destination.present = false;
+    expect_attribute(F_DEF1);
+    a->definition.label.start = 43;
+    expect_attribute(F_DEF1);
+    a->definition.label.end = 57;
+    expect_attribute(F_DEF1);
+    a->definition.destination.start = 43;
+    expect_attribute(F_DEF1);
+    a->definition.destination.end = 57;
+    expect_attribute(F_DEF1);
+    a->definition.destination.start = 50;
+    a->definition.destination.end = 48;
+    expect_attribute(F_DEF1);
+    a->definition.title.start = 43;
+    expect_attribute(F_DEF1);
+    a->definition.title.end = 57;
+    expect_attribute(F_DEF1);
+    a->definition.title.start = 54;
+    a->definition.title.end = 51;
+    expect_attribute(F_DEF1);
+    a->definition.title.present = false;
+    expect_valid(F_DEF1);
+    a->definition.label.start = 44;
+    a->definition.title.end = 56;
+    expect_valid(F_DEF1);
+}
+
+NAOS_TEST(attribute_autolink_conditions)
+{
+    build_full();
+    check_attr_indices(F_URI);
+    check_attr_indices(F_EMAIL);
+
+    save_attr(F_URI);
+    attr_at(F_URI)->autolink.type = AMARK_AUTOLINK_TYPE_NONE;
+    expect_attribute(F_URI);
+    attr_at(F_URI)->autolink.type = (amark_autolink_type_t)3;
+    expect_attribute(F_URI);
+}
+
+NAOS_TEST(attribute_of_dialect_kinds_not_checked)
+{
+    build_full();
+    /* Whatever the bytes of a dialect attribute are. */
+    attr_at(F_DINLINE)->dialect.size = SIZE_MAX;
+    attr_at(F_DBLOCK)->dialect.data = NULL;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    /* A dialect node without an attribute. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, F_DINLINE, NULL,
+                                                    0),
+                        AMARK_ERROR_NONE);
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    /* Kinds without attributes are not checked either. */
+    node_at(F_PARA2)->attr = UINT32_MAX;
+    node_at(F_TEXT1)->attr = UINT32_MAX;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    node_at(F_PARA2)->attr = 0;
+    node_at(F_TEXT1)->attr = 0;
+}
+
+NAOS_TEST(attribute_order_and_first_violation)
+{
+    build_full();
+
+    /* NESTING before ATTRIBUTE on one node. */
+    attr_at(F_ATX)->heading.level = 0;
+    node_at(F_ATX)->is_inline = 1;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NESTING, F_ATX);
+    node_at(F_ATX)->is_inline = 0;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, F_ATX);
+
+    /* Two attribute violations: the first in document order. */
+    attr_at(F_URI)->autolink.type = AMARK_AUTOLINK_TYPE_NONE;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, F_ATX);
+    attr_at(F_ATX)->heading.level = 1;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, F_URI);
+
+    /* An attribute violation after a range violation in document order. */
+    node_at(F_LINK_SHORTCUT)->end_line += 1;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, F_URI);
+    attr_at(F_URI)->autolink.type = AMARK_AUTOLINK_URI;
+    CHECK_TREE(AMARK_TREE_VIOLATION_LINES, F_LINK_SHORTCUT);
+    node_at(F_LINK_SHORTCUT)->end_line -= 1;
+
+    /* The subtree check finds attribute violations inside only. */
+    attr_at(F_IMAGE_FULL)->link.definition = F_PARA2;
+    CHECK_SUBTREE(F_PARA2, AMARK_TREE_VIOLATION_ATTRIBUTE, F_IMAGE_FULL);
+    CHECK_SUBTREE(F_QUOTE, AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    CHECK_SUBTREE(F_LINK_INLINE, AMARK_TREE_VIOLATION_NONE,
+                  AMARK_NODE_NONE);
+    attr_at(F_IMAGE_FULL)->link.definition = F_DEF1;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+}
+
+/* ---- large trees and cycles (6.10, 6.11) ---- */
+
+/*
+ * The number of visits is not observed through a counter: the walk returns
+ * LINK as soon as it has visited more nodes than were created, so a NONE
+ * result over a tree means the walk visited at most that many nodes. The
+ * cycle cases show the bound is enforced: a walk that would go on forever
+ * stops at visit count + 1, on the node the parity of that visit names.
+ */
+#define LARGE_COUNT 1000000u
+
+NAOS_TEST(large_wide_tree)
+{
+    amark_node_id_t i;
+
+    create_doc();
+    for (i = 2; i <= LARGE_COUNT; i++) {
+        add(N_ROOT, AMARK_KIND_THEMATIC_BREAK, 12, 12);
+    }
+    NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_doc), LARGE_COUNT);
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    CHECK_SUBTREE(N_ROOT, AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    CHECK_SUBTREE(LARGE_COUNT, AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+
+    /* The last child names the first as its next sibling: found on the
+     * root, whose last child has a next sibling. */
+    node_at(LARGE_COUNT)->next_sibling = 2;
+    CHECK_TREE(AMARK_TREE_VIOLATION_LINK, N_ROOT);
+    node_at(LARGE_COUNT)->next_sibling = AMARK_NODE_NONE;
+    /* A violation on the last node is found after the whole walk. */
+    node_at(LARGE_COUNT)->end_line += 1;
+    CHECK_TREE(AMARK_TREE_VIOLATION_LINES, LARGE_COUNT);
+    node_at(LARGE_COUNT)->end_line -= 1;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+}
+
+NAOS_TEST(large_deep_chain)
+{
+    amark_node_id_t i;
+    amark_node_id_t parent = N_ROOT;
+
+    create_doc();
+    for (i = 2; i <= LARGE_COUNT; i++) {
+        parent = add(parent, AMARK_KIND_BLOCK_QUOTE, 0, 12);
+    }
+    NAOS_REQUIRE_UINT_EQ(parent, LARGE_COUNT);
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    CHECK_SUBTREE(2, AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+
+    /* A violation at the bottom of the chain. */
+    node_at(LARGE_COUNT)->end = 13;
+    CHECK_TREE(AMARK_TREE_VIOLATION_BOUNDS, LARGE_COUNT);
+    node_at(LARGE_COUNT)->end = 12;
+
+    /*
+     * Nodes 2 and 3 name each other as parent, first and last child: every
+     * local link condition of both holds, so the subtree check of node 2
+     * goes round 2, 3, 2, ... until the visit count passes the number of
+     * nodes created; visit LARGE_COUNT + 1 (odd) is on node 2.
+     */
+    node_at(2)->parent = 3;
+    node_at(3)->first_child = 2;
+    node_at(3)->last_child = 2;
+    CHECK_SUBTREE(2, AMARK_TREE_VIOLATION_LINK, 2);
+    CHECK_SUBTREE(3, AMARK_TREE_VIOLATION_LINK, 3);
+    CHECK_TREE(AMARK_TREE_VIOLATION_LINK, N_ROOT);
+    node_at(2)->parent = N_ROOT;
+    node_at(3)->first_child = 4;
+    node_at(3)->last_child = 4;
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+}
+
+NAOS_TEST(subtree_cycle_of_two_parents)
+{
+    amark_node_id_t a;
+    amark_node_id_t b;
+
+    build_valid();
+    a = add(N_ROOT, AMARK_KIND_PARAGRAPH, 12, 12);
+    b = add(a, AMARK_KIND_PARAGRAPH, 12, 12);
+    NAOS_REQUIRE_UINT_EQ(b, N_COUNT + 2);
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+
+    /* Unlink a from the root, then make a and b each other's parent. */
+    node_at(N_BREAK)->next_sibling = AMARK_NODE_NONE;
+    node_at(N_ROOT)->last_child = N_BREAK;
+    node_at(a)->prev_sibling = AMARK_NODE_NONE;
+    node_at(a)->parent = b;
+    node_at(b)->first_child = a;
+    node_at(b)->last_child = a;
+    /* Neither is reachable from the root. */
+    CHECK_TREE(AMARK_TREE_VIOLATION_NONE, AMARK_NODE_NONE);
+    /* The walk alternates a, b, a, ...; visit N_COUNT + 3 (odd) stops it on
+     * the node it started from. */
+    CHECK_SUBTREE(a, AMARK_TREE_VIOLATION_LINK, a);
+    CHECK_SUBTREE(b, AMARK_TREE_VIOLATION_LINK, b);
+    check_without_effects();
+}
+
+NAOS_TEST(broken_attribute_indices_end_safely)
+{
+    build_full();
+    /* Every attributed node with an index past the attribute array, and
+     * every reference with a target past the node array. */
+    node_at(F_ATX)->attr = UINT32_MAX;
+    node_at(F_SETEXT)->attr = UINT32_MAX - 1;
+    node_at(F_BULLET)->attr = (uint32_t)amark_array_len(&g_doc->attrs);
+    node_at(F_FENCED)->attr = 0x7fffffffu;
+    attr_at(F_IMAGE_FULL)->link.definition = UINT32_MAX;
+    attr_at(F_LINK_COLLAPSED)->link.definition = F_COUNT + 1;
+    node_at(F_DEF1)->attr = UINT32_MAX;
+    node_at(F_URI)->attr = UINT32_MAX;
+    CHECK_TREE(AMARK_TREE_VIOLATION_ATTRIBUTE, F_ATX);
+    CHECK_SUBTREE(F_PARA2, AMARK_TREE_VIOLATION_ATTRIBUTE, F_IMAGE_FULL);
+    CHECK_SUBTREE(F_QUOTE, AMARK_TREE_VIOLATION_ATTRIBUTE, F_BULLET);
+    CHECK_SUBTREE(F_URI, AMARK_TREE_VIOLATION_ATTRIBUTE, F_URI);
 }
 
 NAOS_SUITE(tree_check,
@@ -1003,7 +1784,20 @@ NAOS_SUITE(tree_check,
     NAOS_ADD_TEST(after_set_range_and_set_kind),
     NAOS_ADD_TEST(after_remove),
     NAOS_ADD_TEST(after_wrap),
-    NAOS_ADD_TEST(after_removing_and_wrapping)
+    NAOS_ADD_TEST(after_removing_and_wrapping),
+    NAOS_ADD_TEST(full_tree_has_no_violation),
+    NAOS_ADD_TEST(attribute_heading_conditions),
+    NAOS_ADD_TEST(attribute_list_conditions),
+    NAOS_ADD_TEST(attribute_code_block_conditions),
+    NAOS_ADD_TEST(attribute_link_conditions),
+    NAOS_ADD_TEST(attribute_definition_conditions),
+    NAOS_ADD_TEST(attribute_autolink_conditions),
+    NAOS_ADD_TEST(attribute_of_dialect_kinds_not_checked),
+    NAOS_ADD_TEST(attribute_order_and_first_violation),
+    NAOS_ADD_TEST(large_wide_tree),
+    NAOS_ADD_TEST(large_deep_chain),
+    NAOS_ADD_TEST(subtree_cycle_of_two_parents),
+    NAOS_ADD_TEST(broken_attribute_indices_end_safely)
 )
 
 NAOS_MAIN(

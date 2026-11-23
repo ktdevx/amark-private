@@ -78,6 +78,26 @@ typedef struct amark_tree_check_result {
  *   NESTING: a child of the document is a block; a child of an inline is an
  *     inline; a CommonMark kind is an inline exactly when its ID is at least
  *     AMARK_KIND_TEXT.
+ *   ATTRIBUTE: a heading, list, code block, link, image, link reference
+ *     definition or autolink has an attribute element (an index from 1 to
+ *     below the length of the attribute array), and:
+ *     - heading: ATX with level 1 to 6, or setext with level 1 or 2;
+ *     - list: bullet with marker '-', '+' or '*', or ordered with marker
+ *       '.' or ')'; tight or loose;
+ *     - code block: indented, or fenced with fence character '`' or '~',
+ *       fence length at least 3 and the info (if written) inside the node;
+ *     - link and image: the inline form with the destination and title (if
+ *       written) inside the node and no target; or a reference form (full,
+ *       collapsed, shortcut) whose target is a node created (at most the
+ *       number of nodes created) of kind link reference definition, without
+ *       a destination or a title;
+ *     - link reference definition: the label and the destination written,
+ *       and the label, destination and title (if written) inside the node;
+ *     - autolink: a URI or an email address;
+ *     - every range an attribute holds: start <= end <= the content length.
+ *     The attributes of dialect kinds and of the other kinds are not read.
+ *     A link to a definition inside a removed subtree is not found (the
+ *     definition keeps its kind).
  *
  * If doc is NULL or has no root element, returns AMARK_TREE_VIOLATION_ROOT
  * with AMARK_NODE_NONE.

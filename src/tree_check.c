@@ -109,9 +109,118 @@ static bool links_hold(const amark_document_t *doc, size_t count,
 }
 
 /*
- * Checks node id from LINK to NESTING. The ranges and indices of the nodes
- * read after LINK (parent, previous and next sibling) are known to be in
- * range by then.
+ * A range an attribute holds: absent, or start <= end <= the content
+ * length. inside: a present range must also lie inside the range of n.
+ */
+static bool range_holds(const amark_document_t *doc,
+                        const amark_opt_range_t *r, const amark_node_t *n,
+                        bool inside)
+{
+    if (!r->present) {
+        return true;
+    }
+    if (r->start > r->end || r->end > doc->content_length) {
+        return false;
+    }
+    return !inside || (n->start <= r->start && r->end <= n->end);
+}
+
+/*
+ * The ATTRIBUTE conditions of n (count nodes created). The attribute index
+ * is compared with the length of the attribute array before the element is
+ * read, and a link target with the number of nodes created before its kind
+ * is read. The attributes of dialect kinds, and of kinds without
+ * attributes, are not checked.
+ */
+static bool attribute_holds(const amark_document_t *doc, size_t count,
+                            const amark_node_t *n)
+{
+    const amark_node_attr_t *a;
+
+    switch (n->kind) {
+    case AMARK_KIND_HEADING:
+    case AMARK_KIND_LIST:
+    case AMARK_KIND_CODE_BLOCK:
+    case AMARK_KIND_LINK:
+    case AMARK_KIND_IMAGE:
+    case AMARK_KIND_LINK_REFERENCE_DEFINITION:
+    case AMARK_KIND_AUTOLINK:
+        break;
+    default:
+        return true;
+    }
+    if (n->attr == 0 || n->attr >= amark_array_len(&doc->attrs)) {
+        return false;
+    }
+    a = (const amark_node_attr_t *)amark_array_at(&doc->attrs, n->attr);
+
+    switch (n->kind) {
+    case AMARK_KIND_HEADING:
+        if (a->heading.style == AMARK_HEADING_ATX) {
+            return a->heading.level >= 1 && a->heading.level <= 6;
+        }
+        if (a->heading.style == AMARK_HEADING_SETEXT) {
+            return a->heading.level >= 1 && a->heading.level <= 2;
+        }
+        return false;
+    case AMARK_KIND_LIST:
+        if (a->list.spacing != AMARK_LIST_TIGHT &&
+            a->list.spacing != AMARK_LIST_LOOSE) {
+            return false;
+        }
+        if (a->list.type == AMARK_LIST_BULLET) {
+            return a->list.marker == '-' || a->list.marker == '+' ||
+                   a->list.marker == '*';
+        }
+        if (a->list.type == AMARK_LIST_ORDERED) {
+            return a->list.marker == '.' || a->list.marker == ')';
+        }
+        return false;
+    case AMARK_KIND_CODE_BLOCK:
+        if (a->code_block.style == AMARK_CODE_BLOCK_INDENTED) {
+            return range_holds(doc, &a->code_block.info, n, false);
+        }
+        if (a->code_block.style == AMARK_CODE_BLOCK_FENCED) {
+            return (a->code_block.fence_char == '`' ||
+                    a->code_block.fence_char == '~') &&
+                   a->code_block.fence_length >= 3 &&
+                   range_holds(doc, &a->code_block.info, n, true);
+        }
+        return false;
+    case AMARK_KIND_LINK:
+    case AMARK_KIND_IMAGE:
+        if (a->link.form == AMARK_LINK_INLINE) {
+            return a->link.definition == AMARK_NODE_NONE &&
+                   range_holds(doc, &a->link.destination, n, true) &&
+                   range_holds(doc, &a->link.title, n, true);
+        }
+        if (a->link.form == AMARK_LINK_FULL ||
+            a->link.form == AMARK_LINK_COLLAPSED ||
+            a->link.form == AMARK_LINK_SHORTCUT) {
+            /* A removed definition has kind AMARK_KIND_NONE. */
+            return a->link.definition != AMARK_NODE_NONE &&
+                   a->link.definition <= count &&
+                   at(doc, a->link.definition)->kind ==
+                       AMARK_KIND_LINK_REFERENCE_DEFINITION &&
+                   !a->link.destination.present && !a->link.title.present;
+        }
+        return false;
+    case AMARK_KIND_LINK_REFERENCE_DEFINITION:
+        return a->definition.label.present &&
+               a->definition.destination.present &&
+               range_holds(doc, &a->definition.label, n, true) &&
+               range_holds(doc, &a->definition.destination, n, true) &&
+               range_holds(doc, &a->definition.title, n, true);
+    default: /* AMARK_KIND_AUTOLINK */
+        return a->autolink.type == AMARK_AUTOLINK_URI ||
+               a->autolink.type == AMARK_AUTOLINK_EMAIL;
+    }
+}
+
+/*
+ * Checks node id from LINK to ATTRIBUTE. The ranges and indices of the
+ * nodes read after LINK (parent, previous and next sibling) are known to be
+ * in range by then.
  */
 static amark_tree_violation_t check_node(const amark_document_t *doc,
                                          size_t count, amark_node_id_t id,
@@ -166,7 +275,9 @@ static amark_tree_violation_t check_node(const amark_document_t *doc,
         return AMARK_TREE_VIOLATION_NESTING;
     }
 
-    /* The ATTRIBUTE conditions come here, last. */
+    if (!attribute_holds(doc, count, n)) {
+        return AMARK_TREE_VIOLATION_ATTRIBUTE;
+    }
     return AMARK_TREE_VIOLATION_NONE;
 }
 
@@ -176,6 +287,12 @@ static amark_tree_violation_t check_node(const amark_document_t *doc,
  * sibling, and that node has already checked the link back, so the walk
  * climbs back along the path it came down; the counts still bound both the
  * nodes reached and the steps up by the number of nodes created.
+ *
+ * The visit count guard is not only a backstop: in a subtree check, the
+ * relations of top with nodes outside the subtree are checked only locally,
+ * so a cycle can pass every link condition. For example, two nodes that
+ * name each other as parent and as only child make the walk go round them
+ * until the visit count passes the number of nodes created.
  */
 static amark_tree_check_result_t walk(const amark_document_t *doc,
                                       size_t count, amark_node_id_t top)
