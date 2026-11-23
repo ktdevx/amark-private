@@ -9,6 +9,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include <amark/error.h>
+#include <amark/tree.h>
+
+#include "arena.h"
 #include "document.h"
 #include "parse_data.h"
 
@@ -32,7 +36,12 @@
  *   3. each code point is folded with amark_unicode_fold.
  * Backslash escapes and character references are compared as written.
  *
- * None of these functions allocates, recurses or fails.
+ * None of the label functions allocates, recurses or fails.
+ *
+ * The definition table holds one entry per normalized label: the link
+ * reference definition that comes first in the document. It lives in the
+ * document's arena and is set on the parse data, so it can be used until the
+ * document is destroyed and is released with it.
  */
 
 /* The largest number of characters (code points) inside the brackets. */
@@ -63,5 +72,32 @@ bool amark_label_scan(const amark_document_t *doc, size_t open, size_t limit,
 int amark_label_compare(const amark_document_t *doc,
                         size_t a_start, size_t a_end,
                         size_t b_start, size_t b_end);
+
+/*
+ * Builds the definition table of doc, which must have parse data, from the
+ * count entries, which are in document order (increasing node IDs). Sorts a
+ * copy of them by normalized label and then by node ID with a bottom-up merge
+ * sort (no recursion; O(count log count) comparisons), keeps the first entry
+ * of each label, copies the result to the document's arena and sets it on
+ * the parse data. The working arrays come from scratch. Allocates nothing if
+ * count is 0 (the table is then empty).
+ *
+ * On failure, returns AMARK_ERROR_NOMEM or AMARK_ERROR_LIMIT_EXCEEDED and
+ * leaves the parse data unchanged; what was allocated stays in scratch and
+ * in the document's arena and is released with them.
+ */
+amark_error_t amark_definitions_build(amark_document_t *doc,
+                                      amark_arena_t *scratch,
+                                      const amark_definition_entry_t *entries,
+                                      size_t count);
+
+/*
+ * Returns the node of the definition whose label is equal to the label
+ * [label_start, label_end) after normalizing both, or AMARK_NODE_NONE if
+ * there is none, if the table is empty or if doc has no parse data. Binary
+ * search; allocates nothing.
+ */
+amark_node_id_t amark_definitions_find(const amark_document_t *doc,
+                                       size_t label_start, size_t label_end);
 
 #endif /* AMARK_DEFINITION_H */

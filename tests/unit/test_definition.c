@@ -10,9 +10,13 @@
  * records) and comparing two labels after normalizing them (case folding,
  * one code point folding to several, collapsing white space, escapes and
  * character references compared as written, U+0000 and ill-formed bytes
- * compared as U+FFFD), without allocating.
+ * compared as U+FFFD), without allocating; and building and searching the
+ * definition table (the first of several definitions with the same label
+ * wins, misses, an empty table, results that do not depend on the order of
+ * the labels, thousands of definitions, and allocation failures).
  */
 
+#include "arena.h"
 #include "definition.h"
 #include "document.h"
 #include "line.h"
@@ -23,6 +27,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 /*
@@ -30,7 +35,7 @@
  * creates is kept in g_doc, and teardown destroys it and checks that no
  * block is left.
  */
-#define BUFFER_SIZE 8192
+#define BUFFER_SIZE 65536
 
 static amark_test_alloc_t g_state;
 static amark_allocator_t g_allocator;
@@ -562,6 +567,507 @@ NAOS_TEST(compare_long_labels)
                                           g_length - 1), 1);
 }
 
+/* ---- the definition table ---------------------------------------------- */
+
+/*
+ * Fixture of the table tests: the counting fixture plus a scratch arena
+ * (released in teardown, before the leak check) and the definitions and
+ * queries the test writes into g_buffer.
+ */
+#define MAX_ENTRIES 4096
+
+typedef struct text_range {
+    size_t start;
+    size_t end;
+} text_range_t;
+
+static amark_arena_t g_scratch;
+static amark_definition_entry_t g_entries[MAX_ENTRIES];
+static size_t g_count;
+static text_range_t g_queries[MAX_ENTRIES];
+static size_t g_query_count;
+
+NAOS_SETUP(table)
+{
+    amark_test_alloc_init(&g_state);
+    g_allocator = amark_test_allocator(&g_state);
+    g_doc = NULL;
+    g_length = 0;
+    g_count = 0;
+    g_query_count = 0;
+    amark_arena_init(&g_scratch, &g_allocator);
+}
+
+NAOS_TEARDOWN(table)
+{
+    amark_arena_deinit(&g_scratch);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+/* Appends text and a line ending; returns the range of text. */
+static text_range_t add_text(const char *text, size_t length)
+{
+    text_range_t range;
+
+    range.start = g_length;
+    append(text, length);
+    range.end = g_length;
+    APPEND("\n");
+    return range;
+}
+
+/* Adds a definition whose label is text; its node is the next ID. */
+static void add_definition(const char *text, size_t length)
+{
+    text_range_t range = add_text(text, length);
+
+    NAOS_REQUIRE_UINT_LT(g_count, MAX_ENTRIES);
+    g_entries[g_count].node = (amark_node_id_t)(g_count + 1);
+    g_entries[g_count].label_start = range.start;
+    g_entries[g_count].label_end = range.end;
+    g_count++;
+}
+
+/* Adds a query label (not a definition); returns its index. */
+static size_t add_query(const char *text, size_t length)
+{
+    NAOS_REQUIRE_UINT_LT(g_query_count, MAX_ENTRIES);
+    g_queries[g_query_count] = add_text(text, length);
+    return g_query_count++;
+}
+
+#define ADD_DEF(s) add_definition((s), sizeof(s) - 1)
+#define ADD_QUERY(s) add_query((s), sizeof(s) - 1)
+
+static const amark_parse_data_t *parse_data(void)
+{
+    return amark_document_parse_data(g_doc);
+}
+
+/* Creates g_doc with parse data and builds the table from g_entries. */
+static void build(void)
+{
+    create_doc(true);
+    NAOS_REQUIRE_INT_EQ(amark_definitions_build(g_doc, &g_scratch, g_entries,
+                                                g_count),
+                        AMARK_ERROR_NONE);
+}
+
+static amark_node_id_t find_range(size_t start, size_t end)
+{
+    return amark_definitions_find(g_doc, start, end);
+}
+
+static amark_node_id_t find_query(size_t query)
+{
+    return find_range(g_queries[query].start, g_queries[query].end);
+}
+
+/* The node of the first entry whose label equals [start, end), by search. */
+static amark_node_id_t first_match(size_t start, size_t end)
+{
+    size_t i;
+
+    for (i = 0; i < g_count; i++) {
+        if (amark_label_compare(g_doc, start, end, g_entries[i].label_start,
+                                g_entries[i].label_end) == 0) {
+            return g_entries[i].node;
+        }
+    }
+    return AMARK_NODE_NONE;
+}
+
+/*
+ * Checks that the table is strictly increasing in normalized label order
+ * (so that it holds one entry per label) and that each of its entries is the
+ * first entry of g_entries with that label.
+ */
+static void check_table(size_t expected_count)
+{
+    const amark_parse_data_t *data = parse_data();
+    size_t i;
+
+    NAOS_REQUIRE_UINT_EQ(data->definition_count, expected_count);
+    for (i = 0; i < data->definition_count; i++) {
+        const amark_definition_entry_t *entry = &data->definitions[i];
+
+        if (i > 0) {
+            const amark_definition_entry_t *prev = &data->definitions[i - 1];
+
+            NAOS_REQUIRE_INT_LT(amark_label_compare(g_doc, prev->label_start,
+                                                    prev->label_end,
+                                                    entry->label_start,
+                                                    entry->label_end),
+                                0);
+        }
+        NAOS_REQUIRE_UINT_EQ(entry->node,
+                             first_match(entry->label_start,
+                                         entry->label_end));
+    }
+}
+
+/* Checks that finding the label of every entry gives the first match. */
+static void check_every_entry_found(void)
+{
+    size_t i;
+
+    for (i = 0; i < g_count; i++) {
+        NAOS_REQUIRE_UINT_EQ(find_range(g_entries[i].label_start,
+                                        g_entries[i].label_end),
+                             first_match(g_entries[i].label_start,
+                                         g_entries[i].label_end));
+    }
+}
+
+NAOS_TEST(table_finds_a_definition)
+{
+    size_t same;
+    size_t other;
+
+    ADD_DEF("foo");
+    same = ADD_QUERY("foo");
+    other = ADD_QUERY("bar");
+    build();
+    check_table(1);
+    NAOS_CHECK_UINT_EQ(find_query(same), 1);
+    NAOS_CHECK_UINT_EQ(find_query(other), AMARK_NODE_NONE);
+}
+
+NAOS_TEST(table_returns_the_first_of_duplicate_labels)
+{
+    size_t query;
+
+    ADD_DEF("bar");
+    ADD_DEF("Foo");
+    ADD_DEF("  foo ");
+    ADD_DEF("baz");
+    ADD_DEF("FOO");
+    ADD_DEF("BAR");
+    query = ADD_QUERY("foo");
+    build();
+    check_table(3);
+    NAOS_CHECK_UINT_EQ(find_query(query), 2);
+    NAOS_CHECK_UINT_EQ(find_range(g_entries[2].label_start,
+                                  g_entries[2].label_end), 2);
+    NAOS_CHECK_UINT_EQ(find_range(g_entries[4].label_start,
+                                  g_entries[4].label_end), 2);
+    NAOS_CHECK_UINT_EQ(find_range(g_entries[5].label_start,
+                                  g_entries[5].label_end), 1);
+}
+
+NAOS_TEST(table_returns_the_first_when_all_labels_are_the_same)
+{
+    size_t i;
+
+    for (i = 0; i < 100; i++) {
+        if (i % 2 == 0) {
+            ADD_DEF("Same Label");
+        } else {
+            ADD_DEF("same   LABEL");
+        }
+    }
+    build();
+    check_table(1);
+    for (i = 0; i < g_count; i++) {
+        NAOS_CHECK_UINT_EQ(find_range(g_entries[i].label_start,
+                                      g_entries[i].label_end), 1);
+    }
+}
+
+NAOS_TEST(table_matches_case_and_white_space_variants)
+{
+    size_t lower;
+    size_t upper;
+    size_t tabs;
+    size_t lines;
+    size_t ss;
+    size_t different;
+
+    ADD_DEF("Hello   World");
+    ADD_DEF("\xE1\xBA\x9E"); /* U+1E9E LATIN CAPITAL LETTER SHARP S */
+    lower = ADD_QUERY("hello world");
+    upper = ADD_QUERY(" HELLO\tWORLD ");
+    tabs = ADD_QUERY("\thello \t world\t");
+    lines = ADD_QUERY("hello\nworld");
+    ss = ADD_QUERY("SS");
+    different = ADD_QUERY("helloworld");
+    build();
+    check_table(2);
+    {
+        /* The second line of the query starts its content at "world". */
+        size_t first_line;
+        size_t last_line;
+
+        amark_document_range_lines(g_doc, g_queries[lines].start,
+                                   g_queries[lines].end, &first_line,
+                                   &last_line);
+        NAOS_REQUIRE_UINT_EQ(last_line, first_line + 1);
+        amark_line_set(g_doc, last_line, g_queries[lines].end - 5, 0);
+    }
+    NAOS_CHECK_UINT_EQ(find_query(lower), 1);
+    NAOS_CHECK_UINT_EQ(find_query(upper), 1);
+    NAOS_CHECK_UINT_EQ(find_query(tabs), 1);
+    NAOS_CHECK_UINT_EQ(find_query(lines), 1);
+    NAOS_CHECK_UINT_EQ(find_query(ss), 2);
+    NAOS_CHECK_UINT_EQ(find_query(different), AMARK_NODE_NONE);
+}
+
+NAOS_TEST(table_misses_labels_before_between_and_after)
+{
+    size_t before;
+    size_t between;
+    size_t after;
+    size_t prefix;
+    size_t longer;
+
+    ADD_DEF("d");
+    ADD_DEF("b");
+    ADD_DEF("f");
+    before = ADD_QUERY("a");
+    between = ADD_QUERY("c");
+    after = ADD_QUERY("g");
+    prefix = ADD_QUERY("");
+    longer = ADD_QUERY("bb");
+    build();
+    check_table(3);
+    NAOS_CHECK_UINT_EQ(find_query(before), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(find_query(between), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(find_query(after), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(find_query(prefix), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(find_query(longer), AMARK_NODE_NONE);
+    check_every_entry_found();
+}
+
+NAOS_TEST(table_empty_allocates_nothing_and_finds_nothing)
+{
+    size_t query;
+    size_t calls;
+
+    query = ADD_QUERY("foo");
+    create_doc(true);
+    calls = g_state.malloc_calls;
+    NAOS_CHECK_INT_EQ(amark_definitions_build(g_doc, &g_scratch, g_entries,
+                                              0),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+    NAOS_CHECK_NULL(parse_data()->definitions);
+    NAOS_CHECK_UINT_EQ(parse_data()->definition_count, 0);
+    NAOS_CHECK_UINT_EQ(find_query(query), AMARK_NODE_NONE);
+}
+
+NAOS_TEST(table_find_without_parse_data_finds_nothing)
+{
+    size_t query;
+
+    query = ADD_QUERY("foo");
+    create_doc(false);
+    NAOS_CHECK_UINT_EQ(find_query(query), AMARK_NODE_NONE);
+}
+
+NAOS_TEST(table_find_allocates_nothing)
+{
+    size_t hit;
+    size_t miss;
+    size_t calls;
+
+    ADD_DEF("foo");
+    ADD_DEF("bar");
+    hit = ADD_QUERY("FOO");
+    miss = ADD_QUERY("qux");
+    build();
+    calls = g_state.malloc_calls;
+    NAOS_CHECK_UINT_EQ(find_query(hit), 1);
+    NAOS_CHECK_UINT_EQ(find_query(miss), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+}
+
+NAOS_TEST(table_outlives_the_scratch_arena)
+{
+    size_t query;
+
+    ADD_DEF("b");
+    ADD_DEF("a");
+    ADD_DEF("B");
+    query = ADD_QUERY("A");
+    build();
+    amark_arena_deinit(&g_scratch);
+    check_table(2);
+    NAOS_CHECK_UINT_EQ(find_query(query), 2);
+    NAOS_CHECK_UINT_EQ(find_range(g_entries[2].label_start,
+                                  g_entries[2].label_end), 1);
+}
+
+/* A small deterministic generator for the permutations below. */
+static unsigned long next_random(unsigned long *state)
+{
+    *state = (*state * 1103515245UL + 12345UL) & 0x7FFFFFFFUL;
+    return *state >> 8;
+}
+
+NAOS_TEST(table_result_does_not_depend_on_the_order)
+{
+    static const char *const labels[] = {
+        "alpha", "Beta", "ALPHA", "gamma", " beta", "Delta", "gAmMa",
+        "epsilon", "alpha  ", "zeta"
+    };
+    const size_t label_count = sizeof(labels) / sizeof(labels[0]);
+    size_t order[sizeof(labels) / sizeof(labels[0])];
+    unsigned long state = 1;
+    size_t round;
+
+    for (round = 0; round < 40; round++) {
+        size_t i;
+        size_t queries[3];
+
+        for (i = 0; i < label_count; i++) {
+            order[i] = i;
+        }
+        for (i = label_count - 1; i > 0; i--) {
+            size_t j = (size_t)(next_random(&state) % (i + 1));
+            size_t t = order[i];
+
+            order[i] = order[j];
+            order[j] = t;
+        }
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        amark_arena_deinit(&g_scratch);
+        g_length = 0;
+        g_count = 0;
+        g_query_count = 0;
+        for (i = 0; i < label_count; i++) {
+            add_definition(labels[order[i]], strlen(labels[order[i]]));
+        }
+        queries[0] = ADD_QUERY("ALPHA");
+        queries[1] = ADD_QUERY("beta");
+        queries[2] = ADD_QUERY("theta");
+        build();
+        check_table(6);
+        check_every_entry_found();
+        NAOS_CHECK_UINT_EQ(find_query(queries[0]),
+                           first_match(g_queries[0].start,
+                                       g_queries[0].end));
+        NAOS_CHECK_UINT_EQ(find_query(queries[1]),
+                           first_match(g_queries[1].start,
+                                       g_queries[1].end));
+        NAOS_CHECK_UINT_EQ(find_query(queries[2]), AMARK_NODE_NONE);
+    }
+}
+
+/*
+ * Adds count definitions whose labels are "label <key>" with key
+ * (i * 7919) % keys, written in three case and white space variants, and
+ * stores in first[key] the node of the first definition of each key.
+ */
+static void add_many(size_t count, size_t keys, amark_node_id_t *first)
+{
+    size_t i;
+
+    for (i = 0; i < keys; i++) {
+        first[i] = AMARK_NODE_NONE;
+    }
+    for (i = 0; i < count; i++) {
+        char text[64];
+        size_t key = (i * 7919) % keys;
+        int length;
+
+        switch (i % 3) {
+        case 0:
+            length = sprintf(text, "label %u", (unsigned)key);
+            break;
+        case 1:
+            length = sprintf(text, "LABEL\t%u", (unsigned)key);
+            break;
+        default:
+            length = sprintf(text, " Label   %u ", (unsigned)key);
+            break;
+        }
+        add_definition(text, (size_t)length);
+        if (first[key] == AMARK_NODE_NONE) {
+            first[key] = (amark_node_id_t)(i + 1);
+        }
+    }
+}
+
+NAOS_TEST(table_with_thousands_of_definitions)
+{
+    static amark_node_id_t first[1000];
+    size_t i;
+    size_t miss_low;
+    size_t miss_high;
+
+    add_many(3000, 1000, first);
+    miss_low = ADD_QUERY("label");
+    miss_high = ADD_QUERY("label 1000");
+    build();
+    check_table(1000);
+    for (i = 0; i < g_count; i++) {
+        size_t key = (i * 7919) % 1000;
+
+        NAOS_REQUIRE_UINT_EQ(find_range(g_entries[i].label_start,
+                                        g_entries[i].label_end),
+                             first[key]);
+    }
+    NAOS_CHECK_UINT_EQ(find_query(miss_low), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(find_query(miss_high), AMARK_NODE_NONE);
+}
+
+/*
+ * Makes the k-th allocation of building the table fail, for k = 1, 2, ...
+ * until the build succeeds, and checks that at least min_failures builds
+ * failed; each failure must return AMARK_ERROR_NOMEM,
+ * leave the table empty, and leak nothing once the scratch arena and the
+ * document are released.
+ */
+static void check_allocation_failures(size_t count, size_t keys,
+                                      size_t min_failures)
+{
+    static amark_node_id_t first[1000];
+    size_t failures = 0;
+    size_t k;
+
+    add_many(count, keys, first);
+    for (k = 1; k < 100; k++) {
+        amark_error_t err;
+
+        create_doc(true);
+        amark_arena_init(&g_scratch, &g_allocator);
+        g_state.fail_at = g_state.malloc_calls + k;
+        err = amark_definitions_build(g_doc, &g_scratch, g_entries, g_count);
+        g_state.fail_at = 0;
+        if (err == AMARK_ERROR_NONE) {
+            check_table(keys);
+            check_every_entry_found();
+            break;
+        }
+        failures++;
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        NAOS_CHECK_NULL(parse_data()->definitions);
+        NAOS_CHECK_UINT_EQ(parse_data()->definition_count, 0);
+        amark_arena_deinit(&g_scratch);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    }
+    NAOS_CHECK_UINT_LT(k, 100);
+    NAOS_CHECK_UINT_GE(failures, min_failures);
+}
+
+NAOS_TEST(table_build_reports_allocation_failure_small)
+{
+    check_allocation_failures(5, 3, 1);
+}
+
+NAOS_TEST(table_build_reports_each_allocation_failure_large)
+{
+    /* Each array is larger than an arena block: two scratch arrays and the
+       table each need their own allocation. */
+    check_allocation_failures(2000, 700, 3);
+}
+
 NAOS_SUITE(label_scan,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -621,7 +1127,26 @@ NAOS_SUITE(label_compare,
     NAOS_ADD_TEST(compare_long_labels)
 )
 
+NAOS_SUITE(definition_table,
+    NAOS_SET_SETUP(table),
+    NAOS_SET_TEARDOWN(table),
+    NAOS_ADD_TEST(table_finds_a_definition),
+    NAOS_ADD_TEST(table_returns_the_first_of_duplicate_labels),
+    NAOS_ADD_TEST(table_returns_the_first_when_all_labels_are_the_same),
+    NAOS_ADD_TEST(table_matches_case_and_white_space_variants),
+    NAOS_ADD_TEST(table_misses_labels_before_between_and_after),
+    NAOS_ADD_TEST(table_empty_allocates_nothing_and_finds_nothing),
+    NAOS_ADD_TEST(table_find_without_parse_data_finds_nothing),
+    NAOS_ADD_TEST(table_find_allocates_nothing),
+    NAOS_ADD_TEST(table_outlives_the_scratch_arena),
+    NAOS_ADD_TEST(table_result_does_not_depend_on_the_order),
+    NAOS_ADD_TEST(table_with_thousands_of_definitions),
+    NAOS_ADD_TEST(table_build_reports_allocation_failure_small),
+    NAOS_ADD_TEST(table_build_reports_each_allocation_failure_large)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(label_scan),
-    NAOS_ADD_SUITE(label_compare)
+    NAOS_ADD_SUITE(label_compare),
+    NAOS_ADD_SUITE(definition_table)
 )

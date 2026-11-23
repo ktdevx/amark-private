@@ -6,6 +6,7 @@
 #include "definition.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #include "line.h"
 #include "unicode.h"
@@ -226,4 +227,170 @@ int amark_label_compare(const amark_document_t *doc,
             return ca < cb ? -1 : 1;
         }
     }
+}
+
+/* Orders entries by normalized label, then by node ID. */
+static int entry_compare(const amark_document_t *doc,
+                         const amark_definition_entry_t *a,
+                         const amark_definition_entry_t *b)
+{
+    int order = amark_label_compare(doc, a->label_start, a->label_end,
+                                    b->label_start, b->label_end);
+
+    if (order != 0) {
+        return order;
+    }
+    return a->node < b->node ? -1 : (a->node > b->node ? 1 : 0);
+}
+
+/*
+ * Merges the sorted runs from[start, middle) and from[middle, end) into
+ * to[start, end). Takes from the left run when the entries are equal.
+ */
+static void merge_runs(const amark_document_t *doc,
+                       const amark_definition_entry_t *from,
+                       amark_definition_entry_t *to,
+                       size_t start, size_t middle, size_t end)
+{
+    size_t left = start;
+    size_t right = middle;
+    size_t out = start;
+
+    while (left < middle && right < end) {
+        if (entry_compare(doc, &from[right], &from[left]) < 0) {
+            to[out++] = from[right++];
+        } else {
+            to[out++] = from[left++];
+        }
+    }
+    while (left < middle) {
+        to[out++] = from[left++];
+    }
+    while (right < end) {
+        to[out++] = from[right++];
+    }
+}
+
+/*
+ * Sorts the count entries of a with a bottom-up merge sort, using b (count
+ * entries) as the other buffer. Returns the buffer that holds the result.
+ */
+static amark_definition_entry_t *sort_entries(const amark_document_t *doc,
+                                              amark_definition_entry_t *a,
+                                              amark_definition_entry_t *b,
+                                              size_t count)
+{
+    amark_definition_entry_t *from = a;
+    amark_definition_entry_t *to = b;
+    size_t width;
+
+    /* width doubles, without overflowing, until one run holds everything. */
+    for (width = 1; width < count;
+         width = width > count / 2 ? count : width * 2) {
+        size_t start;
+
+        for (start = 0; start < count; start += 2 * width) {
+            size_t middle = count - start > width ? start + width : count;
+            size_t end = count - middle > width ? middle + width : count;
+
+            merge_runs(doc, from, to, start, middle, end);
+            if (end == count) {
+                break;
+            }
+        }
+        {
+            amark_definition_entry_t *swap = from;
+
+            from = to;
+            to = swap;
+        }
+    }
+    return from;
+}
+
+amark_error_t amark_definitions_build(amark_document_t *doc,
+                                      amark_arena_t *scratch,
+                                      const amark_definition_entry_t *entries,
+                                      size_t count)
+{
+    amark_parse_data_t *data = amark_document_parse_data(doc);
+    amark_definition_entry_t *a;
+    amark_definition_entry_t *b;
+    amark_definition_entry_t *sorted;
+    amark_definition_entry_t *table;
+    void *mem;
+    size_t unique;
+    size_t i;
+    amark_error_t err;
+
+    if (count == 0) {
+        data->definitions = NULL;
+        data->definition_count = 0;
+        return AMARK_ERROR_NONE;
+    }
+    err = amark_arena_alloc_array(scratch, count, sizeof(*a), &mem);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    a = (amark_definition_entry_t *)mem;
+    err = amark_arena_alloc_array(scratch, count, sizeof(*b), &mem);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    b = (amark_definition_entry_t *)mem;
+    memcpy(a, entries, count * sizeof(*a));
+    sorted = sort_entries(doc, a, b, count);
+
+    /* Keep the first entry of each label (the one with the smallest ID). */
+    unique = 1;
+    for (i = 1; i < count; i++) {
+        const amark_definition_entry_t *kept = &sorted[unique - 1];
+
+        if (amark_label_compare(doc, kept->label_start, kept->label_end,
+                                sorted[i].label_start,
+                                sorted[i].label_end) != 0) {
+            sorted[unique++] = sorted[i];
+        }
+    }
+
+    err = amark_arena_alloc_array(amark_document_arena(doc), unique,
+                                  sizeof(*table), &mem);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    table = (amark_definition_entry_t *)mem;
+    memcpy(table, sorted, unique * sizeof(*table));
+    data->definitions = table;
+    data->definition_count = unique;
+    return AMARK_ERROR_NONE;
+}
+
+amark_node_id_t amark_definitions_find(const amark_document_t *doc,
+                                       size_t label_start, size_t label_end)
+{
+    const amark_parse_data_t *data = amark_document_parse_data(doc);
+    size_t low = 0;
+    size_t high;
+
+    if (data == NULL) {
+        return AMARK_NODE_NONE;
+    }
+    /* The entry, if any, is in definitions[low, high). */
+    high = data->definition_count;
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        const amark_definition_entry_t *entry = &data->definitions[middle];
+        int order = amark_label_compare(doc, label_start, label_end,
+                                        entry->label_start, entry->label_end);
+
+        if (order == 0) {
+            return entry->node;
+        }
+        if (order < 0) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    return AMARK_NODE_NONE;
 }
