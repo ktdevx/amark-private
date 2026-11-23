@@ -614,6 +614,12 @@ size_t amark_document_content_length(const amark_document_t *doc);
 const amark_line_index_t *amark_document_line_index(const amark_document_t *doc);
 size_t amark_document_node_count(const amark_document_t *doc);
 
+struct amark_parse_data; /* 中身は block-parser が定める */
+amark_arena_t *amark_document_arena(amark_document_t *doc);
+struct amark_parse_data *amark_document_parse_data(const amark_document_t *doc);
+void amark_document_set_parse_data(amark_document_t *doc,
+                                   struct amark_parse_data *data);
+
 /* include/amark/tree.h */
 AMARK_API void amark_document_destroy(amark_document_t *doc);
 AMARK_API size_t amark_document_diagnostic_count(const amark_document_t *doc);
@@ -629,6 +635,8 @@ AMARK_API bool amark_document_diagnostic(const amark_document_t *doc, size_t ind
   - Postconditions: メッセージを文書の中に写し、行番号を `offset` から定めて、診断の最後に足す。
   - メッセージを写してから配列に足す。どちらかが失敗したら `NOMEM` か `LIMIT_EXCEEDED` を返し、すでにある診断と木は変わらない（写したメッセージはアリーナに残るが、どこからも参照されない）。
 - `amark_document_node_count`：これまでに作ったノードの数を返す。取り除いたノードも数える。block-parser がノードの数の上限と比べるのに使う。
+- `amark_document_arena`：文書のアリーナを返す。ここから確保したメモリは、文書の解放まで有効であり、文書の解放でともに解放される。block-parser が、文書に付ける解析のデータを確保するのに使う。
+- `amark_document_parse_data`・`amark_document_set_parse_data`：文書に付けた解析のデータへのポインタを読む・設定する。`amark_document_create` は `NULL` にする。`NULL` を設定してもよい。文書は、このポインタの先を読まず、解放もしない（先は文書のアリーナにあるので、アリーナの解放でともに消える）。中身は block-parser が定める（`src/parse_data.h`）。
 - `amark_document_destroy`：`doc` が `NULL` なら何もしない。そうでなければ、確保関数の写しを取り、アリーナを解放し、本体を解放する。
 - `amark_document_diagnostic`：`index` が件数以上のとき、または `doc` か `out` が `NULL` のとき、`false` を返して `*out` を変えない。`amark_document_diagnostic_count` は、`doc` が `NULL` なら 0 を返す。
 
@@ -952,12 +960,14 @@ struct amark_document {
     amark_array_t attrs;          /* amark_node_attr_t。0 番は使わない */
     amark_array_t diagnostics;    /* amark_stored_diagnostic_t */
     const char *filename;         /* アリーナにある写し、または NULL */
+    struct amark_parse_data *parse_data; /* 先は読まず、解放もしない。または NULL */
 };
 ```
 
 - ノードの ID は、ノードの配列の添字である。作ったノードの数は `amark_array_len(&nodes) - 1` である。
 - ノード 1 つは、64 ビットの環境で 64 バイトである。属性の要素は、属性を設定したノードの分だけ作る。
 - 属性の共用体のどの構造体が有効かは、ノードの種類で決まる。`amark_tree_set_kind` は `attr` を 0 に戻す（前の要素は配列に残るが、参照されない）。
+- `parse_data` は、block-parser が文書に付ける解析のデータ（行の記録、定義の表、インラインの解析に渡す内容）を指す。型は不完全型のまま宣言し、中身は block-parser の `src/parse_data.h` が定める。先は文書のアリーナにあり、文書の解放でともに消える。
 - 原文のバイトは、どこにも複製しない。文書が写しを持つ文字列は、ファイル名、診断のメッセージ、方言の属性だけである。
 - 内容の長さもオフセットも `size_t` で持つ。ノードの数だけが 32 ビットに限られる。
 

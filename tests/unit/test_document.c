@@ -5,7 +5,8 @@
 
 /*
  * Unit tests of the document (src/document.h): create and destroy, and
- * adding and reading diagnostics. Nodes are added with the tree builder
+ * adding and reading diagnostics, and the parse data slot and the arena
+ * accessor. Nodes are added with the tree builder
  * (src/tree_internal.h) where a test needs nodes and diagnostics together.
  */
 
@@ -913,6 +914,55 @@ NAOS_TEST(failure_injection_loop_nodes_and_diagnostics)
     NAOS_CHECK_UINT_GE(diagnostic_failures, 1);
 }
 
+/* ---- the parse data slot and the arena accessor ---- */
+
+NAOS_TEST(parse_data_is_null_after_create)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, NULL),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_PTR_EQ(amark_document_parse_data(g_doc), NULL);
+}
+
+NAOS_TEST(arena_accessor_returns_the_document_arena)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, NULL),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_PTR_EQ(amark_document_arena(g_doc), &g_doc->arena);
+}
+
+/*
+ * The value set is the value read; the document neither reads nor frees the
+ * target: it lives in the document's arena and goes with it, so teardown
+ * finds no block left after destroying the document.
+ */
+NAOS_TEST(parse_data_set_is_read_back_and_released_with_the_arena)
+{
+    void *mem = NULL;
+    struct amark_parse_data *data;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(0, MIXED_LENGTH, NULL),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_arena_alloc(amark_document_arena(g_doc), 64,
+                                          &mem),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(mem);
+    memset(mem, 0xA5, 64);
+    data = (struct amark_parse_data *)mem;
+
+    amark_document_set_parse_data(g_doc, data);
+    NAOS_CHECK_PTR_EQ(amark_document_parse_data(g_doc), data);
+
+    /* Setting NULL clears the slot again. */
+    amark_document_set_parse_data(g_doc, NULL);
+    NAOS_CHECK_PTR_EQ(amark_document_parse_data(g_doc), NULL);
+    amark_document_set_parse_data(g_doc, data);
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, g_state.malloc_calls);
+}
+
 NAOS_SUITE(document,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -946,7 +996,10 @@ NAOS_SUITE(document,
     NAOS_ADD_TEST(failed_message_copy_keeps_diagnostics),
     NAOS_ADD_TEST(failed_append_keeps_diagnostics),
     NAOS_ADD_TEST(failure_injection_loop_add_diagnostics),
-    NAOS_ADD_TEST(failure_injection_loop_nodes_and_diagnostics)
+    NAOS_ADD_TEST(failure_injection_loop_nodes_and_diagnostics),
+    NAOS_ADD_TEST(parse_data_is_null_after_create),
+    NAOS_ADD_TEST(arena_accessor_returns_the_document_arena),
+    NAOS_ADD_TEST(parse_data_set_is_read_back_and_released_with_the_arena)
 )
 
 /* The default allocator (malloc and free) works too. */
