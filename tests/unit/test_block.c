@@ -639,6 +639,334 @@ NAOS_TEST(allocation_failure_with_headings_and_breaks)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Indented and fenced code blocks                                        */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Checks the code block attributes of node. has_info false means the info
+ * string is not written; info_start and info_end are then not read.
+ */
+static void check_code(amark_node_id_t node, amark_code_block_style_t style,
+                       char fence_char, size_t fence_length, bool has_info,
+                       size_t info_start, size_t info_end)
+{
+    amark_range_t info;
+
+    NAOS_CHECK_INT_EQ(amark_code_block_style(g_doc, node), style);
+    NAOS_CHECK_INT_EQ(amark_code_block_fence_char(g_doc, node), fence_char);
+    NAOS_CHECK_UINT_EQ(amark_code_block_fence_length(g_doc, node),
+                       fence_length);
+    if (has_info) {
+        NAOS_REQUIRE_TRUE(amark_code_block_info(g_doc, node, &info));
+        NAOS_CHECK_UINT_EQ(info.start, info_start);
+        NAOS_CHECK_UINT_EQ(info.end, info_end);
+    } else {
+        NAOS_CHECK_FALSE(amark_code_block_info(g_doc, node, &info));
+    }
+}
+
+NAOS_TEST(indented_code_block_of_one_line)
+{
+    PARSE("    foo");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 4, 7, 1, 1);
+    check_code(root_child(0), AMARK_CODE_BLOCK_INDENTED, '\0', 0, false, 0,
+               0);
+    /* Code is not inline content. The record: after the 4 columns. */
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+    check_record(1, 4, 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2);
+}
+
+NAOS_TEST(indented_code_keeps_inner_blank_lines_only)
+{
+    /*
+     * "    a\n" 0-5, "\n" 6, "      b\n" 7-14, "  \n" 15-17, "\n" 18. The
+     * block ends at the end of the last line that is not blank; the blank
+     * line inside stays.
+     */
+    PARSE("    a\n\n      b\n  \n\n");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 4, 14, 1, 3);
+    /* Blank lines with less than 4 columns: the end of the content. */
+    check_record(1, 4, 0);
+    check_record(2, 6, 0);
+    check_record(3, 11, 0);
+    check_record(4, 17, 0);
+    check_record(5, 18, 0);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+}
+
+NAOS_TEST(indented_code_blank_line_of_four_columns_or_more)
+{
+    /* "    a\n" 0-5, "      \n" 6-12, "    b" 13-17. */
+    PARSE("    a\n      \n    b");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 4, 18, 1, 3);
+    /* A blank line with 4 columns or more: after the 4 columns. */
+    check_record(2, 10, 0);
+    check_record(3, 17, 0);
+}
+
+NAOS_TEST(indented_code_does_not_start_on_a_blank_line)
+{
+    /* "    \n" 0-4, "    a" 5-9. */
+    PARSE("    \n    a");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 9, 10, 2, 2);
+    check_record(1, 4, 0);
+    check_record(2, 9, 0);
+}
+
+NAOS_TEST(indented_code_does_not_interrupt_a_paragraph)
+{
+    /* "a\n" 0-1, "    b" 2-6: a continuation line of the paragraph. */
+    PARSE("a\n    b");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 7, 1, 2);
+    check_content(0, root_child(0), 0, 7);
+    check_record(2, 6, 0);
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    /* "a\n" 0-1, "\n" 2, "    b" 3-7: after a blank line it is code. */
+    PARSE("a\n\n    b");
+    check_dump("(doc (p) (code indented))");
+    check_node(root_child(1), AMARK_KIND_CODE_BLOCK, 7, 8, 3, 3);
+    check_record(3, 7, 0);
+}
+
+NAOS_TEST(indented_code_after_a_heading_and_before_a_paragraph)
+{
+    /* "# h\n" 0-3, "    c\n" 4-9, "d" 10. */
+    PARSE("# h\n    c\nd");
+    check_dump("(doc (h 1 atx) (code indented) (p))");
+    check_node(root_child(1), AMARK_KIND_CODE_BLOCK, 8, 9, 2, 2);
+    check_node(root_child(2), AMARK_KIND_PARAGRAPH, 10, 11, 3, 3);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 2);
+    check_content(0, root_child(0), 2, 3);
+    check_content(1, root_child(2), 10, 11);
+    check_record(2, 8, 0);
+    check_record(3, 10, 0);
+}
+
+NAOS_TEST(indented_code_with_tabs_and_line_endings)
+{
+    /*
+     * "\tfoo\r\n" 0-5, "  \tbar\r" 6-12, "    \tbaz" 13-21. A tab that
+     * ends at column 4 is consumed whole; a tab after the 4 columns is
+     * content.
+     */
+    PARSE("\tfoo\r\n  \tbar\r    \tbaz");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 1, 21, 1, 3);
+    check_record(1, 1, 0);
+    check_record(2, 9, 0);
+    check_record(3, 17, 0);
+}
+
+NAOS_TEST(fence_indented_four_columns_is_indented_code)
+{
+    /* "    ```\n" 0-7, "    a" 8-12. */
+    PARSE("    ```\n    a");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 4, 13, 1, 2);
+}
+
+NAOS_TEST(fenced_code_block)
+{
+    /* "```\n" 0-3, "foo\n" 4-7, "```" 8-10. */
+    PARSE("```\nfoo\n```");
+    check_dump("(doc (code fenced ` 3))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 11, 1, 3);
+    check_code(root_child(0), AMARK_CODE_BLOCK_FENCED, '`', 3, false, 0, 0);
+    /* The fence lines: their first character; the code: after the fence
+     * indentation (none). */
+    check_record(1, 0, 0);
+    check_record(2, 4, 0);
+    check_record(3, 8, 0);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2);
+}
+
+NAOS_TEST(fenced_code_block_info_and_tildes)
+{
+    /*
+     * "~~~~  ruby startline=3 \t\n" 0-24 (info 6-22), "x\n" 25-26,
+     * "~~~~~\n" 27-32.
+     */
+    PARSE("~~~~  ruby startline=3 \t\nx\n~~~~~\n");
+    check_dump("(doc (code fenced ~ 4 info))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 32, 1, 3);
+    check_code(root_child(0), AMARK_CODE_BLOCK_FENCED, '~', 4, true, 6, 22);
+    check_record(1, 0, 0);
+    check_record(2, 25, 0);
+    check_record(3, 27, 0);
+}
+
+NAOS_TEST(fenced_code_block_with_each_line_ending)
+{
+    /* "```\r\n" 0-4, "a\r" 5-6, "b\n" 7-8, "```" 9-11. */
+    PARSE("```\r\na\rb\n```");
+    check_dump("(doc (code fenced ` 3))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 12, 1, 4);
+    check_record(1, 0, 0);
+    check_record(2, 5, 0);
+    check_record(3, 7, 0);
+    check_record(4, 9, 0);
+}
+
+NAOS_TEST(lines_that_do_not_close_a_fence)
+{
+    /*
+     * "````\n" 0-4, "a\n" 5-6, "```\n" 7-10 (shorter), "~~~~\n" 11-15
+     * (other character), "    ````\n" 16-24 (4 columns), "```` x\n" 25-31
+     * (text after it), "   `````  \n" 32-42 (closes), "b" 43.
+     */
+    PARSE("````\na\n```\n~~~~\n    ````\n```` x\n   `````  \nb");
+    check_dump("(doc (code fenced ` 4) (p))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 42, 1, 7);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 43, 44, 8, 8);
+    check_record(2, 5, 0);
+    check_record(3, 7, 0);
+    check_record(4, 11, 0);
+    check_record(5, 16, 0);
+    check_record(6, 25, 0);
+    check_record(7, 35, 0);
+    check_record(8, 43, 0);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 1);
+}
+
+NAOS_TEST(unclosed_fence_closes_at_the_end_of_the_range)
+{
+    /*
+     * "```\n" 0-3, "a\n" 4-5, "\n" 6: the blank line belongs to the code,
+     * so the block ends at the end of its (empty) content. A range that
+     * ends where an empty line starts reports the line before it as its end
+     * line (syntax-tree: the line of end - 1).
+     */
+    PARSE("```\na\n\n");
+    check_dump("(doc (code fenced ` 3))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 6, 1, 2);
+    check_record(3, 6, 0);
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    /* "```\n" 0-3, "a\n" 4-5, "  " 6-7: a blank line with white space. */
+    PARSE("```\na\n  ");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 8, 1, 3);
+    check_record(3, 6, 0);
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    /* "~~~ x\n" 0-5, "foo" 6-8. */
+    PARSE("~~~ x\nfoo");
+    check_dump("(doc (code fenced ~ 3 info))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 9, 1, 2);
+    check_code(root_child(0), AMARK_CODE_BLOCK_FENCED, '~', 3, true, 4, 5);
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    /* An opening fence alone: "```" 0-2. */
+    PARSE("```");
+    check_dump("(doc (code fenced ` 3))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 3, 1, 1);
+}
+
+NAOS_TEST(fence_indentation_is_removed_from_code_lines)
+{
+    /*
+     * "  ```\n" 0-5, "    a\n" 6-11, " b\n" 12-14, "c\n" 15-16, " \n" 17-18,
+     * "\tx\n" 19-21, "  ```" 22-26. Up to 2 columns of white space go;
+     * the tab gives 2 of its 4 columns and keeps 2 as pad.
+     */
+    PARSE("  ```\n    a\n b\nc\n \n\tx\n  ```");
+    check_dump("(doc (code fenced ` 3))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 2, 27, 1, 7);
+    check_record(1, 2, 0);
+    check_record(2, 8, 0);
+    check_record(3, 13, 0);
+    check_record(4, 15, 0);
+    check_record(5, 18, 0);
+    check_record(6, 19, 2);
+    check_record(7, 24, 0);
+}
+
+NAOS_TEST(fenced_code_interrupts_a_paragraph_and_holds_raw_lines)
+{
+    /* "a\n" 0-1, "```\n" 2-5, "# b\n" 6-9, "***\n" 10-13, "```\n" 14-17,
+     * "c" 18. */
+    PARSE("a\n```\n# b\n***\n```\nc");
+    check_dump("(doc (p) (code fenced ` 3) (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_CODE_BLOCK, 2, 17, 2, 5);
+    check_node(root_child(2), AMARK_KIND_PARAGRAPH, 18, 19, 6, 6);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 2);
+    check_content(0, root_child(0), 0, 1);
+    check_content(1, root_child(2), 18, 19);
+    check_record(3, 6, 0);
+    check_record(4, 10, 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
+}
+
+NAOS_TEST(backtick_in_the_info_of_a_backtick_fence_is_not_a_fence)
+{
+    PARSE("``` a`b\nc");
+    check_dump("(doc (p))");
+}
+
+NAOS_TEST(fenced_code_in_a_range_starting_inside_a_line)
+{
+    /* "xx" 0-1 outside, "```\n" 2-5, "foo" 6-8. */
+    PARSE_RANGE("xx```\nfoo", 2, 9);
+    check_dump("(doc (code fenced ` 3))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 2, 9, 1, 2);
+    check_record(1, 2, 0);
+    check_record(2, 6, 0);
+}
+
+NAOS_TEST(node_count_limit_counts_code_blocks)
+{
+    set_content("    a\n```\nb", 11);
+    NAOS_CHECK_INT_EQ(parse_buffer(0, 11, 0, 2), AMARK_ERROR_LIMIT_EXCEEDED);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    set_content("    a\n```\nb", 11);
+    NAOS_REQUIRE_INT_EQ(parse_buffer(0, 11, 1, 3), AMARK_ERROR_NONE);
+    check_dump("(doc (code indented) (code fenced ` 3))");
+}
+
+NAOS_TEST(allocation_failure_with_code_blocks)
+{
+    static const char k_input[] =
+        "a\n```x\nb\n```\n    c\n\n    d\n~~~\ne\n";
+    size_t fail_at;
+    amark_error_t err = AMARK_ERROR_NOMEM;
+
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        set_content(k_input, sizeof(k_input) - 1);
+        err = parse_buffer(0, g_length, 0, 0);
+        g_state.fail_at = 0;
+        amark_arena_deinit(&g_scratch);
+        if (err == AMARK_ERROR_NONE) {
+            break;
+        }
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_REQUIRE_UINT_EQ(g_state.live, 0);
+    }
+    NAOS_REQUIRE_INT_EQ(err, AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    check_dump("(doc (p) (code fenced ` 3 info) (code indented) "
+               "(code fenced ~ 3))");
+}
+
+/* ---------------------------------------------------------------------- */
 /* Parsed ranges that do not start at offset 0                           */
 /* ---------------------------------------------------------------------- */
 
@@ -1040,7 +1368,26 @@ NAOS_SUITE(block_leaves,
     NAOS_ADD_TEST(not_thematic_breaks),
     NAOS_ADD_TEST(heading_and_break_in_a_range_starting_inside_a_line),
     NAOS_ADD_TEST(node_count_limit_counts_headings_and_breaks),
-    NAOS_ADD_TEST(allocation_failure_with_headings_and_breaks)
+    NAOS_ADD_TEST(allocation_failure_with_headings_and_breaks),
+    NAOS_ADD_TEST(indented_code_block_of_one_line),
+    NAOS_ADD_TEST(indented_code_keeps_inner_blank_lines_only),
+    NAOS_ADD_TEST(indented_code_blank_line_of_four_columns_or_more),
+    NAOS_ADD_TEST(indented_code_does_not_start_on_a_blank_line),
+    NAOS_ADD_TEST(indented_code_does_not_interrupt_a_paragraph),
+    NAOS_ADD_TEST(indented_code_after_a_heading_and_before_a_paragraph),
+    NAOS_ADD_TEST(indented_code_with_tabs_and_line_endings),
+    NAOS_ADD_TEST(fence_indented_four_columns_is_indented_code),
+    NAOS_ADD_TEST(fenced_code_block),
+    NAOS_ADD_TEST(fenced_code_block_info_and_tildes),
+    NAOS_ADD_TEST(fenced_code_block_with_each_line_ending),
+    NAOS_ADD_TEST(lines_that_do_not_close_a_fence),
+    NAOS_ADD_TEST(unclosed_fence_closes_at_the_end_of_the_range),
+    NAOS_ADD_TEST(fence_indentation_is_removed_from_code_lines),
+    NAOS_ADD_TEST(fenced_code_interrupts_a_paragraph_and_holds_raw_lines),
+    NAOS_ADD_TEST(backtick_in_the_info_of_a_backtick_fence_is_not_a_fence),
+    NAOS_ADD_TEST(fenced_code_in_a_range_starting_inside_a_line),
+    NAOS_ADD_TEST(node_count_limit_counts_code_blocks),
+    NAOS_ADD_TEST(allocation_failure_with_code_blocks)
 )
 
 NAOS_SUITE(block_ranges,

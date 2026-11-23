@@ -186,6 +186,7 @@ typedef struct block_parser {
     amark_array_t stack;  /* open_block_t, in the scratch arena */
     amark_line_pos_t pos;
     bool all_matched;     /* every open block matched on this line */
+    bool line_taken;      /* a leaf opened on this line took all of it */
 } block_parser_t;
 
 static size_t stack_top(const block_parser_t *p)
@@ -279,11 +280,44 @@ static amark_error_t close_heading(block_parser_t *p, size_t parent,
 }
 
 /*
+ * Closes a code block: adds its node under the element at parent with its
+ * style, fence and info. An indented code block ends at the end of its last
+ * line that is not blank, so the blank lines after it are left out; it
+ * reports that end to its parent too. Code is not inline content.
+ */
+static amark_error_t close_code_block(block_parser_t *p, size_t parent,
+                                      open_block_t *block)
+{
+    amark_node_id_t node;
+    amark_range_t info;
+    amark_error_t err;
+
+    if (block->fence_length == 0) {
+        block->end = block->last_nonblank_end;
+    }
+    err = append_node(p, parent, AMARK_KIND_CODE_BLOCK, block->start,
+                      block->end, &node);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    if (block->fence_length == 0) {
+        return amark_tree_set_code_block(p->doc, node,
+                                         AMARK_CODE_BLOCK_INDENTED, '\0', 0,
+                                         NULL);
+    }
+    info.start = block->info.start;
+    info.end = block->info.end;
+    return amark_tree_set_code_block(p->doc, node, AMARK_CODE_BLOCK_FENCED,
+                                     block->fence_char, block->fence_length,
+                                     block->info.present ? &info : NULL);
+}
+
+/*
  * The closing rules of each kind, for block, just taken off the stack;
  * parent is the index of its parent element (now the top).
  */
 static amark_error_t close_block(block_parser_t *p, size_t parent,
-                                 const open_block_t *block)
+                                 open_block_t *block)
 {
     amark_node_id_t node;
 
@@ -303,10 +337,11 @@ static amark_error_t close_block(block_parser_t *p, size_t parent,
         return append_node(p, parent, AMARK_KIND_THEMATIC_BREAK, block->start,
                            block->end, &node);
     case AMARK_KIND_CODE_BLOCK:
+        return close_code_block(p, parent, block);
     case AMARK_KIND_HTML_BLOCK:
         /*
-         * No start rule opens these leaves yet; the rules that open them
-         * make their nodes here.
+         * No start rule opens this leaf yet; the rule that opens it makes
+         * its node here.
          */
         return AMARK_ERROR_NONE;
     default:
@@ -417,8 +452,51 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
 typedef enum continue_result {
     CONTINUE_NO,        /* the block does not continue on this line */
     CONTINUE_YES,       /* it continues; its prefix is consumed */
-    CONTINUE_LINE_DONE  /* it took the whole line (a closing fence) */
+    CONTINUE_LINE_DONE  /* it took the whole line and ends with it (a
+                           closing fence); the caller closes it */
 } continue_result_t;
+
+/*
+ * The continuation of a code block. Indented: 4 columns of indentation, or
+ * a blank line, whose white space it consumes whole. Fenced: a closing fence
+ * (at most 3 columns of indentation, the same character, at least as long)
+ * takes the line, which is recorded at its first character; any other line
+ * continues, with up to fence_offset columns of white space consumed.
+ */
+static continue_result_t continue_code_block(block_parser_t *p,
+                                             open_block_t *block)
+{
+    amark_line_pos_t *pos = &p->pos;
+
+    if (block->fence_length == 0) {
+        if (pos->indent >= CODE_INDENT) {
+            amark_line_pos_advance(pos, p->bytes, CODE_INDENT,
+                                   AMARK_ADVANCE_COLUMNS);
+            return CONTINUE_YES;
+        }
+        if (pos->blank) {
+            amark_line_pos_advance(pos, p->bytes,
+                                   pos->first_nonspace - pos->offset,
+                                   AMARK_ADVANCE_BYTES);
+            return CONTINUE_YES;
+        }
+        return CONTINUE_NO;
+    }
+    if (pos->indent < CODE_INDENT &&
+        amark_scan_close_fence(p->bytes + pos->first_nonspace,
+                               pos->content_end - pos->first_nonspace,
+                               block->fence_char) >= block->fence_length) {
+        amark_line_set(p->doc, pos->line, pos->first_nonspace, 0);
+        block->end = pos->content_end;
+        return CONTINUE_LINE_DONE;
+    }
+    amark_line_pos_advance(pos, p->bytes,
+                           pos->indent < block->fence_offset
+                               ? pos->indent
+                               : block->fence_offset,
+                           AMARK_ADVANCE_COLUMNS);
+    return CONTINUE_YES;
+}
 
 /*
  * The continuation rules of each kind: whether the element at index
@@ -428,7 +506,7 @@ typedef enum continue_result {
  */
 static continue_result_t continue_block(block_parser_t *p, size_t index)
 {
-    const open_block_t *block = stack_at(p, index);
+    open_block_t *block = stack_at(p, index);
 
     switch (block->kind) {
     case AMARK_KIND_PARAGRAPH:
@@ -437,10 +515,11 @@ static continue_result_t continue_block(block_parser_t *p, size_t index)
     case AMARK_KIND_HEADING:
         /* One-line leaves never continue. */
         return CONTINUE_NO;
+    case AMARK_KIND_CODE_BLOCK:
+        return continue_code_block(p, block);
     case AMARK_KIND_BLOCK_QUOTE:
     case AMARK_KIND_LIST:
     case AMARK_KIND_LIST_ITEM:
-    case AMARK_KIND_CODE_BLOCK:
     case AMARK_KIND_HTML_BLOCK:
         /*
          * No start rule opens these kinds yet; the rules that open them
@@ -460,10 +539,11 @@ typedef enum start_result {
 } start_result_t;
 
 /*
- * Opens a one-line leaf of kind over the rest of the current line, from its
- * first non-space byte to the end of the line's content, inside the element
- * at *container, and makes *container its index. The record of the line is
- * record_start.
+ * Opens a leaf of kind whose first line is the rest of the current line,
+ * from its first non-space byte to the end of the line's content, inside the
+ * element at *container, and makes *container its index. The record of the
+ * line is record_start. The leaf takes the whole line: nothing of it is
+ * added in the third phase.
  */
 static amark_error_t open_line_leaf(block_parser_t *p, size_t *container,
                                     amark_kind_t kind, size_t record_start,
@@ -480,6 +560,7 @@ static amark_error_t open_line_leaf(block_parser_t *p, size_t *container,
     }
     stack_at(p, index)->end = pos->content_end;
     amark_line_set(p->doc, pos->line, record_start, 0);
+    p->line_taken = true;
     *container = index;
     *result = START_LEAF;
     return AMARK_ERROR_NONE;
@@ -538,6 +619,71 @@ static amark_error_t start_thematic_break(block_parser_t *p,
 }
 
 /*
+ * Starts a fenced code block if the rest of the line is an opening fence.
+ * The caller has checked that the indentation is at most 3 columns, which
+ * becomes the fence offset. The record of the line is the first character
+ * of the fence. The info string is only located here: it is unescaped by
+ * whoever reads it.
+ */
+static amark_error_t start_fenced_code(block_parser_t *p, size_t *container,
+                                       start_result_t *result)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    size_t first = pos->first_nonspace;
+    char fence_char;
+    size_t fence_length;
+    size_t info_start;
+    size_t info_end;
+    open_block_t *block;
+    amark_error_t err;
+
+    if (!amark_scan_open_fence(p->bytes + first, pos->content_end - first,
+                               &fence_char, &fence_length, &info_start,
+                               &info_end)) {
+        return AMARK_ERROR_NONE;
+    }
+    err = open_line_leaf(p, container, AMARK_KIND_CODE_BLOCK, first, result);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    block = stack_at(p, *container);
+    block->fence_char = fence_char;
+    block->fence_length = fence_length;
+    block->fence_offset = pos->indent;
+    block->info.start = first + info_start;
+    block->info.end = first + info_end;
+    block->info.present = info_start != info_end;
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Starts an indented code block. The caller has checked that the
+ * indentation is at least 4 columns, that the line is not blank and that it
+ * cannot be a lazy continuation line. The 4 columns are consumed; the block
+ * and the record of the line start after them, at a tab with the columns it
+ * has left as pad if the tab crosses the 4th column. The line itself is
+ * added in the third phase.
+ */
+static amark_error_t start_indented_code(block_parser_t *p,
+                                         size_t *container,
+                                         start_result_t *result)
+{
+    amark_line_pos_t *pos = &p->pos;
+    size_t index;
+    amark_error_t err;
+
+    amark_line_pos_advance(pos, p->bytes, CODE_INDENT, AMARK_ADVANCE_COLUMNS);
+    err = push_block(p, *container, AMARK_KIND_CODE_BLOCK, false,
+                     pos->offset, &index);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    *container = index;
+    *result = START_LEAF;
+    return AMARK_ERROR_NONE;
+}
+
+/*
  * The start rules: whether a new block starts at the current position
  * inside the element at *container (the innermost matched or opened one).
  * If one does, it is opened and *container becomes its index. The position
@@ -546,6 +692,8 @@ static amark_error_t start_thematic_break(block_parser_t *p,
 static amark_error_t start_block(block_parser_t *p, size_t *container,
                                  start_result_t *result)
 {
+    const amark_line_pos_t *pos = &p->pos;
+    bool shallow = pos->indent < CODE_INDENT && !pos->blank;
     amark_error_t err;
 
     *result = START_NONE;
@@ -556,19 +704,36 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
     case AMARK_KIND_LIST_ITEM:
     case AMARK_KIND_PARAGRAPH:
         /*
-         * The CommonMark starts are checked here in this order: block
-         * quote, ATX heading, opening fence, HTML block, setext underline,
-         * thematic break, list item, indented code block. Those not added
+         * The CommonMark starts are checked here in this order, each under
+         * its own condition: block quote, ATX heading, opening fence, HTML
+         * block, setext underline, thematic break (these at most 3 columns
+         * of indentation), list item, indented code block. Those not added
          * yet leave the line to become paragraph text.
          */
-        if (p->pos.indent >= CODE_INDENT || p->pos.blank) {
-            return AMARK_ERROR_NONE;
+        if (shallow) {
+            err = start_atx_heading(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
+            err = start_fenced_code(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
+            err = start_thematic_break(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
         }
-        err = start_atx_heading(p, container, result);
-        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-            return err;
+        /*
+         * Indented code: not on a blank line, and not on a line that could
+         * be a lazy continuation of a paragraph (the innermost open block),
+         * since indented code cannot interrupt one.
+         */
+        if (pos->indent >= CODE_INDENT && !pos->blank &&
+            stack_at(p, stack_top(p))->kind != AMARK_KIND_PARAGRAPH) {
+            return start_indented_code(p, container, result);
         }
-        return start_thematic_break(p, container, result);
+        return AMARK_ERROR_NONE;
     case AMARK_KIND_CODE_BLOCK:
     case AMARK_KIND_HTML_BLOCK:
     case AMARK_KIND_THEMATIC_BREAK:
@@ -608,6 +773,25 @@ static void paragraph_add_line(block_parser_t *p, size_t index)
 }
 
 /*
+ * Adds the rest of the current line to the code block at index: the record
+ * is the position the prefixes and the code indentation were consumed to,
+ * with the columns left of a tab as pad, and the block ends at the end of
+ * the line's content. An indented code block also keeps the end of its last
+ * line that is not blank.
+ */
+static void code_add_line(block_parser_t *p, size_t index)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    open_block_t *block = stack_at(p, index);
+
+    amark_line_set(p->doc, pos->line, pos->offset, pos->pad);
+    block->end = pos->content_end;
+    if (!pos->blank) {
+        block->last_nonblank_end = pos->content_end;
+    }
+}
+
+/*
  * The third phase: closes the elements that did not match, and adds the
  * rest of the line to the element at container, or opens a paragraph for
  * it. A blank line opens nothing and gets the record of a blank line.
@@ -622,13 +806,16 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
+    if (p->line_taken) {
+        /* A leaf opened on this line took it whole; recorded already. */
+        return AMARK_ERROR_NONE;
+    }
     switch (stack_at(p, container)->kind) {
     case AMARK_KIND_PARAGRAPH:
         paragraph_add_line(p, container);
         return AMARK_ERROR_NONE;
-    case AMARK_KIND_THEMATIC_BREAK:
-    case AMARK_KIND_HEADING:
-        /* Opened on this line, which they take whole; recorded already. */
+    case AMARK_KIND_CODE_BLOCK:
+        code_add_line(p, container);
         return AMARK_ERROR_NONE;
     default:
         break;
@@ -657,6 +844,7 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
     size_t i;
 
     amark_line_pos_init(&p->pos, line, bounds);
+    p->line_taken = false;
 
     /* 1. Match the open blocks from the outside in; the root always does. */
     for (i = 1; i <= top; i++) {
@@ -665,7 +853,8 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
         amark_line_pos_find_nonspace(&p->pos, p->bytes);
         result = continue_block(p, i);
         if (result == CONTINUE_LINE_DONE) {
-            return AMARK_ERROR_NONE;
+            /* The element at i is the innermost: a leaf. */
+            return close_above(p, i - 1);
         }
         if (result == CONTINUE_NO) {
             break;
@@ -715,6 +904,7 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     p.max_depth = config->max_nesting_depth;
     p.max_nodes = config->max_node_count;
     p.all_matched = false;
+    p.line_taken = false;
     amark_array_init(&p.stack, scratch, sizeof(open_block_t));
 
     /*
