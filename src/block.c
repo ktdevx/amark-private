@@ -339,11 +339,9 @@ static amark_error_t close_block(block_parser_t *p, size_t parent,
     case AMARK_KIND_CODE_BLOCK:
         return close_code_block(p, parent, block);
     case AMARK_KIND_HTML_BLOCK:
-        /*
-         * No start rule opens this leaf yet; the rule that opens it makes
-         * its node here.
-         */
-        return AMARK_ERROR_NONE;
+        /* Raw HTML is not inline content. */
+        return append_node(p, parent, AMARK_KIND_HTML_BLOCK, block->start,
+                           block->end, &node);
     default:
         /* Dialect kinds close doing nothing. */
         return AMARK_ERROR_NONE;
@@ -517,10 +515,19 @@ static continue_result_t continue_block(block_parser_t *p, size_t index)
         return CONTINUE_NO;
     case AMARK_KIND_CODE_BLOCK:
         return continue_code_block(p, block);
+    case AMARK_KIND_HTML_BLOCK:
+        /*
+         * Conditions 1 to 5 end on the line with their end condition (seen
+         * when the line is added); 6 and 7 end before a blank line, which
+         * is not part of the block. Nothing is consumed.
+         */
+        if (block->html_type >= 6 && p->pos.blank) {
+            return CONTINUE_NO;
+        }
+        return CONTINUE_YES;
     case AMARK_KIND_BLOCK_QUOTE:
     case AMARK_KIND_LIST:
     case AMARK_KIND_LIST_ITEM:
-    case AMARK_KIND_HTML_BLOCK:
         /*
          * No start rule opens these kinds yet; the rules that open them
          * give their continuation here.
@@ -657,6 +664,41 @@ static amark_error_t start_fenced_code(block_parser_t *p, size_t *container,
 }
 
 /*
+ * Starts an HTML block if the rest of the line meets one of the 7 start
+ * conditions. The caller has checked that the indentation is at most 3
+ * columns. Condition 7 does not interrupt a paragraph, so it is not tried
+ * when the innermost open block is a paragraph: the line either continues
+ * it or could be a lazy continuation line of it. The block starts after the
+ * prefix, its indentation included; the line itself is added in the third
+ * phase, which also closes the block if the line meets the end condition.
+ */
+static amark_error_t start_html_block(block_parser_t *p, size_t *container,
+                                      start_result_t *result)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    size_t first = pos->first_nonspace;
+    unsigned type;
+    size_t index;
+    amark_error_t err;
+
+    type = amark_scan_html_start(p->bytes + first, pos->content_end - first);
+    if (type == 0 ||
+        (type == 7 &&
+         stack_at(p, stack_top(p))->kind == AMARK_KIND_PARAGRAPH)) {
+        return AMARK_ERROR_NONE;
+    }
+    err = push_block(p, *container, AMARK_KIND_HTML_BLOCK, false,
+                     pos->offset, &index);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    stack_at(p, index)->html_type = type;
+    *container = index;
+    *result = START_LEAF;
+    return AMARK_ERROR_NONE;
+}
+
+/*
  * Starts an indented code block. The caller has checked that the
  * indentation is at least 4 columns, that the line is not blank and that it
  * cannot be a lazy continuation line. The 4 columns are consumed; the block
@@ -719,6 +761,10 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
             if (err != AMARK_ERROR_NONE || *result != START_NONE) {
                 return err;
             }
+            err = start_html_block(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
             err = start_thematic_break(p, container, result);
             if (err != AMARK_ERROR_NONE || *result != START_NONE) {
                 return err;
@@ -738,7 +784,10 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
     case AMARK_KIND_HTML_BLOCK:
     case AMARK_KIND_THEMATIC_BREAK:
     case AMARK_KIND_HEADING:
-        /* Nothing starts inside a leaf that takes the whole line. */
+        /*
+         * Nothing starts inside a code or HTML block (their lines are raw)
+         * or inside a leaf that takes the whole line.
+         */
         return AMARK_ERROR_NONE;
     default:
         /* Dialect kinds start nothing. */
@@ -792,6 +841,29 @@ static void code_add_line(block_parser_t *p, size_t index)
 }
 
 /*
+ * Adds the rest of the current line to the HTML block at index: the record
+ * is the position after the prefix, the line's indentation included, with
+ * the columns left of a tab as pad, and the block ends at the end of the
+ * line's content. Conditions 1 to 5 close the block on the line that meets
+ * their end condition, its first line included.
+ */
+static amark_error_t html_add_line(block_parser_t *p, size_t index)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    open_block_t *block = stack_at(p, index);
+
+    amark_line_set(p->doc, pos->line, pos->offset, pos->pad);
+    block->end = pos->content_end;
+    if (block->html_type <= 5 &&
+        amark_scan_html_end(p->bytes + pos->offset,
+                            pos->content_end - pos->offset,
+                            block->html_type)) {
+        return close_above(p, index - 1);
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
  * The third phase: closes the elements that did not match, and adds the
  * rest of the line to the element at container, or opens a paragraph for
  * it. A blank line opens nothing and gets the record of a blank line.
@@ -817,6 +889,8 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
     case AMARK_KIND_CODE_BLOCK:
         code_add_line(p, container);
         return AMARK_ERROR_NONE;
+    case AMARK_KIND_HTML_BLOCK:
+        return html_add_line(p, container);
     default:
         break;
     }

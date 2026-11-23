@@ -967,6 +967,297 @@ NAOS_TEST(allocation_failure_with_code_blocks)
 }
 
 /* ---------------------------------------------------------------------- */
+/* HTML blocks                                                            */
+/* ---------------------------------------------------------------------- */
+
+/* Destroys g_doc so that the test can parse again. */
+static void reset_doc(void)
+{
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+}
+
+NAOS_TEST(html_block_conditions_one_to_five_close_on_the_end_line)
+{
+    /*
+     * 1: "<pre x>\n" 0-7, "a\n" 8-9, "</PRE> b\n" 10-18, "c" 19. The end
+     * tag is compared without regard to case; the line with it belongs to
+     * the block.
+     */
+    PARSE("<pre x>\na\n</PRE> b\nc");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 18, 1, 3);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 19, 20, 4, 4);
+    check_record(1, 0, 0);
+    check_record(2, 8, 0);
+    check_record(3, 10, 0);
+    check_record(4, 19, 0);
+    /* HTML is not inline content. */
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 1);
+    check_content(0, root_child(1), 19, 20);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    reset_doc();
+
+    /* 2: "<!--\n" 0-4, "# x\n" 5-8, "-->\n" 9-12, "c" 13. */
+    PARSE("<!--\n# x\n-->\nc");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 12, 1, 3);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 13, 14, 4, 4);
+    check_record(2, 5, 0);
+    check_record(3, 9, 0);
+    reset_doc();
+
+    /*
+     * 3: "<?php\n" 0-5, "\n" 6, "?>a\n" 7-10, "b" 11. A blank line does not
+     * end conditions 1 to 5.
+     */
+    PARSE("<?php\n\n?>a\nb");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 10, 1, 3);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 11, 12, 4, 4);
+    check_record(2, 6, 0);
+    check_record(3, 7, 0);
+    reset_doc();
+
+    /* 4: "<!DOCTYPE\n" 0-9, "html>\n" 10-15, "b" 16. */
+    PARSE("<!DOCTYPE\nhtml>\nb");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 15, 1, 2);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 16, 17, 3, 3);
+    reset_doc();
+
+    /* 5: "<![CDATA[\n" 0-9, "x ]]> y\n" 10-17, "b" 18. */
+    PARSE("<![CDATA[\nx ]]> y\nb");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 17, 1, 2);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 18, 19, 3, 3);
+    check_record(2, 10, 0);
+}
+
+NAOS_TEST(html_block_closes_on_its_start_line)
+{
+    /* "<!-- a -->\n" 0-10, "b" 11. */
+    PARSE("<!-- a -->\nb");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 10, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 11, 12, 2, 2);
+    check_record(1, 0, 0);
+    reset_doc();
+
+    /*
+     * "  <script>x</script>  \n" 0-22, "b" 23. The block and its record
+     * start after the prefix, its indentation included; it ends at the end
+     * of the line's content, trailing spaces included.
+     */
+    PARSE("  <script>x</script>  \nb");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 22, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 23, 24, 2, 2);
+    check_record(1, 0, 0);
+    check_record(2, 23, 0);
+    reset_doc();
+
+    /* Two blocks: "<?a?>\n" 0-5, "<!X>" 6-9. */
+    PARSE("<?a?>\n<!X>");
+    check_dump("(doc (html) (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 5, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HTML_BLOCK, 6, 10, 2, 2);
+}
+
+NAOS_TEST(html_block_conditions_six_and_seven_end_before_a_blank_line)
+{
+    /*
+     * 6: "<div>\n" 0-5, "*a*\n" 6-9, "\n" 10, "b" 11. The blank line is not
+     * part of the block.
+     */
+    PARSE("<div>\n*a*\n\nb");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 9, 1, 2);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 11, 12, 4, 4);
+    check_record(1, 0, 0);
+    check_record(2, 6, 0);
+    check_record(3, 10, 0);
+    check_record(4, 11, 0);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 1);
+    reset_doc();
+
+    /*
+     * 7: "<a href=\"x\">\n" 0-12, "# b\n" 13-16, "  \n" 17-19, "c" 20. A
+     * line of spaces is blank too; its record is the end of its content.
+     */
+    PARSE("<a href=\"x\">\n# b\n  \nc");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 16, 1, 2);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 20, 21, 4, 4);
+    check_record(2, 13, 0);
+    check_record(3, 19, 0);
+    reset_doc();
+
+    /* 6, a closing tag in upper case, to the end of the range: 0-7. */
+    PARSE("</DIV>\nx");
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 8, 1, 2);
+    reset_doc();
+
+    /* 7, a closing tag of any name: "</custom>\n" 0-9, "x" 10. */
+    PARSE("</custom>\nx");
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 11, 1, 2);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+}
+
+NAOS_TEST(html_block_condition_seven_does_not_interrupt_a_paragraph)
+{
+    /* "a\n" 0-1, "<span>\n" 2-8, "b" 9: one paragraph. */
+    PARSE("a\n<span>\nb");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 10, 1, 3);
+    check_content(0, root_child(0), 0, 10);
+    reset_doc();
+
+    /* After a blank line it starts: "a\n" 0-1, "\n" 2, "<span>\n" 3-9,
+     * "b" 10. */
+    PARSE("a\n\n<span>\nb");
+    check_dump("(doc (p) (html))");
+    check_node(root_child(1), AMARK_KIND_HTML_BLOCK, 3, 11, 3, 4);
+    check_record(3, 3, 0);
+    check_record(4, 10, 0);
+    reset_doc();
+
+    /* 6 interrupts: "a\n" 0-1, "<DIV>\n" 2-7, "b" 8. */
+    PARSE("a\n<DIV>\nb");
+    check_dump("(doc (p) (html))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HTML_BLOCK, 2, 9, 2, 3);
+    reset_doc();
+
+    /* 1 to 5 interrupt: "a\n" 0-1, "<!-- c -->" 2-11. */
+    PARSE("a\n<!-- c -->");
+    check_dump("(doc (p) (html))");
+    check_node(root_child(1), AMARK_KIND_HTML_BLOCK, 2, 12, 2, 2);
+    reset_doc();
+
+    PARSE("a\n<pre>\nb");
+    check_dump("(doc (p) (html))");
+}
+
+NAOS_TEST(html_block_lines_are_raw)
+{
+    /*
+     * "<table>\n" 0-7, "# a\n" 8-11, "```\n" 12-15, "    b\n" 16-21,
+     * "- c\n" 22-25, "</table>" 26-33: no other block starts inside.
+     */
+    PARSE("<table>\n# a\n```\n    b\n- c\n</table>");
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 34, 1, 6);
+    check_record(2, 8, 0);
+    check_record(3, 12, 0);
+    check_record(4, 16, 0);
+    check_record(5, 22, 0);
+    check_record(6, 26, 0);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2);
+    reset_doc();
+
+    /* An HTML block started inside does not end the block: "<!--\n" 0-4,
+     * "<div>\n" 5-10, "-->" 11-13. */
+    PARSE("<!--\n<div>\n-->");
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 14, 1, 3);
+}
+
+NAOS_TEST(html_block_indentation)
+{
+    /* "   <div>\n" 0-8, "  a" 9-11. */
+    PARSE("   <div>\n  a");
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 12, 1, 2);
+    check_record(1, 0, 0);
+    check_record(2, 9, 0);
+    reset_doc();
+
+    PARSE("    <div>");
+    check_dump("(doc (code indented))");
+    reset_doc();
+
+    PARSE("  \t<!-- -->");
+    check_dump("(doc (code indented))");
+    reset_doc();
+
+    /* Condition 7 needs only white space after the tag. */
+    PARSE("<span> x");
+    check_dump("(doc (p))");
+}
+
+NAOS_TEST(html_block_with_each_line_ending)
+{
+    /* "<div>\r\n" 0-6, "a\r" 7-8, "b\n" 9-10, "\r\n" 11-12, "c" 13. */
+    PARSE("<div>\r\na\rb\n\r\nc");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 10, 1, 3);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 13, 14, 5, 5);
+    check_record(2, 7, 0);
+    check_record(3, 9, 0);
+    check_record(4, 11, 0);
+    reset_doc();
+
+    /* "<!--\r" 0-4, "-->\r" 5-8, "x" 9. */
+    PARSE("<!--\r-->\rx");
+    check_dump("(doc (html) (p))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 8, 1, 2);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 9, 10, 3, 3);
+}
+
+NAOS_TEST(unclosed_html_block_closes_at_the_end_of_the_range)
+{
+    /*
+     * "<!--\n" 0-4, "a\n" 5-6, "\n" 7: the blank line belongs to the block
+     * (conditions 1 to 5 do not end on a blank line), so the block ends at
+     * the end of its (empty) content, 7, and its end line is 2. This is the
+     * design gap recorded in the 7.2 Implementation Note of tasks.md (the
+     * same as unclosed_fence_closes_at_the_end_of_the_range); the range
+     * rules are followed as written until it is decided upstream.
+     */
+    PARSE("<!--\na\n\n");
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 7, 1, 2);
+    check_record(3, 7, 0);
+    reset_doc();
+
+    /* "<!--\n" 0-4, "a\n" 5-6, "  " 7-8: the record keeps the spaces. */
+    PARSE("<!--\na\n  ");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 9, 1, 3);
+    check_record(3, 7, 0);
+    reset_doc();
+
+    /* A start line alone: "<style" 0-5. */
+    PARSE("<style");
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 6, 1, 1);
+}
+
+NAOS_TEST(html_block_in_a_range_starting_inside_a_line)
+{
+    /* "xx" 0-1 outside, "<div>\n" 2-7, "a" 8. */
+    PARSE_RANGE("xx<div>\na", 2, 9);
+    check_dump("(doc (html))");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 2, 9, 1, 2);
+    check_record(1, 2, 0);
+    check_record(2, 8, 0);
+}
+
+NAOS_TEST(node_count_limit_counts_html_blocks)
+{
+    set_content("<div>\n\n<!-- -->", 15);
+    NAOS_CHECK_INT_EQ(parse_buffer(0, 15, 0, 2), AMARK_ERROR_LIMIT_EXCEEDED);
+    reset_doc();
+
+    set_content("<div>\n\n<!-- -->", 15);
+    NAOS_REQUIRE_INT_EQ(parse_buffer(0, 15, 1, 3), AMARK_ERROR_NONE);
+    check_dump("(doc (html) (html))");
+}
+
+/* ---------------------------------------------------------------------- */
 /* Parsed ranges that do not start at offset 0                           */
 /* ---------------------------------------------------------------------- */
 
@@ -1387,7 +1678,17 @@ NAOS_SUITE(block_leaves,
     NAOS_ADD_TEST(backtick_in_the_info_of_a_backtick_fence_is_not_a_fence),
     NAOS_ADD_TEST(fenced_code_in_a_range_starting_inside_a_line),
     NAOS_ADD_TEST(node_count_limit_counts_code_blocks),
-    NAOS_ADD_TEST(allocation_failure_with_code_blocks)
+    NAOS_ADD_TEST(allocation_failure_with_code_blocks),
+    NAOS_ADD_TEST(html_block_conditions_one_to_five_close_on_the_end_line),
+    NAOS_ADD_TEST(html_block_closes_on_its_start_line),
+    NAOS_ADD_TEST(html_block_conditions_six_and_seven_end_before_a_blank_line),
+    NAOS_ADD_TEST(html_block_condition_seven_does_not_interrupt_a_paragraph),
+    NAOS_ADD_TEST(html_block_lines_are_raw),
+    NAOS_ADD_TEST(html_block_indentation),
+    NAOS_ADD_TEST(html_block_with_each_line_ending),
+    NAOS_ADD_TEST(unclosed_html_block_closes_at_the_end_of_the_range),
+    NAOS_ADD_TEST(html_block_in_a_range_starting_inside_a_line),
+    NAOS_ADD_TEST(node_count_limit_counts_html_blocks)
 )
 
 NAOS_SUITE(block_ranges,
