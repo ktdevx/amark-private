@@ -200,7 +200,7 @@
   - _Depends: 1.3_
   - _Requirements: 19.1, 19.5_
 
-- [ ] 9.4 Fenced code blocks から Blank lines までの例を確かめる
+- [x] 9.4 Fenced code blocks から Blank lines までの例を確かめる
   - Fenced code blocks、HTML blocks、Paragraphs、Blank lines の例を、9.1 と同じファイルに足す
   - 完了の状態：spec.txt のリーフの単体テストで 9 つの節の 169 個の例がすべて通る
   - _Depends: 9.1_

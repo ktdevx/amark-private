@@ -21,8 +21,8 @@
  * shows a right arrow, and other bytes outside ASCII as octal escapes of
  * their UTF-8 encoding.
  *
- * Sections: Tabs, Thematic breaks, ATX headings, Setext headings and
- * Indented code blocks.
+ * Sections: Tabs, Thematic breaks, ATX headings, Setext headings, Indented
+ * code blocks, Fenced code blocks, HTML blocks, Paragraphs and Blank lines.
  */
 
 #include "test_alloc.h"
@@ -427,6 +427,300 @@ NAOS_TEST(spec_indented_code_blocks)
     CHECK_EXAMPLES(examples);
 }
 
+/* Fenced code blocks (examples 119-147). */
+NAOS_TEST(spec_fenced_code_blocks)
+{
+    static const spec_example_t examples[] = {
+        {119,
+         "```\n<\n >\n```\n",
+         "(doc (code fenced ` 3))"},
+        {120,
+         "~~~\n<\n >\n~~~\n",
+         "(doc (code fenced ~ 3))"},
+        {121,
+         "``\nfoo\n``\n",
+         "(doc (p))"},
+        {122,
+         "```\naaa\n~~~\n```\n",
+         "(doc (code fenced ` 3))"},
+        {123,
+         "~~~\naaa\n```\n~~~\n",
+         "(doc (code fenced ~ 3))"},
+        {124,
+         "````\naaa\n```\n``````\n",
+         "(doc (code fenced ` 4))"},
+        {125,
+         "~~~~\naaa\n~~~\n~~~~\n",
+         "(doc (code fenced ~ 4))"},
+        {126,
+         "```\n",
+         "(doc (code fenced ` 3))"},
+        {127,
+         "`````\n\n```\naaa\n",
+         "(doc (code fenced ` 5))"},
+        {128,
+         "> ```\n> aaa\n\nbbb\n",
+         "(doc (bq (code fenced ` 3)) (p))"},
+        {129,
+         "```\n\n  \n```\n",
+         "(doc (code fenced ` 3))"},
+        {130,
+         "```\n```\n",
+         "(doc (code fenced ` 3))"},
+        {131,
+         " ```\n aaa\naaa\n```\n",
+         "(doc (code fenced ` 3))"},
+        {132,
+         "  ```\naaa\n  aaa\naaa\n  ```\n",
+         "(doc (code fenced ` 3))"},
+        {133,
+         "   ```\n   aaa\n    aaa\n  aaa\n   ```\n",
+         "(doc (code fenced ` 3))"},
+        {134,
+         "    ```\n    aaa\n    ```\n",
+         "(doc (code indented))"},
+        {135,
+         "```\naaa\n  ```\n",
+         "(doc (code fenced ` 3))"},
+        {136,
+         "   ```\naaa\n  ```\n",
+         "(doc (code fenced ` 3))"},
+        {137,
+         "```\naaa\n    ```\n",
+         "(doc (code fenced ` 3))"},
+        {138,
+         "``` ```\naaa\n",
+         "(doc (p))"},
+        {139,
+         "~~~~~~\naaa\n~~~ ~~\n",
+         "(doc (code fenced ~ 6))"},
+        {140,
+         "foo\n```\nbar\n```\nbaz\n",
+         "(doc (p) (code fenced ` 3) (p))"},
+        {141,
+         "foo\n---\n~~~\nbar\n~~~\n# baz\n",
+         "(doc (h 2 setext) (code fenced ~ 3) (h 1 atx))"},
+        {142,
+         "```ruby\ndef foo(x)\n  return 3\nend\n```\n",
+         "(doc (code fenced ` 3 info))"},
+        {143,
+         "~~~~    ruby startline=3 $%@#$\ndef foo(x)\n  return 3\nend\n"
+         "~~~~~~~\n",
+         "(doc (code fenced ~ 4 info))"},
+        {144,
+         "````;\n````\n",
+         "(doc (code fenced ` 4 info))"},
+        {145,
+         "``` aa ```\nfoo\n",
+         "(doc (p))"},
+        {146,
+         "~~~ aa ``` ~~~\nfoo\n~~~\n",
+         "(doc (code fenced ~ 3 info))"},
+        {147,
+         "```\n``` aaa\n```\n",
+         "(doc (code fenced ` 3))"},
+    };
+
+    CHECK_EXAMPLES(examples);
+}
+
+/* HTML blocks (examples 148-191). */
+NAOS_TEST(spec_html_blocks)
+{
+    static const spec_example_t examples[] = {
+        {148,
+         "<table><tr><td>\n<pre>\n**Hello**,\n\n_world_.\n</pre>\n"
+         "</td></tr></table>\n",
+         "(doc (html) (p) (html))"},
+        {149,
+         "<table>\n  <tr>\n    <td>\n           hi\n    </td>\n  </tr>\n"
+         "</table>\n\nokay.\n",
+         "(doc (html) (p))"},
+        {150,
+         " <div>\n  *hello*\n         <foo><a>\n",
+         "(doc (html))"},
+        {151,
+         "</div>\n*foo*\n",
+         "(doc (html))"},
+        {152,
+         "<DIV CLASS=\"foo\">\n\n*Markdown*\n\n</DIV>\n",
+         "(doc (html) (p) (html))"},
+        {153,
+         "<div id=\"foo\"\n  class=\"bar\">\n</div>\n",
+         "(doc (html))"},
+        {154,
+         "<div id=\"foo\" class=\"bar\n  baz\">\n</div>\n",
+         "(doc (html))"},
+        {155,
+         "<div>\n*foo*\n\n*bar*\n",
+         "(doc (html) (p))"},
+        {156,
+         "<div id=\"foo\"\n*hi*\n",
+         "(doc (html))"},
+        {157,
+         "<div class\nfoo\n",
+         "(doc (html))"},
+        {158,
+         "<div *?\?\?-&&&-<---\n*foo*\n",
+         "(doc (html))"},
+        {159,
+         "<div><a href=\"bar\">*foo*</a></div>\n",
+         "(doc (html))"},
+        {160,
+         "<table><tr><td>\nfoo\n</td></tr></table>\n",
+         "(doc (html))"},
+        {161,
+         "<div></div>\n``` c\nint x = 33;\n```\n",
+         "(doc (html))"},
+        {162,
+         "<a href=\"foo\">\n*bar*\n</a>\n",
+         "(doc (html))"},
+        {163,
+         "<Warning>\n*bar*\n</Warning>\n",
+         "(doc (html))"},
+        {164,
+         "<i class=\"foo\">\n*bar*\n</i>\n",
+         "(doc (html))"},
+        {165,
+         "</ins>\n*bar*\n",
+         "(doc (html))"},
+        {166,
+         "<del>\n*foo*\n</del>\n",
+         "(doc (html))"},
+        {167,
+         "<del>\n\n*foo*\n\n</del>\n",
+         "(doc (html) (p) (html))"},
+        {168,
+         "<del>*foo*</del>\n",
+         "(doc (p))"},
+        {169,
+         "<pre language=\"haskell\"><code>\nimport Text.HTML.TagSoup\n\n"
+         "main :: IO ()\nmain = print $ parseTags tags\n</code></pre>\n"
+         "okay\n",
+         "(doc (html) (p))"},
+        {170,
+         "<script type=\"text/javascript\">\n// JavaScript example\n\n"
+         "document.getElementById(\"demo\").innerHTML = "
+         "\"Hello JavaScript!\";\n</script>\nokay\n",
+         "(doc (html) (p))"},
+        {171,
+         "<textarea>\n\n*foo*\n\n_bar_\n\n</textarea>\n",
+         "(doc (html))"},
+        {172,
+         "<style\n  type=\"text/css\">\nh1 {color:red;}\n\n"
+         "p {color:blue;}\n</style>\nokay\n",
+         "(doc (html) (p))"},
+        {173,
+         "<style\n  type=\"text/css\">\n\nfoo\n",
+         "(doc (html))"},
+        {174,
+         "> <div>\n> foo\n\nbar\n",
+         "(doc (bq (html)) (p))"},
+        {175,
+         "- <div>\n- foo\n",
+         "(doc (ul - tight (li (html)) (li (p))))"},
+        {176,
+         "<style>p{color:red;}</style>\n*foo*\n",
+         "(doc (html) (p))"},
+        {177,
+         "<!-- foo -->*bar*\n*baz*\n",
+         "(doc (html) (p))"},
+        {178,
+         "<script>\nfoo\n</script>1. *bar*\n",
+         "(doc (html))"},
+        {179,
+         "<!-- Foo\n\nbar\n   baz -->\nokay\n",
+         "(doc (html) (p))"},
+        {180,
+         "<?php\n\n  echo '>';\n\n?>\nokay\n",
+         "(doc (html) (p))"},
+        {181,
+         "<!DOCTYPE html>\n",
+         "(doc (html))"},
+        {182,
+         "<![CDATA[\nfunction matchwo(a,b)\n{\n"
+         "  if (a < b && a < 0) then {\n    return 1;\n\n  } else {\n\n"
+         "    return 0;\n  }\n}\n]]>\nokay\n",
+         "(doc (html) (p))"},
+        {183,
+         "  <!-- foo -->\n\n    <!-- foo -->\n",
+         "(doc (html) (code indented))"},
+        {184,
+         "  <div>\n\n    <div>\n",
+         "(doc (html) (code indented))"},
+        {185,
+         "Foo\n<div>\nbar\n</div>\n",
+         "(doc (p) (html))"},
+        {186,
+         "<div>\nbar\n</div>\n*foo*\n",
+         "(doc (html))"},
+        {187,
+         "Foo\n<a href=\"bar\">\nbaz\n",
+         "(doc (p))"},
+        {188,
+         "<div>\n\n*Emphasized* text.\n\n</div>\n",
+         "(doc (html) (p) (html))"},
+        {189,
+         "<div>\n*Emphasized* text.\n</div>\n",
+         "(doc (html))"},
+        {190,
+         "<table>\n\n<tr>\n\n<td>\nHi\n</td>\n\n</tr>\n\n</table>\n",
+         "(doc (html) (html) (html) (html) (html))"},
+        {191,
+         "<table>\n\n  <tr>\n\n    <td>\n      Hi\n    </td>\n\n  </tr>\n\n"
+         "</table>\n",
+         "(doc (html) (html) (code indented) (html) (html))"},
+    };
+
+    CHECK_EXAMPLES(examples);
+}
+
+/* Paragraphs (examples 219-226). */
+NAOS_TEST(spec_paragraphs)
+{
+    static const spec_example_t examples[] = {
+        {219,
+         "aaa\n\nbbb\n",
+         "(doc (p) (p))"},
+        {220,
+         "aaa\nbbb\n\nccc\nddd\n",
+         "(doc (p) (p))"},
+        {221,
+         "aaa\n\n\nbbb\n",
+         "(doc (p) (p))"},
+        {222,
+         "  aaa\n bbb\n",
+         "(doc (p))"},
+        {223,
+         "aaa\n             bbb\n"
+         "                                       ccc\n",
+         "(doc (p))"},
+        {224,
+         "   aaa\nbbb\n",
+         "(doc (p))"},
+        {225,
+         "    aaa\nbbb\n",
+         "(doc (code indented) (p))"},
+        {226,
+         "aaa     \nbbb     \n",
+         "(doc (p))"},
+    };
+
+    CHECK_EXAMPLES(examples);
+}
+
+/* Blank lines (example 227). */
+NAOS_TEST(spec_blank_lines)
+{
+    static const spec_example_t examples[] = {
+        {227,
+         "  \n\naaa\n  \n\n# aaa\n\n  \n",
+         "(doc (p) (h 1 atx))"},
+    };
+
+    CHECK_EXAMPLES(examples);
+}
+
 NAOS_SUITE(spec_leaf_blocks,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -434,7 +728,11 @@ NAOS_SUITE(spec_leaf_blocks,
     NAOS_ADD_TEST(spec_thematic_breaks),
     NAOS_ADD_TEST(spec_atx_headings),
     NAOS_ADD_TEST(spec_setext_headings),
-    NAOS_ADD_TEST(spec_indented_code_blocks)
+    NAOS_ADD_TEST(spec_indented_code_blocks),
+    NAOS_ADD_TEST(spec_fenced_code_blocks),
+    NAOS_ADD_TEST(spec_html_blocks),
+    NAOS_ADD_TEST(spec_paragraphs),
+    NAOS_ADD_TEST(spec_blank_lines)
 )
 
 NAOS_MAIN(
