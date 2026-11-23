@@ -15,6 +15,7 @@
 #include "array.h"
 #include "line.h"
 #include "parse_data.h"
+#include "scan.h"
 #include "tree_internal.h"
 
 /*
@@ -39,6 +40,9 @@
  */
 
 #define TAB_STOP 4
+
+/* The indentation, in columns, from which a line is indented code. */
+#define CODE_INDENT 4
 
 /* ------------------------------------------------------------------------ */
 /* The position on a line                                                   */
@@ -251,12 +255,38 @@ static amark_error_t close_paragraph(block_parser_t *p, size_t parent,
 }
 
 /*
+ * Closes a heading: adds its node under the element at parent with its
+ * level and style, and its inline content (of length 0 when it is empty).
+ */
+static amark_error_t close_heading(block_parser_t *p, size_t parent,
+                                   const open_block_t *block,
+                                   amark_heading_style_t style)
+{
+    amark_node_id_t node;
+    amark_error_t err;
+
+    err = append_node(p, parent, AMARK_KIND_HEADING, block->start,
+                      block->end, &node);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    err = amark_tree_set_heading(p->doc, node, block->level, style);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    return amark_inline_content_add(p->doc, node, block->content_start,
+                                    block->content_end);
+}
+
+/*
  * The closing rules of each kind, for block, just taken off the stack;
  * parent is the index of its parent element (now the top).
  */
 static amark_error_t close_block(block_parser_t *p, size_t parent,
                                  const open_block_t *block)
 {
+    amark_node_id_t node;
+
     switch (block->kind) {
     case AMARK_KIND_PARAGRAPH:
         return close_paragraph(p, parent, block);
@@ -266,8 +296,12 @@ static amark_error_t close_block(block_parser_t *p, size_t parent,
         /* The node was made when the container opened. */
         amark_tree_set_range(p->doc, block->node, block->start, block->end);
         return AMARK_ERROR_NONE;
-    case AMARK_KIND_THEMATIC_BREAK:
     case AMARK_KIND_HEADING:
+        /* A heading opened as an element of its own is an ATX heading. */
+        return close_heading(p, parent, block, AMARK_HEADING_ATX);
+    case AMARK_KIND_THEMATIC_BREAK:
+        return append_node(p, parent, AMARK_KIND_THEMATIC_BREAK, block->start,
+                           block->end, &node);
     case AMARK_KIND_CODE_BLOCK:
     case AMARK_KIND_HTML_BLOCK:
         /*
@@ -426,6 +460,84 @@ typedef enum start_result {
 } start_result_t;
 
 /*
+ * Opens a one-line leaf of kind over the rest of the current line, from its
+ * first non-space byte to the end of the line's content, inside the element
+ * at *container, and makes *container its index. The record of the line is
+ * record_start.
+ */
+static amark_error_t open_line_leaf(block_parser_t *p, size_t *container,
+                                    amark_kind_t kind, size_t record_start,
+                                    start_result_t *result)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    size_t index;
+    amark_error_t err;
+
+    err = push_block(p, *container, kind, false, pos->first_nonspace,
+                     &index);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    stack_at(p, index)->end = pos->content_end;
+    amark_line_set(p->doc, pos->line, record_start, 0);
+    *container = index;
+    *result = START_LEAF;
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Starts an ATX heading if the rest of the line is one. The caller has
+ * checked that the indentation is at most 3 columns. The record of the line
+ * is the start of the heading's content.
+ */
+static amark_error_t start_atx_heading(block_parser_t *p, size_t *container,
+                                       start_result_t *result)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    size_t first = pos->first_nonspace;
+    unsigned level;
+    size_t content_start;
+    size_t content_end;
+    open_block_t *block;
+    amark_error_t err;
+
+    if (!amark_scan_atx_heading(p->bytes + first, pos->content_end - first,
+                                &level, &content_start, &content_end)) {
+        return AMARK_ERROR_NONE;
+    }
+    err = open_line_leaf(p, container, AMARK_KIND_HEADING,
+                         first + content_start, result);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    block = stack_at(p, *container);
+    block->level = level;
+    block->content_start = first + content_start;
+    block->content_end = first + content_end;
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Starts a thematic break if the rest of the line is one. The caller has
+ * checked that the indentation is at most 3 columns. The record of the line
+ * is the first character of the break.
+ */
+static amark_error_t start_thematic_break(block_parser_t *p,
+                                          size_t *container,
+                                          start_result_t *result)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    size_t first = pos->first_nonspace;
+
+    if (!amark_scan_thematic_break(p->bytes + first,
+                                   pos->content_end - first)) {
+        return AMARK_ERROR_NONE;
+    }
+    return open_line_leaf(p, container, AMARK_KIND_THEMATIC_BREAK, first,
+                          result);
+}
+
+/*
  * The start rules: whether a new block starts at the current position
  * inside the element at *container (the innermost matched or opened one).
  * If one does, it is opened and *container becomes its index. The position
@@ -434,6 +546,8 @@ typedef enum start_result {
 static amark_error_t start_block(block_parser_t *p, size_t *container,
                                  start_result_t *result)
 {
+    amark_error_t err;
+
     *result = START_NONE;
     switch (stack_at(p, *container)->kind) {
     case AMARK_KIND_DOCUMENT:
@@ -444,10 +558,17 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
         /*
          * The CommonMark starts are checked here in this order: block
          * quote, ATX heading, opening fence, HTML block, setext underline,
-         * thematic break, list item, indented code block. None is added
-         * yet, so every line that is not blank becomes paragraph text.
+         * thematic break, list item, indented code block. Those not added
+         * yet leave the line to become paragraph text.
          */
-        return AMARK_ERROR_NONE;
+        if (p->pos.indent >= CODE_INDENT || p->pos.blank) {
+            return AMARK_ERROR_NONE;
+        }
+        err = start_atx_heading(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+        return start_thematic_break(p, container, result);
     case AMARK_KIND_CODE_BLOCK:
     case AMARK_KIND_HTML_BLOCK:
     case AMARK_KIND_THEMATIC_BREAK:
@@ -501,9 +622,16 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
-    if (stack_at(p, container)->kind == AMARK_KIND_PARAGRAPH) {
+    switch (stack_at(p, container)->kind) {
+    case AMARK_KIND_PARAGRAPH:
         paragraph_add_line(p, container);
         return AMARK_ERROR_NONE;
+    case AMARK_KIND_THEMATIC_BREAK:
+    case AMARK_KIND_HEADING:
+        /* Opened on this line, which they take whole; recorded already. */
+        return AMARK_ERROR_NONE;
+    default:
+        break;
     }
     if (pos->blank) {
         amark_line_set(p->doc, pos->line, pos->content_end, 0);

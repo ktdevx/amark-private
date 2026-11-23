@@ -6,11 +6,12 @@
 /*
  * Unit tests of the block parser (src/block.h), calling amark_block_parse
  * directly on a document made with amark_document_create and
- * amark_parse_data_create: paragraphs and blank lines, the ranges and lines
- * of paragraph nodes, their inline contents, the line records, ranges that
- * start past offset 0, the line position (the cached search for the first
- * non-space byte and the two advances), the node count and nesting depth limits, and
- * allocation failures. Every parsed document goes through amark_tree_check.
+ * amark_parse_data_create: paragraphs and blank lines, thematic breaks and
+ * ATX headings, the ranges and lines of their nodes, heading attributes,
+ * their inline contents, the line records, ranges that start past offset 0,
+ * the line position (the cached search for the first non-space byte and the
+ * two advances), the node count and nesting depth limits, and allocation
+ * failures. Every parsed document goes through amark_tree_check.
  */
 
 #include "arena.h"
@@ -356,6 +357,285 @@ NAOS_TEST(content_ending_with_a_line_ending)
     check_root(0, 2, 1, 1);
     check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 1, 1, 1);
     NAOS_CHECK_FALSE(amark_line_get(g_doc, 2, &record));
+}
+
+/* ---------------------------------------------------------------------- */
+/* Thematic breaks and ATX headings                                       */
+/* ---------------------------------------------------------------------- */
+
+/* Checks the level and the style of a heading node. */
+static void check_heading(amark_node_id_t node, unsigned level,
+                          amark_heading_style_t style)
+{
+    NAOS_CHECK_UINT_EQ(amark_heading_level(g_doc, node), level);
+    NAOS_CHECK_INT_EQ(amark_heading_style(g_doc, node), style);
+}
+
+NAOS_TEST(atx_heading_of_one_line)
+{
+    PARSE("# foo");
+    check_dump("(doc (h 1 atx))");
+    check_root(0, 5, 1, 1);
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 5, 1, 1);
+    check_heading(root_child(0), 1, AMARK_HEADING_ATX);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 1);
+    check_content(0, root_child(0), 2, 5);
+    /* The record of an ATX heading line: the start of its content. */
+    check_record(1, 2, 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2);
+}
+
+NAOS_TEST(atx_heading_levels_one_to_six)
+{
+    /*
+     * "# 1\n" 0-3, "## 2\n" 4-8, "### 3\n" 9-14, "#### 4\n" 15-21,
+     * "##### 5\n" 22-29, "###### 6\n" 30-38, "####### 7" 39-47.
+     */
+    PARSE("# 1\n## 2\n### 3\n#### 4\n##### 5\n###### 6\n####### 7");
+    check_dump("(doc (h 1 atx) (h 2 atx) (h 3 atx) (h 4 atx) (h 5 atx) "
+               "(h 6 atx) (p))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 3, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HEADING, 4, 8, 2, 2);
+    check_node(root_child(2), AMARK_KIND_HEADING, 9, 14, 3, 3);
+    check_node(root_child(3), AMARK_KIND_HEADING, 15, 21, 4, 4);
+    check_node(root_child(4), AMARK_KIND_HEADING, 22, 29, 5, 5);
+    check_node(root_child(5), AMARK_KIND_HEADING, 30, 38, 6, 6);
+    /* Seven '#' are not a heading. */
+    check_node(root_child(6), AMARK_KIND_PARAGRAPH, 39, 48, 7, 7);
+    check_heading(root_child(0), 1, AMARK_HEADING_ATX);
+    check_heading(root_child(1), 2, AMARK_HEADING_ATX);
+    check_heading(root_child(2), 3, AMARK_HEADING_ATX);
+    check_heading(root_child(3), 4, AMARK_HEADING_ATX);
+    check_heading(root_child(4), 5, AMARK_HEADING_ATX);
+    check_heading(root_child(5), 6, AMARK_HEADING_ATX);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 7);
+    check_content(0, root_child(0), 2, 3);
+    check_content(1, root_child(1), 7, 8);
+    check_content(2, root_child(2), 13, 14);
+    check_content(3, root_child(3), 20, 21);
+    check_content(4, root_child(4), 28, 29);
+    check_content(5, root_child(5), 37, 38);
+    check_content(6, root_child(6), 39, 48);
+    check_record(1, 2, 0);
+    check_record(6, 37, 0);
+    check_record(7, 39, 0);
+}
+
+NAOS_TEST(atx_heading_closing_sequence_and_trailing_spaces)
+{
+    /*
+     * "##  foo  ##  \n" 0-13: the content is "foo" (4-6), the node keeps
+     * the trailing spaces. "# foo#\n" 14-20: '#' not preceded by a space
+     * is content. "### b ### x\n" 21-32: not a closing sequence. "#\tq\t#"
+     * 33-37: tabs.
+     */
+    PARSE("##  foo  ##  \n# foo#\n### b ### x\n#\tq\t#");
+    check_dump("(doc (h 2 atx) (h 1 atx) (h 3 atx) (h 1 atx))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 13, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HEADING, 14, 20, 2, 2);
+    check_node(root_child(2), AMARK_KIND_HEADING, 21, 32, 3, 3);
+    check_node(root_child(3), AMARK_KIND_HEADING, 33, 38, 4, 4);
+    check_content(0, root_child(0), 4, 7);
+    check_content(1, root_child(1), 16, 20);
+    check_content(2, root_child(2), 25, 32);
+    check_content(3, root_child(3), 35, 36);
+    check_record(1, 4, 0);
+    check_record(2, 16, 0);
+    check_record(3, 25, 0);
+    check_record(4, 35, 0);
+}
+
+NAOS_TEST(empty_atx_headings)
+{
+    /*
+     * "#\n" 0-1, "## \n" 2-5, "### ###\n" 6-13, "# #" 14-16. Each has a
+     * content of length 0, at the position the scanner gives, and the
+     * record is there.
+     */
+    PARSE("#\n## \n### ###\n# #");
+    check_dump("(doc (h 1 atx) (h 2 atx) (h 3 atx) (h 1 atx))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HEADING, 2, 5, 2, 2);
+    check_node(root_child(2), AMARK_KIND_HEADING, 6, 13, 3, 3);
+    check_node(root_child(3), AMARK_KIND_HEADING, 14, 17, 4, 4);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 4);
+    check_content(0, root_child(0), 1, 1);
+    check_content(1, root_child(1), 5, 5);
+    check_content(2, root_child(2), 10, 10);
+    check_content(3, root_child(3), 16, 16);
+    check_record(1, 1, 0);
+    check_record(2, 5, 0);
+    check_record(3, 10, 0);
+    check_record(4, 16, 0);
+}
+
+NAOS_TEST(not_atx_headings)
+{
+    /* "#5 bolt", "#hashtag" and "\\# foo" are paragraph text. */
+    PARSE("#5 bolt\n#hashtag\n\\# foo");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 23, 1, 3);
+}
+
+NAOS_TEST(atx_heading_indentation)
+{
+    /*
+     * "   # a\n" 0-6: three spaces, a heading from the '#' at 3.
+     * "\n" 7. "b\n" 8-9, "    # c" 10-16: four columns of indentation
+     * do not start a heading, so the line continues the paragraph.
+     */
+    PARSE("   # a\n\nb\n    # c");
+    check_dump("(doc (h 1 atx) (p))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 3, 6, 1, 1);
+    check_content(0, root_child(0), 5, 6);
+    check_record(1, 5, 0);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 8, 17, 3, 4);
+    check_record(4, 14, 0);
+}
+
+NAOS_TEST(atx_heading_interrupts_a_paragraph)
+{
+    /* "a\n" 0-1, "# b\n" 2-5, "c" 6. */
+    PARSE("a\n# b\nc");
+    check_dump("(doc (p) (h 1 atx) (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HEADING, 2, 5, 2, 2);
+    check_node(root_child(2), AMARK_KIND_PARAGRAPH, 6, 7, 3, 3);
+    /* The inline contents follow the document order. */
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 3);
+    check_content(0, root_child(0), 0, 1);
+    check_content(1, root_child(1), 4, 5);
+    check_content(2, root_child(2), 6, 7);
+    check_record(1, 0, 0);
+    check_record(2, 4, 0);
+    check_record(3, 6, 0);
+}
+
+NAOS_TEST(atx_headings_with_each_line_ending)
+{
+    /*
+     * "# a\n" 0-3 (LF), "## b #\r" 4-10 (CR), "### c\r\n" 11-17 (CRLF),
+     * "#### d " 18-24 (none).
+     */
+    PARSE("# a\n## b #\r### c\r\n#### d ");
+    check_dump("(doc (h 1 atx) (h 2 atx) (h 3 atx) (h 4 atx))");
+    check_root(0, 25, 1, 4);
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 3, 1, 1);
+    check_node(root_child(1), AMARK_KIND_HEADING, 4, 10, 2, 2);
+    check_node(root_child(2), AMARK_KIND_HEADING, 11, 16, 3, 3);
+    check_node(root_child(3), AMARK_KIND_HEADING, 18, 25, 4, 4);
+    check_content(0, root_child(0), 2, 3);
+    check_content(1, root_child(1), 7, 8);
+    check_content(2, root_child(2), 15, 16);
+    check_content(3, root_child(3), 23, 24);
+    check_record(1, 2, 0);
+    check_record(2, 7, 0);
+    check_record(3, 15, 0);
+    check_record(4, 23, 0);
+}
+
+NAOS_TEST(thematic_breaks_with_each_line_ending)
+{
+    /*
+     * "***\n" 0-3 (LF), " - - -  \r" 4-12 (CR), "___\r\n" 13-17 (CRLF),
+     * "*\t*\t*" 18-22 (none). The node starts at the first character of
+     * the break and keeps the trailing white space.
+     */
+    PARSE("***\n - - -  \r___\r\n*\t*\t*");
+    check_dump("(doc (hr) (hr) (hr) (hr))");
+    check_root(0, 23, 1, 4);
+    check_node(root_child(0), AMARK_KIND_THEMATIC_BREAK, 0, 3, 1, 1);
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 5, 12, 2, 2);
+    check_node(root_child(2), AMARK_KIND_THEMATIC_BREAK, 13, 16, 3, 3);
+    check_node(root_child(3), AMARK_KIND_THEMATIC_BREAK, 18, 23, 4, 4);
+    /* No inline content; the record is the first character. */
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+    check_record(1, 0, 0);
+    check_record(2, 5, 0);
+    check_record(3, 13, 0);
+    check_record(4, 18, 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 5);
+}
+
+NAOS_TEST(thematic_break_interrupts_a_paragraph)
+{
+    /* "a\n" 0-1, "***\n" 2-5, "b\n" 6-7, "   ___" 8-13. */
+    PARSE("a\n***\nb\n   ___");
+    check_dump("(doc (p) (hr) (p) (hr))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 2, 5, 2, 2);
+    check_node(root_child(2), AMARK_KIND_PARAGRAPH, 6, 7, 3, 3);
+    check_node(root_child(3), AMARK_KIND_THEMATIC_BREAK, 11, 14, 4, 4);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 2);
+    check_record(2, 2, 0);
+    check_record(4, 11, 0);
+}
+
+NAOS_TEST(not_thematic_breaks)
+{
+    /*
+     * "**", "+++", "*-*", "_ _ _ a" and "b\n    ***" (indented four
+     * columns, continuing the paragraph) are paragraph text.
+     */
+    PARSE("**\n+++\n*-*\n_ _ _ a\n    ***");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 26, 1, 5);
+}
+
+NAOS_TEST(heading_and_break_in_a_range_starting_inside_a_line)
+{
+    /*
+     * "xx# a\n" 0-5, "---\n" 6-9, "yy" 10-11. The range [2, 10) starts
+     * at the '#': column 0 of the first line.
+     */
+    PARSE_RANGE("xx# a\n---\nyy", 2, 10);
+    check_dump("(doc (h 1 atx) (hr))");
+    check_root(2, 10, 1, 2);
+    check_node(root_child(0), AMARK_KIND_HEADING, 2, 5, 1, 1);
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 6, 9, 2, 2);
+    check_content(0, root_child(0), 4, 5);
+    check_record(1, 4, 0);
+    check_record(2, 6, 0);
+}
+
+NAOS_TEST(node_count_limit_counts_headings_and_breaks)
+{
+    set_content("# a\n***", 7);
+    NAOS_CHECK_INT_EQ(parse_buffer(0, 7, 0, 2), AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_UINT_LE(amark_document_node_count(g_doc), 2);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    set_content("# a\n***", 7);
+    NAOS_REQUIRE_INT_EQ(parse_buffer(0, 7, 1, 3), AMARK_ERROR_NONE);
+    check_dump("(doc (h 1 atx) (hr))");
+}
+
+NAOS_TEST(allocation_failure_with_headings_and_breaks)
+{
+    static const char k_input[] = "# a\nb\n***\n## c ##\n\n#\n";
+    size_t fail_at;
+    amark_error_t err = AMARK_ERROR_NOMEM;
+
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        set_content(k_input, sizeof(k_input) - 1);
+        err = parse_buffer(0, g_length, 0, 0);
+        g_state.fail_at = 0;
+        amark_arena_deinit(&g_scratch);
+        if (err == AMARK_ERROR_NONE) {
+            break;
+        }
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_REQUIRE_UINT_EQ(g_state.live, 0);
+    }
+    NAOS_REQUIRE_INT_EQ(err, AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    check_dump("(doc (h 1 atx) (p) (hr) (h 2 atx) (h 1 atx))");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -744,6 +1024,25 @@ NAOS_SUITE(block_paragraphs,
     NAOS_ADD_TEST(content_ending_with_a_line_ending)
 )
 
+NAOS_SUITE(block_leaves,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(atx_heading_of_one_line),
+    NAOS_ADD_TEST(atx_heading_levels_one_to_six),
+    NAOS_ADD_TEST(atx_heading_closing_sequence_and_trailing_spaces),
+    NAOS_ADD_TEST(empty_atx_headings),
+    NAOS_ADD_TEST(not_atx_headings),
+    NAOS_ADD_TEST(atx_heading_indentation),
+    NAOS_ADD_TEST(atx_heading_interrupts_a_paragraph),
+    NAOS_ADD_TEST(atx_headings_with_each_line_ending),
+    NAOS_ADD_TEST(thematic_breaks_with_each_line_ending),
+    NAOS_ADD_TEST(thematic_break_interrupts_a_paragraph),
+    NAOS_ADD_TEST(not_thematic_breaks),
+    NAOS_ADD_TEST(heading_and_break_in_a_range_starting_inside_a_line),
+    NAOS_ADD_TEST(node_count_limit_counts_headings_and_breaks),
+    NAOS_ADD_TEST(allocation_failure_with_headings_and_breaks)
+)
+
 NAOS_SUITE(block_ranges,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -779,6 +1078,7 @@ NAOS_SUITE(block_line_position,
 NAOS_MAIN(
     NAOS_ADD_SUITE(block_line_position),
     NAOS_ADD_SUITE(block_paragraphs),
+    NAOS_ADD_SUITE(block_leaves),
     NAOS_ADD_SUITE(block_ranges),
     NAOS_ADD_SUITE(block_limits)
 )
