@@ -35,7 +35,7 @@
   - 完了の状態：自己テストのスクリプトを実行すると、すべてのケースが通って終了コード 0 で終わる
   - _Requirements: 1.2, 1.4, 1.5, 1.6, 1.7, 2.5, 3.2, 3.4, 6.4, 9.3_
 
-- [ ] 2. 参照する関数
+- [x] 2. 参照する関数
 - [x] 2.1 句読点・空白の判定と case folding のモジュールを作り、ライブラリに組み込む
   - 内部ヘッダに、2 つの判定と畳み込みの関数、結果の数の上限（3）を、設計の Service Interface のとおりに宣言する。公開の印は付けない
   - 範囲の表を引く 1 つのループの二分探索を、句読点と空白の両方で使う。空白は、タブ・LF・FF・CR を手書きの比較で判定し、残りを Zs の表で引く
@@ -46,7 +46,7 @@
   - _Boundary: UnicodeLookup, BuildIntegration_
   - _Requirements: 1.8, 2.4, 4.1, 4.2, 4.3, 4.4, 5.1, 5.2, 5.3, 5.5, 6.1, 6.2, 6.3, 6.5, 6.6, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9_
 
-- [ ] 2.2 実体名の参照のモジュールを作り、ライブラリに組み込む
+- [x] 2.2 実体名の参照のモジュールを作り、ライブラリに組み込む
   - 内部ヘッダに、名前を位置と長さで受け取り、UTF-8 のバイト列へのポインタと長さを返す関数を、設計の Service Interface のとおりに宣言する。公開の印は付けない
   - 名前のバイト列の昇順の表を、ループの二分探索で引く。比較は短いほうの長さまでのバイト比較と、長さの比較で行い、生成スクリプトの並べ方と同じ順にする
   - 長さ 0 の名前は名前を読まずに「見つからない」にする。見つからないときは出力の引数を変えない。返すポインタは表の中を指し、解放が要らない
@@ -103,3 +103,4 @@
 ## Implementation Notes
 - 1.2: `tools/gen_tables.py` を取り込むと `tools/__pycache__` ができる（`.gitignore` に設定がない）。自己テストや CTest から実行するときは `python3 -B` か `sys.dont_write_bytecode` を使う。読み取りの関数は `read_inputs(data_dir) -> Inputs`（`punctuation`、`space`、`fold_simple`、`fold_full`、`entities`、`unicode_version`、`entities_sha256`）、入力の不備は `InputError`。
 - 1.3: 生成物は型を定義しない。`unicode.c` と `entity.c` は、設計の 4 つの typedef を定義してから `unicode_tables.h` / `entity_table.h` を取り込む。内容が同じ生成物は書き直さない（更新の時刻を保つ）。
+- 2.1: この環境の clang には ASan の実行時ライブラリがない（`AMARK_SANITIZE=ON` と clang ではリンクに失敗する。既存のコードでも同じ）。ASan・UBSan の構成は GCC（`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++`）で確かめる。clang の ASan は CI の sanitizer ジョブで確かめる。
