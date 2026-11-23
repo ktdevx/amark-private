@@ -89,9 +89,9 @@
 ### Decision: 確保関数の形
 - **Context**: 要件 6。brief は「既定は malloc と free」とする。
 - **Alternatives Considered**:
-  1. `allocate(ctx, size)` と `release(ctx, ptr)`
+  1. `malloc_fn(ctx, size)` と `free_fn(ctx, ptr)`
   2. `realloc` を加える
-  3. `release` に大きさを渡す
+  3. `free_fn` に大きさを渡す
 - **Selected Approach**: 1。
 - **Rationale**: 配列がアリーナの上にあるので、`realloc` の使い道がない。利用者が実装する関数が最も少ない。
 - **Trade-offs**: 大きさを要る確保器（大きさを覚えないプール）は、利用者が自分で大きさを記録する。

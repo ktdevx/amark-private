@@ -123,7 +123,7 @@ graph LR
 | 内部の関数のテスト | 同じソースからテスト専用の静的ライブラリを作る | OBJECT ライブラリの共有、内部のシンボルをテスト用に公開 | 動的ライブラリの公開範囲を変えずに済む。テストの実行ファイルが DLL に依存しないので、Naos のビルド時の検出も安定する。ソースを 2 回コンパイルする費用は小さい。 |
 | 名前の付け方 | CMake のプロジェクトとパッケージは `Amark`（`find_package(Amark)`、`AmarkConfig.cmake`、名前空間 `Amark::`）。ライブラリのターゲットとファイルは `amark`。C の `typedef` した型は末尾に `_t` を付け、構造体と列挙のタグは `_t` を付けない（`typedef struct amark_arena { ... } amark_arena_t;`） | パッケージも `amark` にそろえる | プロジェクトの名前に合わせる。型と関数・変数を名前の形で見分けられる。`_t` で終わる名前は POSIX が予約しているが、`amark_` で始まるので衝突しない。 |
 | エクスポートマクロ | `GenerateExportHeader` で `amark/export.h` を生成 | 手書きのヘッダ | brief の方針に合う。コンパイラごとの属性と、静的ライブラリ用の定義（`AMARK_STATIC_DEFINE`）を CMake が扱う。 |
-| 確保関数の形 | `allocate` と `release` の 2 つと文脈の値 | `realloc` を加えた 3 つ | brief の「malloc と free」に合う。配列はアリーナの上にあるので、`realloc` が要らない。 |
+| 確保関数の形 | `malloc_fn` と `free_fn` の 2 つと文脈の値 | `realloc` を加えた 3 つ | brief の「malloc と free」に合う。配列はアリーナの上にあるので、`realloc` が要らない。 |
 | 配列・索引・置換の結果の置き場所 | アリーナだけ | 確保関数から直接、または両方に対応 | 「資源はすべて文書かアリーナに属する」に合う。個別の解放がなくなり、解放もれが起きない。両方に対応する抽象は、今は使い道がない。 |
 | 失敗時にメモリを残さない方法 | 必要な大きさを先に数え、確保を 1 回にする | 伸ばしながら書き、失敗したら巻き戻す | 確保が失敗したときは何も確保していないので、巻き戻しが要らない（9.10、11.8）。 |
 | 前提条件の違反 | 呼び出す側の責任とし、`assert` を使わない | デバッグ時の `assert` | `assert` は `abort` を呼ぶ。steering が `abort` を禁じている。違反はテストとサニタイザで見つける。 |
@@ -263,8 +263,8 @@ flowchart LR
 | 5.1 | LICENSE | RepoDocs | `LICENSE` |
 | 5.2, 5.3 | 著作権表示の規約と適用 | RepoDocs、RepoChecks | `CONTRIBUTING.md`、`CheckLicenseHeaders.cmake` |
 | 5.4, 5.5 | README と手順 | RepoDocs、CI | `README.md`。CI は README と同じコマンドを使う |
-| 6.1, 6.2, 6.3, 6.4, 6.7 | 確保関数の選択と文脈の値 | Allocator | `amark_allocator_resolve`、`amark_alloc`、`amark_free` |
-| 6.5, 6.6 | 失敗とあふれ | Allocator | `amark_error_t`、`amark_alloc_array`、`amark_size_mul` |
+| 6.1, 6.2, 6.3, 6.4, 6.7 | 確保関数の選択と文脈の値 | Allocator | `amark_allocator_resolve`、`amark_malloc`、`amark_free` |
+| 6.5, 6.6 | 失敗とあふれ | Allocator | `amark_error_t`、`amark_malloc_array`、`amark_size_mul` |
 | 7.1, 7.2, 7.7, 7.8 | アリーナからの確保 | Arena | `amark_arena_alloc` |
 | 7.3, 7.4, 7.9 | アリーナの解放と確保元 | Arena | `amark_arena_destroy`、`amark_arena_init` |
 | 7.5, 7.6 | アリーナの失敗とあふれ | Arena | `amark_arena_alloc` の戻り値 |
@@ -436,10 +436,10 @@ amark_add_public_test(<name> SOURCES <source>...)
 ```c
 /* tests/support/test_alloc.h：数える・失敗させる確保関数 */
 typedef struct amark_test_alloc {
-    size_t alloc_calls;   /* allocate が呼ばれた回数（失敗を含む） */
-    size_t free_calls;    /* release が呼ばれた回数 */
+    size_t malloc_calls;  /* malloc_fn が呼ばれた回数（失敗を含む） */
+    size_t free_calls;    /* free_fn が呼ばれた回数 */
     size_t live;          /* 確保して、まだ解放していないかたまりの数 */
-    size_t fail_at;       /* この回の allocate を失敗させる。0 なら失敗させない */
+    size_t fail_at;       /* この回の malloc_fn を失敗させる。0 なら失敗させない */
     size_t ctx_mismatch;  /* 文脈の値が違っていた回数 */
 } amark_test_alloc_t;
 
@@ -588,12 +588,12 @@ typedef enum amark_error {
 ##### Service Interface
 ```c
 /* src/alloc.h */
-typedef void *(*amark_allocate_fn_t)(void *ctx, size_t size);  /* 失敗したら NULL */
-typedef void (*amark_release_fn_t)(void *ctx, void *ptr);      /* ptr は NULL でない */
+typedef void *(*amark_malloc_fn_t)(void *ctx, size_t size);  /* 失敗したら NULL */
+typedef void (*amark_free_fn_t)(void *ctx, void *ptr);        /* ptr は NULL でない */
 
 typedef struct amark_allocator {
-    amark_allocate_fn_t allocate;
-    amark_release_fn_t release;
+    amark_malloc_fn_t malloc_fn;
+    amark_free_fn_t free_fn;
     void *ctx;
 } amark_allocator_t;
 
@@ -603,23 +603,23 @@ amark_allocator_t amark_allocator_default(void);
 /* requested が NULL なら既定の確保関数を、そうでなければ *requested の写しを返す。 */
 amark_allocator_t amark_allocator_resolve(const amark_allocator_t *requested);
 
-amark_error_t amark_alloc(const amark_allocator_t *allocator, size_t size, void **out);
-amark_error_t amark_alloc_array(const amark_allocator_t *allocator, size_t count, size_t elem_size, void **out);
+amark_error_t amark_malloc(const amark_allocator_t *allocator, size_t size, void **out);
+amark_error_t amark_malloc_array(const amark_allocator_t *allocator, size_t count, size_t elem_size, void **out);
 void amark_free(const amark_allocator_t *allocator, void *ptr);
 
 /* あふれたら false を返し、*out を変えない。 */
 bool amark_size_add(size_t a, size_t b, size_t *out);
 bool amark_size_mul(size_t a, size_t b, size_t *out);
 ```
-- Preconditions: `allocator` と `out` は NULL でない。`requested` が NULL でないとき、`allocate` と `release` は両方とも NULL でない（この検査は syntax-tree が行う）。
+- Preconditions: `allocator` と `out` は NULL でない。`requested` が NULL でないとき、`malloc_fn` と `free_fn` は両方とも NULL でない（この検査は syntax-tree が行う）。
 - Postconditions:
-  - `amark_alloc`：成功すると `*out` は NULL でない。`size` が 0 のときは 1 バイトを要求する。確保関数が NULL を返すと `AMARK_ERROR_NOMEM` を返し、`*out` を NULL にする。
-  - `amark_alloc_array`：`count * elem_size` があふれると、確保関数を呼ばずに `AMARK_ERROR_OVERFLOW` を返す。
-  - `amark_free`：`ptr` が NULL なら何もしない。そうでなければ `release(ctx, ptr)` を 1 回呼ぶ。
+  - `amark_malloc`：成功すると `*out` は NULL でない。`size` が 0 のときは 1 バイトを要求する。確保関数が NULL を返すと `AMARK_ERROR_NOMEM` を返し、`*out` を NULL にする。
+  - `amark_malloc_array`：`count * elem_size` があふれると、確保関数を呼ばずに `AMARK_ERROR_OVERFLOW` を返す。
+  - `amark_free`：`ptr` が NULL なら何もしない。そうでなければ `free_fn(ctx, ptr)` を 1 回呼ぶ。
 - Invariants: `ctx` は変更せずに渡す。
 
 **Implementation Notes**
-- Integration: syntax-tree が確保関数を公開の設定に出すときは、関数ポインタの型を公開ヘッダへ移し、`alloc.h` がそれを取り込む形にする。メンバの名前に `free` を使わないのは、`free` をマクロで定義する C のランタイムがあるためである。
+- Integration: syntax-tree が確保関数を公開の設定に出すときは、関数ポインタの型を公開ヘッダへ移し、`alloc.h` がそれを取り込む形にする。メンバの名前を `malloc` と `free` そのものにせず `_fn` を付けるのは、`malloc` や `free` をマクロで定義する C のランタイム（デバッグ用の CRT など）があるためである。
 
 #### Arena
 
@@ -662,7 +662,7 @@ void amark_arena_destroy(amark_arena_t *arena);
 - Postconditions:
   - `amark_arena_alloc`：成功すると、`*out` は `size` バイト以上で、`AMARK_ARENA_ALIGN` の倍数の位置を指す。内容は初期化しない。`size` が 0 のときは 1 バイトとして扱う。
   - 失敗（`NOMEM`、`OVERFLOW`）のとき、`*out` は NULL で、アリーナの状態は呼び出しの前と同じである。それまでに返したメモリは有効なままである。
-  - `amark_arena_destroy`：確保関数から得たかたまりの数だけ `release` を呼ぶ。2 回続けて呼んでも安全である。
+  - `amark_arena_destroy`：確保関数から得たかたまりの数だけ `free_fn` を呼ぶ。2 回続けて呼んでも安全である。
 - Invariants: `AMARK_ARENA_ALIGN` は、`long long`、`long double`、`void *`、関数ポインタを含む共用体の整列である（C99 には `max_align_t` がないため）。
 
 ##### State Management
@@ -829,7 +829,7 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *byte
 ## Testing Strategy
 
 ### Unit Tests（`tests/unit/`、`amark_testing` にリンク）
-- **test_alloc**：既定の確保関数で確保と解放ができる。指定した確保関数だけが呼ばれ、文脈の値がそのまま渡る（`ctx_mismatch == 0`）。確保関数が NULL を返すと `NOMEM`。`amark_alloc_array(SIZE_MAX, 2)` は確保関数を呼ばずに `OVERFLOW`。`amark_free(NULL)` は確保関数を呼ばない。`amark_size_add` と `amark_size_mul` の境界（6.1–6.7）。
+- **test_alloc**：既定の確保関数で確保と解放ができる。指定した確保関数だけが呼ばれ、文脈の値がそのまま渡る（`ctx_mismatch == 0`）。確保関数が NULL を返すと `NOMEM`。`amark_malloc_array(SIZE_MAX, 2)` は確保関数を呼ばずに `OVERFLOW`。`amark_free(NULL)` は確保関数を呼ばない。`amark_size_add` と `amark_size_mul` の境界（6.1–6.7）。
 - **test_arena**：返した位置が `AMARK_ARENA_ALIGN` の倍数。小さな確保 10,000 回で、確保関数の呼び出しが 100 回より少ない。先に書いた内容が、後の確保のあとも変わらない。1 MiB を超える確保が成功し、その後の小さな確保も成功する。`destroy` のあと `live == 0`。途中の確保を失敗させても、それまでのメモリが読め、`destroy` で `live == 0`。`size` が `SIZE_MAX` で `OVERFLOW`（7.1–7.9）。
 - **test_array**：追加した順に読める。容量が広がっても値が変わらない。`pop` が逆順に返し、空で false。要素の大きさが 1、8、24 バイトの型で動く。伸びるときの確保を失敗させると、`len` と中身が変わらない。`reserve(SIZE_MAX)` が `OVERFLOW`。100,000 個の追加で、確保関数の呼び出しの回数が要素の数に比べて十分に少ない（8.1–8.9）。
 - **test_line_index**：空、行末なし、LF、CR、CRLF、混在、連続する行末、行末で終わる入力、行末だけの入力について、すべてのオフセットの行番号を、1 バイトずつ数える単純な参照実装と比べる。`line_count`。不正な UTF-8 を含む入力。確保の失敗で `NOMEM` を返し、`live` が増えない（9.1–9.11）。
