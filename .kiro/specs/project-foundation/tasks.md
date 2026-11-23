@@ -43,7 +43,7 @@
   - _Requirements: 1.5, 2.7, 3.2, 3.3_
 
 - [ ] 3. 失敗の種類と確保関数の抽象
-- [ ] 3.1 失敗の種類と、確保関数の抽象を実装する
+- [x] 3.1 失敗の種類と、確保関数の抽象を実装する
   - 内部の部品が返す失敗の種類として、成功、メモリ不足、大きさのあふれの 3 つを定める
   - 確保関数が指定されていなければ標準の `malloc` と `free` を使い、指定されていればその関数の組と文脈の値だけを使う。文脈の値は変えずに毎回渡す
   - 確保は、確保関数の失敗をメモリ不足として返し、要素の数と大きさの積があふれるときは確保関数を呼ばずにあふれとして返す。大きさ 0 の要求は 1 バイトとして扱う。NULL の解放は何もしない
@@ -169,3 +169,4 @@
 - 1.3: Ninja などのシングル構成のジェネレータで `CMAKE_BUILD_TYPE` が空のまま `cmake --install --config <cfg>` を実行すると、構成ごとの `AmarkTargets-*.cmake` が置かれず `find_package` が失敗する。README、CI、利用側の手順では、構成のときに `-DCMAKE_BUILD_TYPE=<cfg>` を渡す（マルチ構成では無視される）。
 - 2.1: 登録の関数は `amark_add_unit_test(<name> SOURCES <src>... [LIBRARIES <lib>...])` と `amark_add_public_test(<name> SOURCES <src>...)` の形で呼ぶ。libm は検出で必要なときだけリンクする。手元の Clang には ASan の実行時ライブラリ（libclang-rt-18-dev）を入れた。
 - 2.2: C++ はテストの構成でだけ有効にする。サニタイザの構成では C と C++ のコンパイラを同じ系統にそろえる（CI では `CMAKE_C_COMPILER` と `CMAKE_CXX_COMPILER` の両方を指定する）。
+- 3.1: 確保関数の抽象のファイル名は `src/alloc.h` と `src/alloc.c`。`amark_malloc_array` はあふれのときも `*out` を NULL にする。

@@ -7,6 +7,7 @@ include(GNUInstallDirs)
 # The library's sources. Both amark and the test-only static library are
 # built from this one list; a new module adds one line here.
 set(AMARK_SOURCES
+    alloc.c
     version.c
 )
 
