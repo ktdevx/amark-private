@@ -1,0 +1,8 @@
+# Copyright (c) The Amark Authors
+# SPDX-License-Identifier: MIT
+#
+# The symbols the amark shared library exports: one name per line, the
+# functions and data marked AMARK_API in include/amark/. checks.exports
+# compares this list with the library. Lines starting with "#" and blank
+# lines are ignored.
+amark_version_string

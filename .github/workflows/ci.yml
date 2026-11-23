@@ -1,0 +1,183 @@
+# Copyright (c) The Amark Authors
+# SPDX-License-Identifier: MIT
+
+# Builds and tests amark on every push to main and on every pull request.
+# The configure, build, test and install commands are the ones in README.md,
+# with -DAMARK_WARNINGS_AS_ERRORS=ON added to the configure command and, in
+# the build matrix, both values of BUILD_SHARED_LIBS. The compiler is chosen
+# with the CC and CXX environment variables (or the default one of the
+# runner), so the commands stay the same on every runner.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+  CTEST_PARALLEL_LEVEL: 4
+
+jobs:
+  build:
+    name: ${{ matrix.config.name }} (${{ matrix.shared == 'ON' && 'shared' || 'static' }})
+    runs-on: ${{ matrix.config.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: Linux GCC
+            os: ubuntu-latest
+            shell: bash
+            cc: gcc
+            cxx: g++
+          - name: Linux Clang
+            os: ubuntu-latest
+            shell: bash
+            cc: clang
+            cxx: clang++
+          - name: macOS Clang
+            os: macos-latest
+            shell: bash
+            cc: clang
+            cxx: clang++
+          # The default generator (Visual Studio) is multi-config: the
+          # configuration comes from --config and -C.
+          - name: Windows MSVC
+            os: windows-latest
+            shell: bash
+            cc: ""
+            cxx: ""
+          - name: Windows MinGW UCRT64
+            os: windows-latest
+            shell: msys2 {0}
+            msys2: true
+            cc: gcc
+            cxx: g++
+            generator: Ninja
+        shared: ["OFF", "ON"]
+    defaults:
+      run:
+        shell: ${{ matrix.config.shell }}
+    env:
+      CC: ${{ matrix.config.cc }}
+      CXX: ${{ matrix.config.cxx }}
+      CMAKE_GENERATOR: ${{ matrix.config.generator }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up MSYS2 UCRT64
+        if: matrix.config.msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAMARK_WARNINGS_AS_ERRORS=ON -DBUILD_SHARED_LIBS=${{ matrix.shared }}
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Install
+        run: cmake --install build --config Release --prefix build/install
+
+      - name: Configure the consumer project (find_package)
+        run: cmake -S tests/consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$PWD/build/install"
+
+      - name: Build the consumer project
+        run: cmake --build build-consumer --config Release
+
+      - name: Test the consumer project
+        run: ctest --test-dir build-consumer -C Release --output-on-failure
+
+  sanitize:
+    name: Linux Clang (ASan, UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure
+        run: cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DAMARK_SANITIZE=ON -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DAMARK_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build-asan --config Debug
+
+      - name: Test
+        run: ctest --test-dir build-asan -C Debug --output-on-failure
+
+  subproject:
+    name: Linux GCC (add_subdirectory)
+    runs-on: ubuntu-latest
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@v6
+
+      # amark as a subproject leaves warnings as warnings; the consumer
+      # project fails to configure if AMARK_WARNINGS_AS_ERRORS is ON.
+      - name: Configure the consumer project (add_subdirectory)
+        run: cmake -S tests/consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release -DAMARK_CONSUMER_MODE=subdirectory
+
+      - name: Build the consumer project
+        run: cmake --build build-consumer --config Release
+
+      - name: Test the consumer project
+        run: ctest --test-dir build-consumer -C Release --output-on-failure
+
+  min-cmake:
+    name: Linux GCC (CMake 3.21)
+    runs-on: ubuntu-latest
+    env:
+      CC: gcc
+      CXX: g++
+      CMAKE_VERSION: 3.21.7
+      # SHA-256 of cmake-3.21.7-linux-x86_64.tar.gz, from Kitware's
+      # cmake-3.21.7-SHA-256.txt.
+      CMAKE_SHA256: f84e209d903a96e54f398bb8760693969b13fc50bce2f8278a9ee9dca01406b2
+    steps:
+      - uses: actions/checkout@v6
+
+      # The official release binary from Kitware, checked against its
+      # published checksum, put first on PATH (cmake and ctest).
+      - name: Install CMake ${{ env.CMAKE_VERSION }}
+        run: |
+          archive="cmake-${CMAKE_VERSION}-linux-x86_64"
+          curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${archive}.tar.gz" \
+            "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/${archive}.tar.gz"
+          echo "${CMAKE_SHA256}  ${RUNNER_TEMP}/${archive}.tar.gz" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${archive}.tar.gz" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/${archive}/bin" >> "${GITHUB_PATH}"
+
+      - name: Check the CMake version
+        run: |
+          cmake --version
+          ctest --version
+          cmake --version | grep -q "cmake version ${CMAKE_VERSION}$"
+          ctest --version | grep -q "ctest version ${CMAKE_VERSION}$"
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAMARK_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure

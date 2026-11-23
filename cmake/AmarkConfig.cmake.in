@@ -1,0 +1,8 @@
+# Copyright (c) The Amark Authors
+# SPDX-License-Identifier: MIT
+
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/AmarkTargets.cmake")
+
+check_required_components(Amark)
