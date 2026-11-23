@@ -193,7 +193,7 @@
   - _Depends: 1.3_
   - _Requirements: 19.1, 19.5_
 
-- [ ] 9.3 (P) Block quotes と Lists の例を確かめる
+- [x] 9.3 (P) Block quotes と Lists の例を確かめる
   - 同じ形式で、Block quotes（25 個）と Lists（26 個）の例を表に書き、比べ、検査を通す
   - 完了の状態：spec.txt のコンテナの単体テスト（`tests/unit/test_spec_container.c`）が登録され、この 2 つの節の例がすべて通る
   - _Boundary: test_spec_container_
