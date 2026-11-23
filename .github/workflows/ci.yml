@@ -181,3 +181,19 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+  # The committed generated tables (src/unicode_tables.h, src/entity_table.h)
+  # match what tools/gen_tables.py makes from tools/data/, and the generator
+  # passes its own tests. On a mismatch, --check prints the file that differs
+  # and the diff. Uses the Python 3 of the runner (3.9 or later is needed).
+  generated-tables:
+    name: Generated tables
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check the generated tables
+        run: python3 tools/gen_tables.py --check
+
+      - name: Test the generator
+        run: python3 tools/test_gen_tables.py
