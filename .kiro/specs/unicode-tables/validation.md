@@ -153,3 +153,13 @@ ctest --test-dir $C -C Release --output-on-failure
 - 残すこと（止めるものではない）：
   - `write_outputs` は 2 つのファイルを順に置き換えるので、2 つ目の書き込みで OS のエラーが起きると片方だけが新しくなる。入力の不備では何も書かないので、要件 1.7 は満たしている。
   - CI のログで、Windows・macOS・MinGW の各ジョブで `checks.generated_tables` と `checks.generator` が実際に動いたことを確かめる。
+
+## 8. CI の結果（PR #4、実行 45139966007、コミット 56bd190）
+
+- 14 のジョブがすべて成功した。Linux GCC・Clang、macOS Clang、Windows MSVC・MinGW UCRT64（それぞれ静的と動的）、Linux Clang の ASan・UBSan、add_subdirectory、CMake 3.21、generated-tables。
+- Windows MSVC、Windows MinGW UCRT64、macOS Clang（それぞれ静的と動的）と Linux Clang の ASan・UBSan の 7 つのジョブで、`checks.generated_tables` と `checks.generator` が実際に動き、通った。`test_unicode` は 10 件、`test_entity` は 9 件がすべて通り、CTest は 170 件すべてが通った。
+- これで、6 節で未確認とした次の項目を確かめた。
+  - 1.2：OS によらず同じバイト列になる。各 OS でチェックアウトした生成物が、`--check` の結果と一致した。
+  - 3.1：Windows と macOS での生成物のコンパイルと、一致の検査。
+  - clang の ASan。
+- 機能全体の検証の判定は **GO** とする。
