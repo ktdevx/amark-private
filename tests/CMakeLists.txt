@@ -117,6 +117,7 @@ endif()
 
 # Unit tests (tests/unit/), linked to amark_testing and amark_test_support.
 amark_add_unit_test(test_alloc SOURCES unit/test_alloc.c)
+amark_add_unit_test(test_arena SOURCES unit/test_arena.c)
 
 # Public API tests (tests/public/), linked to Amark::amark.
 amark_add_public_test(test_version SOURCES public/test_version.c)

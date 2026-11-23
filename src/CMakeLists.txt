@@ -8,6 +8,7 @@ include(GNUInstallDirs)
 # built from this one list; a new module adds one line here.
 set(AMARK_SOURCES
     alloc.c
+    arena.c
     version.c
 )
 
