@@ -17,7 +17,7 @@
   - 完了の状態：Python の 1 行のコマンドでスクリプトを取り込み、実際の入力データに読み取りの関数を呼ぶと、句読点 359 範囲、Zs 7 範囲、状態 C 1,501 項目、状態 F 105 項目、実体名 2,125 個が得られる。UCD の 1 ファイルの 1 行目の版を書き換えた一時的な複製を `--data-dir` で読ませると、2 つの版を示して終了コード 1 で終わる
   - _Requirements: 1.3, 1.6, 1.7, 2.5, 6.4_
 
-- [ ] 1.3 生成物の書き出しと、最新であることの検査（`--check`）を作り、生成物をコミットする
+- [x] 1.3 生成物の書き出しと、最新であることの検査（`--check`）を作り、生成物をコミットする
   - 2 つの生成物（Unicode の表、実体名の表）を、設計の表の形と先頭の形式のとおりに、ASCII と LF だけでメモリ上に組み立てる。日時、ホスト、絶対パス、Python の版を書かない
   - 先頭の 5 行以内に著作権表示と SPDX（Unicode の表は `MIT AND Unicode-3.0`、実体名の表は `MIT AND BSD-3-Clause`）を置き、生成物である旨、入力の名前と版（実体名の JSON は SHA-256）、スクリプトの名前、データの出所とライセンスの名前、取り込む `.c` の名前を書く
   - 表にポインタを入れず、項目の数をマクロで持たせる。実体名の文字の配列は、文字列リテラルではなく、波括弧で囲んだ文字の初期化子で書き、終端の NUL を持たせない（隣り合う文字列リテラルがつながると C99 の最低限 4,095 文字を超え、`-Wpedantic` と `-Werror` でビルドが失敗するため）
@@ -102,3 +102,4 @@
 
 ## Implementation Notes
 - 1.2: `tools/gen_tables.py` を取り込むと `tools/__pycache__` ができる（`.gitignore` に設定がない）。自己テストや CTest から実行するときは `python3 -B` か `sys.dont_write_bytecode` を使う。読み取りの関数は `read_inputs(data_dir) -> Inputs`（`punctuation`、`space`、`fold_simple`、`fold_full`、`entities`、`unicode_version`、`entities_sha256`）、入力の不備は `InputError`。
+- 1.3: 生成物は型を定義しない。`unicode.c` と `entity.c` は、設計の 4 つの typedef を定義してから `unicode_tables.h` / `entity_table.h` を取り込む。内容が同じ生成物は書き直さない（更新の時刻を保つ）。
