@@ -8,6 +8,7 @@
 amark_version_string
 amark_config_init
 amark_config_validate
+amark_parse
 amark_document_destroy
 amark_document_diagnostic_count
 amark_document_diagnostic

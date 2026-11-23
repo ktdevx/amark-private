@@ -8,8 +8,8 @@
  * amark_version_string links (C linkage) and returns the header's version,
  * the allocator types can be filled in from C++, the tree types and
  * constants have the values the design fixes, the configuration functions
- * link, and the kind IDs and the attribute values are constant expressions
- * that can be used as case labels.
+ * and amark_parse link, and the kind IDs and the attribute values are
+ * constant expressions that can be used as case labels.
  */
 
 #include <amark/amark.h>
@@ -270,6 +270,24 @@ NAOS_TEST(config_functions)
                       amark_config_validate(&config, 10));
 }
 
+NAOS_TEST(parse_function)
+{
+    static const char content[] = "a";
+    amark_document_t *doc = NULL;
+    amark_range_t range = {0, 0};
+
+    NAOS_REQUIRE_INT_EQ(AMARK_ERROR_NONE,
+                        amark_parse(content, sizeof(content) - 1, NULL, &doc));
+    NAOS_REQUIRE_NOT_NULL(doc);
+    NAOS_CHECK_TRUE(amark_node_range(doc, amark_document_root(doc), &range));
+    NAOS_CHECK_UINT_EQ(1, range.end);
+    amark_document_destroy(doc);
+
+    NAOS_CHECK_INT_EQ(AMARK_ERROR_INVALID_INPUT,
+                      amark_parse(NULL, 1, NULL, &doc));
+    NAOS_CHECK_NULL(doc);
+}
+
 NAOS_TEST(kind_ids_as_case_labels)
 {
     NAOS_CHECK_INT_EQ(0, kind_class(AMARK_KIND_NONE));
@@ -309,6 +327,7 @@ NAOS_SUITE(header_cxx,
     NAOS_ADD_TEST(allocator_types),
     NAOS_ADD_TEST(tree_types),
     NAOS_ADD_TEST(config_functions),
+    NAOS_ADD_TEST(parse_function),
     NAOS_ADD_TEST(kind_ids_as_case_labels),
     NAOS_ADD_TEST(attribute_values_as_case_labels)
 )
