@@ -18,6 +18,7 @@ set(AMARK_SOURCES
     line_index.c
     node.c
     parse_data.c
+    refdef.c
     scan.c
     tree.c
     tree_check.c

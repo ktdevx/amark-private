@@ -135,6 +135,7 @@ amark_add_unit_test(test_tree_dump SOURCES unit/test_tree_dump.c)
 amark_add_unit_test(test_line SOURCES unit/test_line.c)
 amark_add_unit_test(test_scan SOURCES unit/test_scan.c)
 amark_add_unit_test(test_definition SOURCES unit/test_definition.c)
+amark_add_unit_test(test_refdef SOURCES unit/test_refdef.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
