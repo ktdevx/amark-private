@@ -28,3 +28,5 @@ list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 # Defines amark_target_defaults() and applies the sanitizer flags to this
 # directory scope, before any target (amark, tests, Naos) is defined.
 include(AmarkCompileOptions)
+
+add_subdirectory(src)
