@@ -43,6 +43,10 @@ UTF-8 validation and replacement). The public API so far is
 - Optional: a C++11 compiler, to check that the public header compiles as C++
   (the `header_cxx` test is skipped without one), and `nm` (binutils) on
   Linux for the `checks.exports` and `checks.objects` tests.
+- Python 3.9 or later is needed only to regenerate the tables (see
+  [CONTRIBUTING.md](CONTRIBUTING.md#regenerating-the-tables)). The build
+  itself never runs Python; when CTest finds Python 3.9 or later, it also
+  runs the `checks.generated_tables` and `checks.generator` tests.
 
 ## Build, test and install
 
@@ -170,10 +174,17 @@ symbols hidden except those marked `AMARK_API`.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the source file header, naming
-conventions, how to add a module and its tests, and the rules the library
-code follows.
+conventions, how to add a module and its tests, the rules the library code
+follows, and how to regenerate the Unicode and entity tables.
 
 ## License
 
 Amark is released under the MIT License; see [LICENSE](LICENSE).
 Copyright (c) 2026 The Amark Authors.
+
+Amark includes tables generated from third-party data: the Unicode Character
+Database (Unicode License v3) and the named character references of the WHATWG
+HTML Standard (`entities.json`; CC BY 4.0 for the copy in `tools/data/`, BSD
+3-Clause for the generated table). Their notices and full license texts are
+in the "Third-party data" section of [LICENSE](LICENSE), which is installed
+with the library.

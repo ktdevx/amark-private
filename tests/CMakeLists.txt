@@ -121,6 +121,17 @@ amark_add_unit_test(test_arena SOURCES unit/test_arena.c)
 amark_add_unit_test(test_array SOURCES unit/test_array.c)
 amark_add_unit_test(test_line_index SOURCES unit/test_line_index.c)
 amark_add_unit_test(test_utf8 SOURCES unit/test_utf8.c)
+amark_add_unit_test(test_unicode SOURCES unit/test_unicode.c)
+amark_add_unit_test(test_entity SOURCES unit/test_entity.c)
+
+# Tests that read the input data of the generated tables (tools/data/) to
+# build their expected values get its location as a C string literal.
+foreach(_amark_data_test IN ITEMS test_unicode test_entity)
+    target_compile_definitions("${_amark_data_test}" PRIVATE
+        "AMARK_TEST_DATA_DIR=\"${PROJECT_SOURCE_DIR}/tools/data\""
+    )
+endforeach()
+unset(_amark_data_test)
 
 # Public API tests (tests/public/), linked to Amark::amark.
 amark_add_public_test(test_version SOURCES public/test_version.c)
@@ -183,3 +194,21 @@ add_test(NAME checks.license_headers
         "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckLicenseHeaders.cmake"
 )
+
+# The generated tables (src/unicode_tables.h, src/entity_table.h) match what
+# tools/gen_tables.py makes from the input data in tools/data/, and the
+# generator passes its own tests. Registered only where Python 3.9 or later is
+# found; the build itself never runs Python. Neither writes to the source
+# tree (-B: no __pycache__; the self-test writes only to a temporary
+# directory).
+find_package(Python3 3.9 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME checks.generated_tables
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${PROJECT_SOURCE_DIR}/tools/gen_tables.py" --check
+    )
+    add_test(NAME checks.generator
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${PROJECT_SOURCE_DIR}/tools/test_gen_tables.py"
+    )
+endif()
