@@ -146,8 +146,11 @@ typedef struct open_block {
     amark_list_type_t list_type;
     char marker;
     uint32_t start_number;
-    size_t content_indent; /* list items: the sum of the content indents from
-                              the root */
+    size_t content_indent; /* the sum of the content indents (marker_offset
+                              plus padding) of the list items from the root
+                              to this element, itself included; every element
+                              has it, so the difference of two is what the
+                              items between them consume */
 
     /* Fenced code blocks. */
     char fence_char;
@@ -185,7 +188,8 @@ typedef struct open_block {
     /* The blank line marks (tight and loose, and the blank line run). */
     bool ends_blank;       /* this block ended with a blank line */
     bool last_child_blank; /* the value its last closed child reported */
-    bool blank_run;        /* lists: the previous line was blank here too */
+    bool blank_run;        /* lists: on the previous line, the rest of the
+                              line was blank here (see add_blank_run_line) */
     bool loose;            /* lists: a blank line separates items or their
                               children */
 } open_block_t;
@@ -561,6 +565,7 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
     block.node = AMARK_NODE_NONE;
     block.start = start;
     block.end = start;
+    block.content_indent = stack_at(p, parent)->content_indent;
     if (is_container) {
         err = append_node(p, parent, kind, start, start, &block.node);
         if (err != AMARK_ERROR_NONE) {
@@ -583,8 +588,11 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
 typedef enum continue_result {
     CONTINUE_NO,        /* the block does not continue on this line */
     CONTINUE_YES,       /* it continues; its prefix is consumed */
-    CONTINUE_LINE_DONE  /* it took the whole line and ends with it (a
+    CONTINUE_LINE_DONE, /* it took the whole line and ends with it (a
                            closing fence); the caller closes it */
+    CONTINUE_BLANK_RUN  /* a list where the rest of the line is blank, as it
+                           was on the previous line: every element inside
+                           it continues (see add_blank_run_line) */
 } continue_result_t;
 
 /*
@@ -689,6 +697,32 @@ static continue_result_t continue_list_item(block_parser_t *p,
 }
 
 /*
+ * Whether every element inside the list at index continues on the current
+ * line, the rest of which is blank here as it was on the previous line (the
+ * list's blank_run). That line closed every element inside the list that a
+ * blank line does not continue, and opened nothing, so what is left inside
+ * it continues on any blank line: lists, items with children, and at the
+ * top an indented or fenced code block or an HTML block of conditions 1 to
+ * 5 (a paragraph, a block quote and an HTML block of conditions 6 and 7 do
+ * not go on over a blank line). The one exception is an item with nothing
+ * in it, which can only be the top: it went on over the previous line by
+ * its indentation (a line of white space), and goes on over this one only
+ * with as many columns as the items from the list to it consume, the
+ * difference of the sums from the root; otherwise it closes, and the
+ * elements are matched one by one. That happens once for the item.
+ */
+static bool blank_run_continues(const block_parser_t *p, size_t index)
+{
+    const open_block_t *top = stack_at(p, stack_top(p));
+
+    if (top->kind == AMARK_KIND_LIST_ITEM && top->child_count == 0) {
+        return p->pos.indent >=
+               top->content_indent - stack_at(p, index)->content_indent;
+    }
+    return true;
+}
+
+/*
  * The continuation rules of each kind: whether the element at index
  * continues on the current line, consuming its prefix if it does. The
  * position is at the first byte the element may look at, with
@@ -729,7 +763,18 @@ static continue_result_t continue_block(block_parser_t *p, size_t index)
         block->end = p->pos.content_end;
         return CONTINUE_YES;
     case AMARK_KIND_LIST:
-        /* A list goes on while its items do, or a new item can join it. */
+        /*
+         * A list goes on while its items do, or a new item can join it. It
+         * keeps whether the rest of the line was blank here, for the cutoff
+         * on the next line.
+         */
+        if (!p->pos.blank) {
+            block->blank_run = false;
+        } else if (block->blank_run && blank_run_continues(p, index)) {
+            return CONTINUE_BLANK_RUN;
+        } else {
+            block->blank_run = true;
+        }
         return CONTINUE_YES;
     case AMARK_KIND_LIST_ITEM:
         return continue_list_item(p, block);
@@ -1010,6 +1055,7 @@ static amark_error_t start_list_item(block_parser_t *p, size_t *container,
                                AMARK_ADVANCE_COLUMNS);
     }
     block->marker_offset = marker_offset;
+    block->content_indent += marker_offset + block->padding;
     block->end = pos->content_end;
     *container = index;
     *result = START_CONTAINER;
@@ -1320,6 +1366,54 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
 }
 
 /*
+ * The blank line cutoff: the first phase came to the list at index list, the
+ * rest of the line is blank, it was blank there on the previous line too,
+ * and every element inside the list continues (blank_run_continues). The
+ * line changes nothing else: nothing opens or closes on it, and the blank
+ * line marks stay as the previous line left them (note_blank_line would set
+ * the same ones), so the elements inside the list are not matched one by
+ * one, which would cost the depth on every line of a run of blank lines.
+ *
+ * The line gets the record of a blank line, or is added to the code or HTML
+ * block at the top. Then the items between the list and the top consume
+ * their content indents: all of their columns, which are the difference of
+ * the sums from the root, when the line has as many; otherwise the item
+ * where the columns run out takes all of the white space, and so do the
+ * items after it. The leaf then consumes its own prefix, as on any blank
+ * line.
+ */
+static amark_error_t add_blank_run_line(block_parser_t *p, size_t list)
+{
+    amark_line_pos_t *pos = &p->pos;
+    size_t top = stack_top(p);
+    open_block_t *leaf = stack_at(p, top);
+    size_t items = leaf->content_indent - stack_at(p, list)->content_indent;
+
+    p->all_matched = true;
+    if (leaf->kind != AMARK_KIND_CODE_BLOCK &&
+        leaf->kind != AMARK_KIND_HTML_BLOCK) {
+        amark_line_set(p->doc, pos->line, pos->content_end, 0);
+        return AMARK_ERROR_NONE;
+    }
+    if (pos->indent >= items) {
+        amark_line_pos_advance(pos, p->bytes, items, AMARK_ADVANCE_COLUMNS);
+    } else {
+        amark_line_pos_advance(pos, p->bytes,
+                               pos->first_nonspace - pos->offset,
+                               AMARK_ADVANCE_BYTES);
+    }
+    amark_line_pos_find_nonspace(pos, p->bytes);
+    if (leaf->kind == AMARK_KIND_HTML_BLOCK) {
+        /* No end condition is met by white space. */
+        return html_add_line(p, top);
+    }
+    /* A blank line is not a closing fence: the code continues. */
+    (void)continue_code_block(p, leaf);
+    code_add_line(p, top);
+    return AMARK_ERROR_NONE;
+}
+
+/*
  * Updates the blank line marks for the current line, before the third phase
  * closes the elements that did not match. container is the innermost element
  * matched or opened on the line (C below); line_start is the start of the
@@ -1399,6 +1493,9 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
         if (result == CONTINUE_LINE_DONE) {
             /* The element at i is the innermost: a leaf. */
             return close_above(p, i - 1);
+        }
+        if (result == CONTINUE_BLANK_RUN) {
+            return add_blank_run_line(p, i);
         }
         if (result == CONTINUE_NO) {
             break;

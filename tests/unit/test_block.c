@@ -9,7 +9,8 @@
  * amark_parse_data_create, or through amark_parse: paragraphs and blank
  * lines, thematic breaks and ATX headings, code blocks, HTML blocks, link
  * reference definitions and setext headings, block quotes and lazy
- * continuation lines, the ranges and lines of their nodes, their
+ * continuation lines, lists and their spacing, runs of blank lines (the
+ * blank line cutoff), the ranges and lines of their nodes, their
  * attributes, the definition table, their inline contents, the line
  * records, ranges that start past offset 0, the line position (the cached search for the
  * first non-space byte and the two advances), the node count and nesting
@@ -3452,6 +3453,463 @@ NAOS_TEST(lists_in_block_quotes_are_tight_or_loose)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Runs of blank lines (the blank line cutoff)                            */
+/* ---------------------------------------------------------------------- */
+
+#define TEXT_SIZE 512
+#define WIDE_DUMP_SIZE 4096
+#define RUN_COUNT 6
+
+static char g_text[TEXT_SIZE];
+static char g_want_dump[WIDE_DUMP_SIZE];
+static char g_wide_dump[WIDE_DUMP_SIZE];
+
+/*
+ * The blank lines put between two parts of a text, without and with a block
+ * quote marker. The first is one blank line, on which the cutoff never
+ * happens (a list's mark is set on it and works from the next line); the
+ * others are runs of two lines or more, some of spaces and tabs only, wider
+ * or narrower than the content indents, on which it does.
+ */
+static const char g_plain_runs[RUN_COUNT][32] = {
+    "\n",
+    "\n\n",
+    "\n\n\n",
+    "\n  \n\t\n",
+    "\n \t \n\n",
+    "\n\n                  \n",
+};
+static const char g_quoted_runs[RUN_COUNT][32] = {
+    ">\n",
+    ">\n>\n",
+    ">\n>\n>\n",
+    ">\n>  \n>\t\n",
+    ">\n> \t \n>\n",
+    ">\n>\n>                  \n",
+};
+
+/*
+ * Parses before, a line ending, each run of blank lines and after, and
+ * checks that the block structure is the same for every run: want, or
+ * with want NULL the structure with one blank line.
+ */
+static void check_runs_agree(const char *before, const char *after,
+                             bool quoted, const char *want)
+{
+    size_t i;
+
+    for (i = 0; i < RUN_COUNT; i++) {
+        int length = snprintf(g_text, TEXT_SIZE, "%s\n%s%s", before,
+                              quoted ? g_quoted_runs[i] : g_plain_runs[i],
+                              after);
+
+        NAOS_REQUIRE_TRUE(length > 0 && (size_t)length < TEXT_SIZE);
+        parse_public_ok(g_text, (size_t)length);
+        NAOS_REQUIRE_UINT_LT(
+            amark_test_dump_blocks(g_doc, g_wide_dump, WIDE_DUMP_SIZE),
+            WIDE_DUMP_SIZE);
+        if (i == 0 && want == NULL) {
+            memcpy(g_want_dump, g_wide_dump, WIDE_DUMP_SIZE);
+        }
+        NAOS_CHECK_STR_EQ(g_wide_dump, want != NULL ? want : g_want_dump);
+        reset_doc();
+    }
+}
+
+NAOS_TEST(runs_of_blank_lines_leave_lists_unchanged)
+{
+    /* Between items, between children of an item, after the list. */
+    check_runs_agree("- a", "- b", false,
+                     "(doc (ul - loose (li (p)) (li (p))))");
+    check_runs_agree("- a", "  b", false, "(doc (ul - loose (li (p) (p))))");
+    check_runs_agree("- a", "b", false, "(doc (ul - tight (li (p))) (p))");
+
+    /* A nested list, continued at each depth or left. */
+    check_runs_agree("- a\n  - b", "- c", false,
+                     "(doc (ul - loose (li (p) (ul - tight (li (p)))) "
+                     "(li (p))))");
+    check_runs_agree("- a\n  - b", "  c", false,
+                     "(doc (ul - loose (li (p) (ul - tight (li (p))) (p))))");
+    check_runs_agree("- a\n  - b", "    c", false,
+                     "(doc (ul - tight (li (p) (ul - loose (li (p) "
+                     "(p))))))");
+    check_runs_agree("1. a\n   - b\n     - c", "     d", false,
+                     "(doc (ol 1 . tight (li (p) (ul - loose (li (p) "
+                     "(ul - tight (li (p))) (p))))))");
+
+    /* Empty items: the blank lines close them. */
+    check_runs_agree("-", "  a", false, "(doc (ul - tight (li)) (p))");
+    check_runs_agree("- a\n  - b\n  -", "  c", false,
+                     "(doc (ul - loose (li (p) (ul - tight (li (p)) (li)) "
+                     "(p))))");
+
+    /* Code and HTML blocks in an item, and after them. */
+    check_runs_agree("-     code", "- b", false,
+                     "(doc (ul - loose (li (code indented)) (li (p))))");
+    check_runs_agree("-     code", "      more", false,
+                     "(doc (ul - tight (li (code indented))))");
+    check_runs_agree("- ```\n  a", "  ```\n- b", false,
+                     "(doc (ul - tight (li (code fenced ` 3)) (li (p))))");
+    check_runs_agree("- <!--", "  -->\n- b", false,
+                     "(doc (ul - tight (li (html)) (li (p))))");
+    check_runs_agree("- <div>", "- b", false,
+                     "(doc (ul - loose (li (html)) (li (p))))");
+}
+
+NAOS_TEST(runs_of_blank_lines_after_a_nested_list_at_each_depth)
+{
+    char after[32];
+    size_t depth;
+
+    /*
+     * "- - - - - - - - a", the blank lines, then "b" indented 2 columns
+     * per item it continues: the deeper items close.
+     */
+    for (depth = 0; depth <= 8; depth++) {
+        memset(after, ' ', 2 * depth);
+        memcpy(after + 2 * depth, "b", 2);
+        check_runs_agree("- - - - - - - - a", after, false, NULL);
+        check_runs_agree("- - - - - - - - ```", after, false, NULL);
+    }
+    check_runs_agree("- - - a", "b", false,
+                     "(doc (ul - tight (li (ul - tight (li (ul - tight "
+                     "(li (p))))))) (p))");
+    check_runs_agree("- - - a", "    b", false,
+                     "(doc (ul - tight (li (ul - loose (li (ul - tight "
+                     "(li (p))) (p))))))");
+    check_runs_agree("- - - a", "      b", false,
+                     "(doc (ul - tight (li (ul - tight (li (ul - loose "
+                     "(li (p) (p))))))))");
+}
+
+NAOS_TEST(runs_of_blank_lines_in_block_quotes)
+{
+    /* Blank quote lines in a list in a quote. */
+    check_runs_agree("> - a", "> - b", true,
+                     "(doc (bq (ul - loose (li (p)) (li (p)))))");
+    check_runs_agree("> - a", ">   b", true,
+                     "(doc (bq (ul - loose (li (p) (p)))))");
+    check_runs_agree("> - a\n>   - b", ">     c", true,
+                     "(doc (bq (ul - tight (li (p) (ul - loose (li (p) "
+                     "(p)))))))");
+    check_runs_agree("> - ```", ">   ```", true,
+                     "(doc (bq (ul - tight (li (code fenced ` 3)))))");
+
+    /* Blank lines end a quote, in a list or around one. */
+    check_runs_agree("> - a", "> b", false,
+                     "(doc (bq (ul - tight (li (p)))) (bq (p)))");
+    check_runs_agree("- > a", "  b", false,
+                     "(doc (ul - loose (li (bq (p)) (p))))");
+    check_runs_agree("- > a", "- b", false,
+                     "(doc (ul - loose (li (bq (p))) (li (p))))");
+    check_runs_agree("- a\n  > - b", "  > c", false,
+                     "(doc (ul - loose (li (p) (bq (ul - tight (li (p)))) "
+                     "(bq (p)))))");
+}
+
+/*
+ * The lines on which the cutoff happens get the records and the blocks the
+ * ends that matching every element gives (the second blank line on).
+ */
+NAOS_TEST(blank_run_in_fenced_code_in_a_list_item)
+{
+    amark_node_id_t list;
+    amark_node_id_t item;
+
+    /*
+     * "- ```\n" 0-5, "\n" 6, "\n" 7, 6 spaces 8-13 and "\n" 14, two tabs
+     * 15-16 and "\n" 17, "\n" 18, "  ```\n" 19-24, "- c" 25-27.
+     */
+    PARSE_PUBLIC("- ```\n\n\n      \n\t\t\n\n  ```\n- c");
+    check_dump("(doc (ul - tight (li (code fenced ` 3)) (li (p))))");
+    list = root_child(0);
+    item = nth_child(list, 0);
+    check_node(list, AMARK_KIND_LIST, 0, 28, 1, 8);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 24, 1, 7);
+    check_node(nth_child(item, 0), AMARK_KIND_CODE_BLOCK, 2, 24, 1, 7);
+    check_record(1, 2, 0);
+    check_record(2, 6, 0);
+    check_record(3, 7, 0);
+    /* The item takes 2 columns; the rest is the code's. */
+    check_record(4, 10, 0);
+    check_record(5, 15, 2);
+    check_record(6, 18, 0);
+    check_record(7, 21, 0);
+    check_record(8, 27, 0);
+}
+
+NAOS_TEST(blank_run_in_indented_code_in_a_list_item)
+{
+    amark_node_id_t list;
+    amark_node_id_t item;
+
+    /*
+     * "- a\n" 0-3, "\n" 4, "      b\n" 5-12, "\n" 13, "\n" 14, 8 spaces
+     * 15-22 and "\n" 23, 3 spaces 24-26 and "\n" 27, "\t\t  c\n" 28-33,
+     * "\n" 34, "\n" 35, "d" 36.
+     */
+    PARSE_PUBLIC("- a\n\n      b\n\n\n        \n   \n\t\t  c\n\n\nd");
+    check_dump("(doc (ul - loose (li (p) (code indented))) (p))");
+    list = root_child(0);
+    item = nth_child(list, 0);
+    check_node(list, AMARK_KIND_LIST, 0, 33, 1, 8);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 33, 1, 8);
+    /* The code ends at its last line that is not blank. */
+    check_node(nth_child(item, 1), AMARK_KIND_CODE_BLOCK, 11, 33, 3, 8);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 36, 37, 11, 11);
+    check_record(3, 11, 0);
+    check_record(4, 13, 0);
+    check_record(5, 14, 0);
+    /* 2 columns for the item, 4 for the code. */
+    check_record(6, 21, 0);
+    /* Fewer than 4 columns after the item: all of the white space. */
+    check_record(7, 27, 0);
+    check_record(8, 29, 2);
+    check_record(9, 34, 0);
+    check_record(10, 35, 0);
+}
+
+NAOS_TEST(blank_run_in_an_html_block_in_a_list_item)
+{
+    amark_node_id_t list;
+    amark_node_id_t item;
+
+    /*
+     * "- <!--\n" 0-6, "\n" 7, "\n" 8, 4 spaces 9-12 and "\n" 13, "\t\n"
+     * 14-15, "  -->\n" 16-21, "- c" 22-24.
+     */
+    PARSE_PUBLIC("- <!--\n\n\n    \n\t\n  -->\n- c");
+    check_dump("(doc (ul - tight (li (html)) (li (p))))");
+    list = root_child(0);
+    item = nth_child(list, 0);
+    check_node(list, AMARK_KIND_LIST, 0, 25, 1, 7);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 21, 1, 6);
+    check_node(nth_child(item, 0), AMARK_KIND_HTML_BLOCK, 2, 21, 1, 6);
+    check_record(1, 2, 0);
+    check_record(2, 7, 0);
+    check_record(3, 8, 0);
+    /* The item takes 2 columns; the HTML keeps the rest. */
+    check_record(4, 11, 0);
+    check_record(5, 14, 2);
+    check_record(6, 18, 0);
+}
+
+NAOS_TEST(blank_run_in_fenced_code_in_nested_items_and_a_quote)
+{
+    amark_node_id_t node;
+
+    /*
+     * The items take 3 and 2 columns: the second tab of a line of two keeps
+     * 3. "1. a\n" 0-4, "   - ```\n" 5-13, "\n" 14, "\n" 15, "\t\t\n"
+     * 16-18, 9 spaces 19-27 and "x\n" 28-29, 5 spaces 30-34 and "```"
+     * 35-37.
+     */
+    PARSE_PUBLIC("1. a\n   - ```\n\n\n\t\t\n         x\n     ```");
+    check_dump("(doc (ol 1 . tight (li (p) (ul - tight (li "
+               "(code fenced ` 3))))))");
+    node = nth_child(nth_child(root_child(0), 0), 1);
+    check_node(node, AMARK_KIND_LIST, 8, 38, 2, 7);
+    node = nth_child(nth_child(node, 0), 0);
+    check_node(node, AMARK_KIND_CODE_BLOCK, 10, 38, 2, 7);
+    check_record(2, 10, 0);
+    check_record(3, 14, 0);
+    check_record(4, 15, 0);
+    check_record(5, 17, 3);
+    check_record(6, 24, 0);
+    check_record(7, 35, 0);
+    reset_doc();
+
+    /*
+     * In a quote: "> - ```\n" 0-7, ">\n" 8-9, ">\n" 10-11, ">" and 5
+     * spaces 12-17 and "\n" 18, ">   ```" 19-25.
+     */
+    PARSE_PUBLIC("> - ```\n>\n>\n>     \n>   ```");
+    check_dump("(doc (bq (ul - tight (li (code fenced ` 3)))))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 26, 1, 5);
+    node = nth_child(nth_child(root_child(0), 0), 0);
+    check_node(nth_child(node, 0), AMARK_KIND_CODE_BLOCK, 4, 26, 1, 5);
+    check_record(1, 4, 0);
+    check_record(2, 9, 0);
+    check_record(3, 11, 0);
+    check_record(4, 16, 0);
+    check_record(5, 23, 0);
+}
+
+/*
+ * An item with nothing in it goes on over a line of white space as wide as
+ * its content indent, so it may be left open by the line before a blank
+ * line: it closes on the next blank line narrower than that, even when the
+ * blank line marks of its lists are set.
+ */
+NAOS_TEST(blank_run_with_an_empty_item_continued_by_white_space)
+{
+    amark_node_id_t list;
+
+    /* "-\n" 0-1, "  \n" 2-4, "\n" 5, "  a" 6-8. */
+    PARSE_PUBLIC("-\n  \n\n  a");
+    check_dump("(doc (ul - tight (li)) (p))");
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 8, 9, 4, 4);
+    check_record(2, 4, 0);
+    check_record(3, 5, 0);
+    reset_doc();
+
+    /* The second line of white space continues it, the empty one not. */
+    PARSE_PUBLIC("-\n  \n  \n\n  a");
+    check_dump("(doc (ul - tight (li)) (p))");
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 11, 12, 5, 5);
+    check_record(3, 7, 0);
+    check_record(4, 8, 0);
+    reset_doc();
+
+    /* In an item: the inner item closes, the outer one goes on. */
+    PARSE_PUBLIC("- -\n    \n  \n\n  a");
+    check_dump("(doc (ul - loose (li (ul - tight (li)) (p))))");
+    list = root_child(0);
+    check_node(list, AMARK_KIND_LIST, 0, 16, 1, 5);
+    check_node(nth_child(nth_child(list, 0), 0), AMARK_KIND_LIST, 2, 3, 1,
+               1);
+    check_node(nth_child(nth_child(list, 0), 1), AMARK_KIND_PARAGRAPH, 15,
+               16, 5, 5);
+    reset_doc();
+    PARSE_PUBLIC("- 1.\n     \n     \n\n     a");
+    check_dump("(doc (ul - loose (li (ol 1 . tight (li)) (p))))");
+    reset_doc();
+
+    /* 5 columns, the sum of the content indents: the item goes on. */
+    PARSE_PUBLIC("- 1.\n     \n\t \n     a");
+    check_dump("(doc (ul - tight (li (ol 1 . tight (li (p))))))");
+}
+
+#define BLANK_RUN 50000
+
+/* DEEP markers "- ", "a" or a fence, BLANK_RUN blank lines, then "b". */
+static char g_blank_run[2 * DEEP + 4 + 4 * BLANK_RUN + 1];
+
+/* The content end of each of the BLANK_RUN lines. */
+static size_t g_run_end[BLANK_RUN];
+
+/*
+ * Writes DEEP nested list items, first (at most 3 bytes) in the innermost
+ * one, BLANK_RUN lines that are empty or hold spaces and tabs, and the line
+ * "b" into g_blank_run, and returns its length.
+ */
+static size_t build_blank_run(const char *first)
+{
+    static const char spaces[4][4] = {"", "  ", "\t", " \t "};
+    size_t length = 0;
+    size_t i;
+
+    for (i = 0; i < DEEP; i++) {
+        g_blank_run[length++] = '-';
+        g_blank_run[length++] = ' ';
+    }
+    memcpy(g_blank_run + length, first, strlen(first));
+    length += strlen(first);
+    g_blank_run[length++] = '\n';
+    for (i = 0; i < BLANK_RUN; i++) {
+        size_t width = strlen(spaces[i % 4]);
+
+        memcpy(g_blank_run + length, spaces[i % 4], width);
+        length += width;
+        g_run_end[i] = length;
+        g_blank_run[length++] = '\n';
+    }
+    g_blank_run[length++] = 'b';
+    return length;
+}
+
+/*
+ * Checks the 2 DEEP nested lists and items of g_doc: each starts at its
+ * marker and ends at end, on line end_line, and all but the outermost list
+ * are only children.
+ */
+static void check_deep_lists(size_t end, size_t end_line)
+{
+    amark_node_id_t node = amark_document_root(g_doc);
+    size_t i;
+
+    for (i = 0; i < 2 * DEEP; i++) {
+        amark_range_t range;
+
+        node = amark_node_first_child(g_doc, node);
+        NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node),
+                             i % 2 == 0 ? AMARK_KIND_LIST
+                                        : AMARK_KIND_LIST_ITEM);
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+        NAOS_REQUIRE_UINT_EQ(range.start, i - i % 2);
+        NAOS_REQUIRE_UINT_EQ(range.end, end);
+        NAOS_REQUIRE_UINT_EQ(amark_node_end_line(g_doc, node), end_line);
+        if (i > 0) {
+            NAOS_REQUIRE_UINT_EQ(amark_node_next_sibling(g_doc, node),
+                                 AMARK_NODE_NONE);
+        }
+    }
+}
+
+/*
+ * A run of blank lines after a deep list: matching every element on each
+ * line would take DEEP times BLANK_RUN steps; the cutoff makes it linear.
+ * The tree and the records are those of matching every element.
+ */
+NAOS_TEST(blank_run_after_a_deeply_nested_list)
+{
+    size_t length = build_blank_run("a");
+    amark_node_id_t node;
+    size_t i;
+
+    parse_public_ok(g_blank_run, length);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 3);
+    check_deep_lists(2 * DEEP + 1, 1);
+    node = amark_document_root(g_doc);
+    for (i = 0; i < 2 * DEEP; i++) {
+        node = amark_node_first_child(g_doc, node);
+    }
+    check_node(amark_node_first_child(g_doc, node), AMARK_KIND_PARAGRAPH,
+               2 * DEEP, 2 * DEEP + 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, length - 1, length,
+               BLANK_RUN + 2, BLANK_RUN + 2);
+    check_record(1, 2 * DEEP, 0);
+    for (i = 0; i < BLANK_RUN; i++) {
+        amark_line_record_t record;
+
+        NAOS_REQUIRE_TRUE(amark_line_get(g_doc, i + 2, &record));
+        NAOS_REQUIRE_UINT_EQ(record.content_start, g_run_end[i]);
+        NAOS_REQUIRE_UINT_EQ(record.pad, 0);
+    }
+}
+
+NAOS_TEST(blank_run_in_fenced_code_in_a_deeply_nested_list)
+{
+    size_t length = build_blank_run("```");
+    size_t end = g_run_end[BLANK_RUN - 1];
+    amark_node_id_t node;
+    size_t i;
+
+    /* The fence is not closed: the code ends with the last blank line. */
+    parse_public_ok(g_blank_run, length);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 3);
+    check_deep_lists(end, BLANK_RUN + 1);
+    node = amark_document_root(g_doc);
+    for (i = 0; i < 2 * DEEP; i++) {
+        node = amark_node_first_child(g_doc, node);
+    }
+    check_node(amark_node_first_child(g_doc, node), AMARK_KIND_CODE_BLOCK,
+               2 * DEEP, end, 1, BLANK_RUN + 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, length - 1, length,
+               BLANK_RUN + 2, BLANK_RUN + 2);
+    check_record(1, 2 * DEEP, 0);
+    /* Fewer columns than the items take: all of the white space. */
+    for (i = 0; i < BLANK_RUN; i++) {
+        amark_line_record_t record;
+
+        NAOS_REQUIRE_TRUE(amark_line_get(g_doc, i + 2, &record));
+        NAOS_REQUIRE_UINT_EQ(record.content_start, g_run_end[i]);
+        NAOS_REQUIRE_UINT_EQ(record.pad, 0);
+    }
+}
+
+/* ---------------------------------------------------------------------- */
 /* Parsed ranges that do not start at offset 0                           */
 /* ---------------------------------------------------------------------- */
 
@@ -3965,6 +4423,21 @@ NAOS_SUITE(block_list_spacing,
     NAOS_ADD_TEST(lists_in_block_quotes_are_tight_or_loose)
 )
 
+NAOS_SUITE(block_blank_runs,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(runs_of_blank_lines_leave_lists_unchanged),
+    NAOS_ADD_TEST(runs_of_blank_lines_after_a_nested_list_at_each_depth),
+    NAOS_ADD_TEST(runs_of_blank_lines_in_block_quotes),
+    NAOS_ADD_TEST(blank_run_in_fenced_code_in_a_list_item),
+    NAOS_ADD_TEST(blank_run_in_indented_code_in_a_list_item),
+    NAOS_ADD_TEST(blank_run_in_an_html_block_in_a_list_item),
+    NAOS_ADD_TEST(blank_run_in_fenced_code_in_nested_items_and_a_quote),
+    NAOS_ADD_TEST(blank_run_with_an_empty_item_continued_by_white_space),
+    NAOS_ADD_TEST(blank_run_after_a_deeply_nested_list),
+    NAOS_ADD_TEST(blank_run_in_fenced_code_in_a_deeply_nested_list)
+)
+
 NAOS_SUITE(block_ranges,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -4005,6 +4478,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(block_quotes),
     NAOS_ADD_SUITE(block_lists),
     NAOS_ADD_SUITE(block_list_spacing),
+    NAOS_ADD_SUITE(block_blank_runs),
     NAOS_ADD_SUITE(block_ranges),
     NAOS_ADD_SUITE(block_limits)
 )
