@@ -237,7 +237,7 @@ while (node != AMARK_NODE_NONE) {
 | 1.6 | 方言の ID の空間 | PublicTree | `AMARK_KIND_DIALECT_MIN` |
 | 1.7 | CommonMark か方言か | NodeReader | `amark_kind_is_core`、`amark_kind_is_dialect` |
 | 1.8 | ブロックかインラインか | NodeReader | `amark_node_is_block`、`amark_node_is_inline` |
-| 1.9 | ID の値は変えない | PublicTree | 列挙に値を明示する |
+| 1.9 | ID の値は変えない | PublicTree | 種類の ID をマクロで値を明示して定義する |
 | 2.1 | 範囲 `[start, end)` | Document、NodeReader | `amark_node_range` |
 | 2.2 | 内容の先頭から数える | Document | `amark_document_create` の契約 |
 | 2.3 | 長さ 0 の範囲 | TreeBuilder | `amark_tree_append` |
@@ -494,7 +494,8 @@ amark_error_t amark_config_resolve(const amark_config_t *config,
 
 **Responsibilities & Constraints**
 - 文書は不完全型、ノードは 32 ビットの ID とする。構造体のレイアウトは出さない。
-- 列挙は、すべての値を明示して書く。属性の列挙は 0 を「ない」とする。
+- 種類の ID は列挙にせず、`amark_kind_t`（`uint32_t`）の値のマクロで定義する。ID は値そのものに意味があり（範囲でブロック・インライン・方言を分ける）、方言が同じ型で値を足すからである。定数の型が `amark_kind_t` にそろい、方言の ID の定義（`AMARK_KIND_DIALECT_MIN` 以上のマクロ）と同じ書き方になる。
+- 属性の列挙は値が閉じているので列挙型とし、すべての値を明示して書く。0 を「ない」とする。
 - `amark_range_t` と `amark_diagnostic_t` は、呼び出した側が用意する値の型で、項目は今後も足さない。
 - 4 つの公開ヘッダは、それぞれ必要な標準ヘッダと `<amark/export.h>` を自分で取り込み、`extern "C"` で囲む。
 
@@ -507,33 +508,32 @@ typedef uint32_t amark_node_id_t;
 #define AMARK_NODE_NONE ((amark_node_id_t)0)
 
 typedef uint32_t amark_kind_t;
-enum {
-    AMARK_KIND_NONE = 0,
-    /* ブロック：1 から 31 */
-    AMARK_KIND_DOCUMENT = 1,
-    AMARK_KIND_BLOCK_QUOTE = 2,
-    AMARK_KIND_LIST = 3,
-    AMARK_KIND_LIST_ITEM = 4,
-    AMARK_KIND_THEMATIC_BREAK = 5,
-    AMARK_KIND_HEADING = 6,
-    AMARK_KIND_CODE_BLOCK = 7,
-    AMARK_KIND_HTML_BLOCK = 8,
-    AMARK_KIND_PARAGRAPH = 9,
-    AMARK_KIND_LINK_REFERENCE_DEFINITION = 10,
-    /* インライン：32 から 63 */
-    AMARK_KIND_TEXT = 32,
-    AMARK_KIND_CODE_SPAN = 33,
-    AMARK_KIND_EMPHASIS = 34,
-    AMARK_KIND_STRONG = 35,
-    AMARK_KIND_LINK = 36,
-    AMARK_KIND_IMAGE = 37,
-    AMARK_KIND_AUTOLINK = 38,
-    AMARK_KIND_RAW_HTML = 39,
-    AMARK_KIND_HARD_BREAK = 40,
-    AMARK_KIND_SOFT_BREAK = 41,
-    AMARK_KIND_BACKSLASH_ESCAPE = 42,
-    AMARK_KIND_CHARACTER_REFERENCE = 43
-};
+#define AMARK_KIND_NONE ((amark_kind_t)0)
+/* ブロック：1 から 31 */
+#define AMARK_KIND_DOCUMENT ((amark_kind_t)1)
+#define AMARK_KIND_BLOCK_QUOTE ((amark_kind_t)2)
+#define AMARK_KIND_LIST ((amark_kind_t)3)
+#define AMARK_KIND_LIST_ITEM ((amark_kind_t)4)
+#define AMARK_KIND_THEMATIC_BREAK ((amark_kind_t)5)
+#define AMARK_KIND_HEADING ((amark_kind_t)6)
+#define AMARK_KIND_CODE_BLOCK ((amark_kind_t)7)
+#define AMARK_KIND_HTML_BLOCK ((amark_kind_t)8)
+#define AMARK_KIND_PARAGRAPH ((amark_kind_t)9)
+#define AMARK_KIND_LINK_REFERENCE_DEFINITION ((amark_kind_t)10)
+/* インライン：32 から 63 */
+#define AMARK_KIND_TEXT ((amark_kind_t)32)
+#define AMARK_KIND_CODE_SPAN ((amark_kind_t)33)
+#define AMARK_KIND_EMPHASIS ((amark_kind_t)34)
+#define AMARK_KIND_STRONG ((amark_kind_t)35)
+#define AMARK_KIND_LINK ((amark_kind_t)36)
+#define AMARK_KIND_IMAGE ((amark_kind_t)37)
+#define AMARK_KIND_AUTOLINK ((amark_kind_t)38)
+#define AMARK_KIND_RAW_HTML ((amark_kind_t)39)
+#define AMARK_KIND_HARD_BREAK ((amark_kind_t)40)
+#define AMARK_KIND_SOFT_BREAK ((amark_kind_t)41)
+#define AMARK_KIND_BACKSLASH_ESCAPE ((amark_kind_t)42)
+#define AMARK_KIND_CHARACTER_REFERENCE ((amark_kind_t)43)
+/* 方言：AMARK_KIND_DIALECT_MIN 以上 */
 #define AMARK_KIND_DIALECT_MIN ((amark_kind_t)0x10000)
 
 typedef struct amark_range {
@@ -1039,7 +1039,7 @@ struct amark_document {
 - 初期化していない（0 で埋めた）設定が `INVALID_CONFIG` になる。
 - 確保関数の片方だけを指定した設定、範囲が逆の設定、`utf8_mode` が 2 の設定が `INVALID_CONFIG` になる。
 - `NULL` の文書で、`amark_document_free`、`amark_document_root`、`amark_document_diagnostic_count`、たどる関数が、決まった値を返して終わる（5.3）。
-- `header_cxx.cpp`：`<amark/amark.h>` を C++ として取り込み、設定の初期化と検査を呼ぶ。列挙の値を `switch` で使える（12.2、12.3）。
+- `header_cxx.cpp`：`<amark/amark.h>` を C++ として取り込み、設定の初期化と検査を呼ぶ。種類の ID のマクロと属性の列挙の値を `switch` の `case` で使える（12.2、12.3）。
 - 木を読む関数の正常な動作は、公開 API だけでは木を作れないので、単体テスト（`test_tree.c`）で確かめる。公開 API だけを通した確認は、解析の入口ができる block-parser 以降で行う。
 
 ### 並行性
