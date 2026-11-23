@@ -140,7 +140,7 @@
   - _Requirements: 5.3_
 
 - [ ] 7. 文書と CI
-- [ ] 7.1 README と CONTRIBUTING を書く
+- [x] 7.1 README と CONTRIBUTING を書く
   - CONTRIBUTING に、ソースの先頭の表示の書き方（C と CMake）、命名の規約、モジュールとテストを足す手順、禁止事項を書く
   - README（英語）に、概要、状態、必要な道具、構成・ビルド・テスト・インストールのコマンド、`find_package` と `add_subdirectory` での使い方、オプションの表、ライセンスを書く
   - 完了の状態：README のコマンドを空のビルドのディレクトリでそのまま実行すると、構成・ビルド・テスト・インストールが追加の設定なしで通る
