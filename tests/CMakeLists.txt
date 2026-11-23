@@ -9,7 +9,8 @@
 #   amark_add_unit_test(<name> SOURCES <source>... [LIBRARIES <library>...])
 #       Tests of internal functions. Links amark_testing (the test-only static
 #       library built from the same sources as amark, with src/ as an include
-#       directory).
+#       directory) and amark_test_support (the counting, failing allocator of
+#       tests/support/).
 #
 #   amark_add_public_test(<name> SOURCES <source>...)
 #       Tests of the public API only. Links Amark::amark.
@@ -53,6 +54,15 @@ if(NOT AMARK_MATH_WITHOUT_LIBM)
 endif()
 unset(_amark_libm_probe)
 
+# amark_test_support: the counting, failing test allocator ("test_alloc.h").
+# A test-only static library, never installed.
+add_library(amark_test_support STATIC support/test_alloc.c)
+amark_target_defaults(amark_test_support)
+target_include_directories(amark_test_support
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/support"
+)
+target_link_libraries(amark_test_support PUBLIC amark_testing)
+
 # Settings shared by every test executable.
 function(_amark_test_target_settings target)
     amark_target_defaults("${target}")
@@ -74,7 +84,7 @@ function(amark_add_unit_test name)
 
     naos_add_executable("${name}"
         SOURCES ${arg_SOURCES}
-        LIBRARIES amark_testing ${arg_LIBRARIES}
+        LIBRARIES amark_testing amark_test_support ${arg_LIBRARIES}
     )
     _amark_test_target_settings("${name}")
 endfunction()
@@ -105,7 +115,8 @@ if(CMAKE_CXX_COMPILER)
     enable_language(CXX)
 endif()
 
-# Unit tests (tests/unit/), linked to amark_testing.
+# Unit tests (tests/unit/), linked to amark_testing and amark_test_support.
+amark_add_unit_test(test_alloc SOURCES unit/test_alloc.c)
 
 # Public API tests (tests/public/), linked to Amark::amark.
 amark_add_public_test(test_version SOURCES public/test_version.c)
