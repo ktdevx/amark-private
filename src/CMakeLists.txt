@@ -11,6 +11,7 @@ set(AMARK_SOURCES
     arena.c
     array.c
     line_index.c
+    utf8.c
     version.c
 )
 
