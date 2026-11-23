@@ -119,6 +119,20 @@ size_t amark_utf8_decode(const unsigned char *bytes, size_t length,
     return size;
 }
 
+size_t amark_utf8_decode_lossy(const unsigned char *bytes, size_t length,
+                               uint32_t *codepoint)
+{
+    bool well_formed;
+    size_t size = amark_utf8_inspect(bytes, length, &well_formed);
+
+    if (well_formed) {
+        /* bytes[0..size) is one well-formed sequence, as decode requires. */
+        return amark_utf8_decode(bytes, size, codepoint);
+    }
+    *codepoint = 0xFFFDu;
+    return size;
+}
+
 amark_error_t amark_utf8_replace(amark_arena_t *arena,
                                  const unsigned char *bytes, size_t length,
                                  amark_utf8_replaced_t *out)

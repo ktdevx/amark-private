@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* Unit tests of UTF-8 validation, decoding and replacement (src/utf8.h). */
+/*
+ * Unit tests of UTF-8 validation, decoding, lossy decoding and replacement
+ * (src/utf8.h).
+ */
 
 #include "utf8.h"
 
@@ -258,6 +261,18 @@ static size_t inspect_exact(const char *text, size_t n, bool *well_formed)
         NAOS_REQUIRE_NOT_NULL(copy_);                                        \
         NAOS_CHECK_UINT_EQ(amark_utf8_decode(copy_, sizeof(s) - 1, &cp_),    \
                            (len));                                           \
+        NAOS_CHECK_UINT_EQ(cp_, (cp));                                       \
+        free(copy_);                                                         \
+    } while (0)
+
+/* Checks that literal s decodes lossily to cp with len bytes. */
+#define CHECK_LOSSY(s, cp, len)                                              \
+    do {                                                                     \
+        unsigned char *copy_ = exact_copy((s), sizeof(s) - 1);               \
+        uint32_t cp_ = 0xFFFFFFFFu;                                          \
+        NAOS_REQUIRE_NOT_NULL(copy_);                                        \
+        NAOS_CHECK_UINT_EQ(                                                  \
+            amark_utf8_decode_lossy(copy_, sizeof(s) - 1, &cp_), (len));     \
         NAOS_CHECK_UINT_EQ(cp_, (cp));                                       \
         free(copy_);                                                         \
     } while (0)
@@ -567,6 +582,59 @@ NAOS_TEST(decode_walks_a_validated_sequence)
     free(bytes);
 }
 
+/* --- Lossy decoding ------------------------------------------------------ */
+
+NAOS_TEST(lossy_decode_matches_decode_on_well_formed_input)
+{
+    CHECK_LOSSY("\x7F", 0x7F, 1);
+    CHECK_LOSSY("\xC2\x80", 0x80, 2);
+    CHECK_LOSSY("\xDF\xBF", 0x7FF, 2);
+    CHECK_LOSSY("\xE0\xA0\x80", 0x800, 3);
+    CHECK_LOSSY("\xED\x9F\xBF", 0xD7FF, 3);
+    CHECK_LOSSY("\xEE\x80\x80", 0xE000, 3);
+    CHECK_LOSSY("\xEF\xBB\xBF", 0xFEFF, 3);
+    CHECK_LOSSY("\xEF\xBF\xBD", 0xFFFD, 3);
+    CHECK_LOSSY("\xEF\xBF\xBF", 0xFFFF, 3);
+    CHECK_LOSSY("\xF0\x90\x80\x80", 0x10000, 4);
+    CHECK_LOSSY("\xF4\x8F\xBF\xBF", 0x10FFFF, 4);
+    CHECK_LOSSY("A\xC3\xA9", 0x41, 1);
+    CHECK_LOSSY("\xE2\x82\xAC\x80", 0x20AC, 3);
+}
+
+NAOS_TEST(lossy_decode_returns_nul_as_it_is)
+{
+    CHECK_LOSSY("\x00", 0x0, 1);
+    CHECK_LOSSY("\x00\x80", 0x0, 1);
+}
+
+/* Each kind of ill-formed sequence gives U+FFFD and its maximal subpart. */
+NAOS_TEST(lossy_decode_returns_fffd_for_each_maximal_subpart)
+{
+    /* Truncated sequences. */
+    CHECK_LOSSY("\xC2", 0xFFFD, 1);
+    CHECK_LOSSY("\xC2" "A", 0xFFFD, 1);
+    CHECK_LOSSY("\xE2\x82", 0xFFFD, 2);
+    CHECK_LOSSY("\xE2\x82" "A", 0xFFFD, 2);
+    CHECK_LOSSY("\xF0\x9F\x98", 0xFFFD, 3);
+    CHECK_LOSSY("\xF1\x80\x80\xC0", 0xFFFD, 3);
+    /* Non-shortest forms. */
+    CHECK_LOSSY("\xC0\xAF", 0xFFFD, 1);
+    CHECK_LOSSY("\xC1\xBF", 0xFFFD, 1);
+    CHECK_LOSSY("\xE0\x80\xBF", 0xFFFD, 1);
+    CHECK_LOSSY("\xF0\x80\x80", 0xFFFD, 1);
+    CHECK_LOSSY("\xF0\x8F\xBF\xBF", 0xFFFD, 1);
+    /* Surrogates. */
+    CHECK_LOSSY("\xED\xA0\x80", 0xFFFD, 1);
+    CHECK_LOSSY("\xED\xBF\xBF", 0xFFFD, 1);
+    /* Values above U+10FFFF. */
+    CHECK_LOSSY("\xF4\x90\x80\x80", 0xFFFD, 1);
+    CHECK_LOSSY("\xF5\x80\x80\x80", 0xFFFD, 1);
+    CHECK_LOSSY("\xFF", 0xFFFD, 1);
+    /* Continuation bytes without a lead byte. */
+    CHECK_LOSSY("\x80", 0xFFFD, 1);
+    CHECK_LOSSY("\xBF\x80", 0xFFFD, 1);
+}
+
 /* --- Cross-checks against the reference ---------------------------------- */
 
 /*
@@ -601,6 +669,10 @@ NAOS_TEST(every_scalar_value_round_trips)
             amark_utf8_inspect(exact[n], n, &ok) != n || !ok) {
             bad++;
         }
+        got = 0xFFFFFFFFu;
+        if (amark_utf8_decode_lossy(exact[n], n, &got) != n || got != cp) {
+            bad++;
+        }
     }
     NAOS_CHECK_UINT_EQ(bad, 0);
     for (i = 1; i <= 4; i++) {
@@ -609,7 +681,8 @@ NAOS_TEST(every_scalar_value_round_trips)
 }
 
 /*
- * Compares inspection and validation with the reference for the bytes
+ * Compares inspection, validation and lossy decoding with the reference for
+ * the bytes
  * bytes[0..n), held in a block of exactly n bytes. Returns 1 on agreement.
  */
 static int agrees(unsigned char *exact, size_t n)
@@ -620,6 +693,8 @@ static int agrees(unsigned char *exact, size_t n)
     size_t off = SIZE_MAX;
     size_t ref_off = SIZE_MAX;
     bool valid;
+    uint32_t cp;
+    uint32_t ref_cp;
 
     len = amark_utf8_inspect(exact, n, &ok);
     if (len != ref_inspect(exact, n, &ref_ok) || ok != ref_ok) {
@@ -627,6 +702,20 @@ static int agrees(unsigned char *exact, size_t n)
     }
     valid = amark_utf8_validate(exact, n, &off);
     if (valid != ref_validate(exact, n, &ref_off) || off != ref_off) {
+        return 0;
+    }
+    /* Lossy decoding: the same length, and U+FFFD exactly when ill-formed. */
+    cp = 0xFFFFFFFFu;
+    if (amark_utf8_decode_lossy(exact, n, &cp) != len) {
+        return 0;
+    }
+    if (ref_ok) {
+        ref_cp = 0xFFFFFFFEu;
+        (void)amark_utf8_decode(exact, n, &ref_cp);
+        if (cp != ref_cp) {
+            return 0;
+        }
+    } else if (cp != 0xFFFDu) {
         return 0;
     }
     return 1;
@@ -1249,6 +1338,89 @@ NAOS_TEST(replace_of_a_large_input_agrees_with_the_reference)
     NAOS_CHECK_TRUE(replace_agrees(g_input, n));
 }
 
+/*
+ * Walks the n bytes at bytes with amark_utf8_decode_lossy, encodes each code
+ * point, and compares the result with amark_utf8_replace: the two must split
+ * the bytes into the same characters. Returns 1 on agreement.
+ */
+static int lossy_agrees_with_replace(const unsigned char *bytes, size_t n)
+{
+    amark_utf8_replaced_t r;
+    unsigned char e[4];
+    size_t i = 0;
+    size_t o = 0;
+    size_t size;
+    size_t k;
+    uint32_t cp;
+
+    if (amark_utf8_replace(&g_arena, bytes, n, &r) != AMARK_ERROR_NONE) {
+        return 0;
+    }
+    while (i < n) {
+        cp = 0xFFFFFFFFu;
+        size = amark_utf8_decode_lossy(bytes + i, n - i, &cp);
+        if (size < 1 || size > 4 || size > n - i || !is_scalar(cp)) {
+            return 0;
+        }
+        k = ref_encode(cp, e);
+        if (o + k > r.length || memcmp(r.bytes + o, e, k) != 0) {
+            return 0;
+        }
+        o += k;
+        i += size;
+    }
+    return o == r.length;
+}
+
+NAOS_TEST(lossy_decode_splits_like_replace_on_the_standard_example)
+{
+    static const char text[] = "a" "\xF1\x80\x80" "\xE1\x80" "\xC2" "b"
+                               "\x80" "c" "\x80\xBF" "d";
+
+    g_input = exact_copy(text, sizeof(text) - 1);
+    NAOS_REQUIRE_NOT_NULL(g_input);
+    NAOS_CHECK_TRUE(lossy_agrees_with_replace(g_input, sizeof(text) - 1));
+}
+
+/* Every sequence of length 1 and 2, and random sequences of 1 to 64 bytes. */
+NAOS_TEST(lossy_decode_splits_like_replace)
+{
+    unsigned char buf[64];
+    uint32_t state = 2468u;
+    uint32_t v;
+    size_t round;
+    size_t n;
+    size_t bad = 0;
+
+    g_input = (unsigned char *)calloc(2, 1);
+    NAOS_REQUIRE_NOT_NULL(g_input);
+    for (v = 0; v < 0x100; v++) {
+        g_input[0] = (unsigned char)v;
+        bad += !lossy_agrees_with_replace(g_input, 1);
+    }
+    for (v = 0; v < 0x10000; v++) {
+        g_input[0] = (unsigned char)(v >> 8);
+        g_input[1] = (unsigned char)v;
+        bad += !lossy_agrees_with_replace(g_input, 2);
+        if ((v & 0xFFF) == 0xFFF) {
+            reset_arena();
+        }
+    }
+    for (round = 0; round < 100000; round++) {
+        state = state * 1103515245u + 12345u;
+        n = 1 + (state >> 16) % sizeof(buf);
+        fill_mixed(buf, n, &state);
+        free(g_input);
+        g_input = exact_copy(buf, n);
+        NAOS_REQUIRE_NOT_NULL(g_input);
+        bad += !lossy_agrees_with_replace(g_input, n);
+        if (round % 1000 == 999) {
+            reset_arena();
+        }
+    }
+    NAOS_CHECK_UINT_EQ(bad, 0);
+}
+
 NAOS_SUITE(utf8,
     NAOS_ADD_TEST(empty_input_is_valid),
     NAOS_ADD_TEST(nul_and_bom_are_valid),
@@ -1269,6 +1441,9 @@ NAOS_SUITE(utf8,
     NAOS_ADD_TEST(decode_boundaries),
     NAOS_ADD_TEST(decode_reads_one_character_of_a_longer_range),
     NAOS_ADD_TEST(decode_walks_a_validated_sequence),
+    NAOS_ADD_TEST(lossy_decode_matches_decode_on_well_formed_input),
+    NAOS_ADD_TEST(lossy_decode_returns_nul_as_it_is),
+    NAOS_ADD_TEST(lossy_decode_returns_fffd_for_each_maximal_subpart),
     NAOS_ADD_TEST(every_scalar_value_round_trips),
     NAOS_ADD_TEST(all_short_sequences_agree_with_the_reference),
     NAOS_ADD_TEST(four_byte_sequences_agree_with_the_reference),
@@ -1294,7 +1469,9 @@ NAOS_SUITE(replace,
     NAOS_ADD_TEST(failure_injection_loop),
     NAOS_ADD_TEST(replace_of_all_short_sequences_agrees_with_the_reference),
     NAOS_ADD_TEST(replace_of_random_sequences_agrees_with_the_reference),
-    NAOS_ADD_TEST(replace_of_a_large_input_agrees_with_the_reference)
+    NAOS_ADD_TEST(replace_of_a_large_input_agrees_with_the_reference),
+    NAOS_ADD_TEST(lossy_decode_splits_like_replace_on_the_standard_example),
+    NAOS_ADD_TEST(lossy_decode_splits_like_replace)
 )
 
 NAOS_MAIN(

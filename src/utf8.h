@@ -47,8 +47,8 @@
  * of the bytes gives 2, F0 80 80 gives 1 and C0 AF gives 1.
  *
  * Reads only bytes[0] to bytes[returned value] and never at or past
- * bytes[length]. Validation and replacement both use this function, so they
- * cannot disagree on what is ill-formed.
+ * bytes[length]. Validation, lossy decoding and replacement all use this
+ * function, so they cannot disagree on what is ill-formed.
  */
 size_t amark_utf8_inspect(const unsigned char *bytes, size_t length,
                           bool *well_formed);
@@ -72,6 +72,20 @@ bool amark_utf8_validate(const unsigned char *bytes, size_t length,
  */
 size_t amark_utf8_decode(const unsigned char *bytes, size_t length,
                          uint32_t *codepoint);
+
+/*
+ * Decodes the character at bytes[0] of a byte sequence that need not be
+ * well-formed; length (at least 1) is the number of bytes from there to the
+ * end of the byte sequence. If amark_utf8_inspect finds a well-formed
+ * sequence there, writes its code point to *codepoint and returns its length
+ * (1 to 4). Otherwise writes U+FFFD and returns the length of the maximal
+ * subpart (1 to 3), so that stepping through bytes with this function splits
+ * them into the same characters as amark_utf8_replace. U+0000 is returned as
+ * U+0000; turning it into U+FFFD is left to the caller. Reads only bytes[0]
+ * to bytes[returned value] and never at or past bytes[length].
+ */
+size_t amark_utf8_decode_lossy(const unsigned char *bytes, size_t length,
+                               uint32_t *codepoint);
 
 /*
  * The result of amark_utf8_replace. When replacement_count is 0, bytes and
