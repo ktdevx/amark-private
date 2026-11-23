@@ -13,8 +13,10 @@ set(AMARK_SOURCES
     config.c
     document.c
     entity.c
+    line.c
     line_index.c
     node.c
+    parse_data.c
     tree.c
     tree_check.c
     unicode.c
