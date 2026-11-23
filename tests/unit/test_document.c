@@ -610,7 +610,8 @@ static void take_snapshot(snapshot_t *s)
 
 /*
  * Checks that the diagnostics of g_doc are those of s: the same count, and
- * the same members, and the same message pointers for each (arena copies are never rewritten).
+ * the same members, and the same message pointers for each (arena copies
+ * are never rewritten).
  */
 static void check_snapshot(const snapshot_t *s)
 {
