@@ -5,10 +5,9 @@
 
 /*
  * Public API test of the parse configuration and of the calls that take no
- * document: links Amark::amark and uses only <amark/amark.h>. The public
- * API cannot create a document yet, so the reading functions are checked
- * here with a NULL document only; their results on a real tree are checked
- * by the unit tests of the tree.
+ * document: links Amark::amark and uses only <amark/amark.h>. The reading
+ * functions are checked here with a NULL document only; their results on a
+ * parsed document are checked by test_parse.c and by the unit tests.
  */
 
 #include <amark/amark.h>
