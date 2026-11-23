@@ -266,7 +266,7 @@ flowchart LR
 | 6.1, 6.2, 6.3, 6.4, 6.7 | 確保関数の選択と文脈の値 | Allocator | `amark_allocator_resolve`、`amark_malloc`、`amark_free` |
 | 6.5, 6.6 | 失敗とあふれ | Allocator | `amark_error_t`、`amark_malloc_array`、`amark_size_mul` |
 | 7.1, 7.2, 7.7, 7.8 | アリーナからの確保 | Arena | `amark_arena_alloc` |
-| 7.3, 7.4, 7.9 | アリーナの解放と確保元 | Arena | `amark_arena_destroy`、`amark_arena_init` |
+| 7.3, 7.4, 7.9 | アリーナの解放と確保元 | Arena | `amark_arena_deinit`、`amark_arena_init` |
 | 7.5, 7.6 | アリーナの失敗とあふれ | Arena | `amark_arena_alloc` の戻り値 |
 | 8.1, 8.2, 8.5, 8.6, 8.7 | 配列への追加と伸び方 | Array | `amark_array_push`、`amark_array_reserve` |
 | 8.3, 8.4, 8.9 | 読み書き、取り出し、要素の型 | Array | `amark_array_at`、`amark_array_len`、`amark_array_pop` |
@@ -450,7 +450,7 @@ amark_allocator_t amark_test_allocator(amark_test_alloc_t *state);
 - 失敗の注入の型：`fail_at` を 1 から順に増やしながら操作を繰り返し、操作が成功するまで続ける。毎回、後始末のあとに `live == 0` を確かめる。
 
 **Implementation Notes**
-- Integration: Naos の `NAOS_REQUIRE_*` は `longjmp` でテストを抜ける。後始末（`amark_arena_destroy` など）は teardown に置く。
+- Integration: Naos の `NAOS_REQUIRE_*` は `longjmp` でテストを抜ける。後始末（`amark_arena_deinit` など）は teardown に置く。
 - Integration: Naos 0.4.0 では、検査を 1 つも実行しないテストは失敗する。
 - Risks: Naos は 1.0 前である。版を上げるときは、CHANGELOG の互換の項を読む。
 
@@ -656,13 +656,13 @@ amark_error_t amark_arena_alloc(amark_arena_t *arena, size_t size, void **out);
 amark_error_t amark_arena_alloc_array(amark_arena_t *arena, size_t count, size_t elem_size, void **out);
 
 /* すべてのかたまりを確保関数に返し、arena を init の直後と同じ状態に戻す。 */
-void amark_arena_destroy(amark_arena_t *arena);
+void amark_arena_deinit(amark_arena_t *arena);
 ```
 - Preconditions: `arena` は `amark_arena_init` で初期化してある。
 - Postconditions:
   - `amark_arena_alloc`：成功すると、`*out` は `size` バイト以上で、`AMARK_ARENA_ALIGN` の倍数の位置を指す。内容は初期化しない。`size` が 0 のときは 1 バイトとして扱う。
   - 失敗（`NOMEM`、`OVERFLOW`）のとき、`*out` は NULL で、アリーナの状態は呼び出しの前と同じである。それまでに返したメモリは有効なままである。
-  - `amark_arena_destroy`：確保関数から得たかたまりの数だけ `free_fn` を呼ぶ。2 回続けて呼んでも安全である。
+  - `amark_arena_deinit`：確保関数から得たかたまりの数だけ `free_fn` を呼ぶ。2 回続けて呼んでも安全である。
 - Invariants: `AMARK_ARENA_ALIGN` は、`long long`、`long double`、`void *`、関数ポインタを含む共用体の整列である（C99 には `max_align_t` がないため）。
 
 ##### State Management
@@ -830,7 +830,7 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *byte
 
 ### Unit Tests（`tests/unit/`、`amark_testing` にリンク）
 - **test_alloc**：既定の確保関数で確保と解放ができる。指定した確保関数だけが呼ばれ、文脈の値がそのまま渡る（`ctx_mismatch == 0`）。確保関数が NULL を返すと `NOMEM`。`amark_malloc_array(SIZE_MAX, 2)` は確保関数を呼ばずに `OVERFLOW`。`amark_free(NULL)` は確保関数を呼ばない。`amark_size_add` と `amark_size_mul` の境界（6.1–6.7）。
-- **test_arena**：返した位置が `AMARK_ARENA_ALIGN` の倍数。小さな確保 10,000 回で、確保関数の呼び出しが 100 回より少ない。先に書いた内容が、後の確保のあとも変わらない。1 MiB を超える確保が成功し、その後の小さな確保も成功する。`destroy` のあと `live == 0`。途中の確保を失敗させても、それまでのメモリが読め、`destroy` で `live == 0`。`size` が `SIZE_MAX` で `OVERFLOW`（7.1–7.9）。
+- **test_arena**：返した位置が `AMARK_ARENA_ALIGN` の倍数。小さな確保 10,000 回で、確保関数の呼び出しが 100 回より少ない。先に書いた内容が、後の確保のあとも変わらない。1 MiB を超える確保が成功し、その後の小さな確保も成功する。`deinit` のあと `live == 0`。途中の確保を失敗させても、それまでのメモリが読め、`deinit` で `live == 0`。`size` が `SIZE_MAX` で `OVERFLOW`（7.1–7.9）。
 - **test_array**：追加した順に読める。容量が広がっても値が変わらない。`pop` が逆順に返し、空で false。要素の大きさが 1、8、24 バイトの型で動く。伸びるときの確保を失敗させると、`len` と中身が変わらない。`reserve(SIZE_MAX)` が `OVERFLOW`。100,000 個の追加で、確保関数の呼び出しの回数が要素の数に比べて十分に少ない（8.1–8.9）。
 - **test_line_index**：空、行末なし、LF、CR、CRLF、混在、連続する行末、行末で終わる入力、行末だけの入力について、すべてのオフセットの行番号を、1 バイトずつ数える単純な参照実装と比べる。`line_count`。不正な UTF-8 を含む入力。確保の失敗で `NOMEM` を返し、`live` が増えない（9.1–9.11）。
 - **test_utf8**：1〜4 バイトの各範囲の境界（U+007F、U+0080、U+07FF、U+0800、U+FFFF、U+10000、U+10FFFF）、U+0000 と U+FEFF が正しい。不正の各種類について、`error_offset` が最初の不正な列を指す。デコードが検査済みの全境界で正しい値と長さを返す。置換が Unicode 標準の例と一致し、結果が検査を通り、入力が変わらない。正しい入力では `replacement_count == 0` で、ポインタが入力と同じで、確保がない。確保の失敗で `NOMEM` を返し、`live` が増えない（10.1–10.9、11.1–11.9）。
