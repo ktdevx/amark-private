@@ -91,8 +91,8 @@
   - _Depends: 1.1, 1.3_
   - _Requirements: 2.6, 9.1, 9.2, 9.4_
 
-- [ ] 5. 全体の検証
-- [ ] 5.1 すべての構成で、ビルド、テスト、リポジトリの検査を通す
+- [x] 5. 全体の検証
+- [x] 5.1 すべての構成で、ビルド、テスト、リポジトリの検査を通す
   - 手元で、警告のエラー化を有効にし、静的と動的、Debug と Release、ASan と UBSan の構成で、構成・ビルド・テストを実行する。C のコンパイラは GCC と Clang の両方で試す
   - 動的ライブラリの公開シンボルの一覧が変わっていないこと、可変の静的データがないこと、生成物を含むすべてのソースに著作権表示があることを、既存の検査で確かめる
   - Python を見つけられない構成でも、ビルドとほかのテストが通ることを確かめる
@@ -105,3 +105,4 @@
 - 1.3: 生成物は型を定義しない。`unicode.c` と `entity.c` は、設計の 4 つの typedef を定義してから `unicode_tables.h` / `entity_table.h` を取り込む。内容が同じ生成物は書き直さない（更新の時刻を保つ）。
 - 2.1: この環境の clang には ASan の実行時ライブラリがない（`AMARK_SANITIZE=ON` と clang ではリンクに失敗する。既存のコードでも同じ）。ASan・UBSan の構成は GCC（`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++`）で確かめる。clang の ASan は CI の sanitizer ジョブで確かめる。
 - 3.1: テストの `.c` は MSVC の `fopen`（C4996）のために、`_MSC_VER` のときだけ先頭で `_CRT_SECURE_NO_WARNINGS` を定義する。ファイルは `"rb"` で開いて CR を除く。`AMARK_TEST_DATA_DIR` は `target_compile_definitions` でテストのターゲットごとに渡す（3.2 では `test_entity` にも渡す）。
+- 5.1: 手元の検証の記録は `validation.md`。CI はこのブランチでまだ動いていない（ワークフローの起動は main への push と pull request だけ）。OS をまたぐ一致（1.2）と Windows・macOS（3.1）、clang の ASan は、pull request を作った後の CI で確かめる。
