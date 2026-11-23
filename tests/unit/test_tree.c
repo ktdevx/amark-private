@@ -7,8 +7,9 @@
  * Unit tests of the tree builder (src/tree.h): adding nodes as the last
  * child of a parent and before a sibling, the lines derived from the range,
  * changing the range and the kind, removing and wrapping nodes, setting the
- * attributes of each kind, the node and attribute limits and allocation
- * failures. The results are checked through
+ * attributes of each kind, the node and attribute limits, allocation
+ * failures, a deep tree, and the same results from the same operations on
+ * separate documents. The results are checked through
  * the internal layout of the document (src/document.h). The public readers
  * (include/amark/tree.h: kind classification, walking, kind, class, range,
  * lines and attributes) are checked on trees built here.
@@ -17,6 +18,7 @@
 #include "document.h"
 #include "test_alloc.h"
 #include "tree.h"
+#include "tree_check.h"
 
 #include <naos/naos.h>
 
@@ -27,15 +29,16 @@
 
 /*
  * Fixture. NAOS_REQUIRE_* leaves a test with longjmp, so the documents a
- * test creates are kept in g_doc and g_doc2, and teardown (which always
- * runs) restores a node or attribute array length a test changed, destroys
- * them and then checks that no block is left and that every call received
- * the context value it was given.
+ * test creates are kept in g_doc, g_doc2 and g_doc3, and teardown (which
+ * always runs) restores a node or attribute array length a test changed,
+ * destroys them and then checks that no block is left and that every call
+ * received the context value it was given.
  */
 static amark_test_alloc_t g_state;
 static amark_allocator_t g_allocator;
 static amark_document_t *g_doc;
 static amark_document_t *g_doc2;
+static amark_document_t *g_doc3;
 static size_t g_saved_len; /* 0: the length of g_doc's node array is real */
 static size_t g_saved_attrs_len; /* the same for the attribute array */
 
@@ -45,6 +48,7 @@ NAOS_SETUP(counting)
     g_allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
     g_doc2 = NULL;
+    g_doc3 = NULL;
     g_saved_len = 0;
     g_saved_attrs_len = 0;
 }
@@ -62,8 +66,10 @@ NAOS_TEARDOWN(counting)
     g_saved_attrs_len = 0;
     amark_document_destroy(g_doc);
     amark_document_destroy(g_doc2);
+    amark_document_destroy(g_doc3);
     g_doc = NULL;
     g_doc2 = NULL;
+    g_doc3 = NULL;
     NAOS_CHECK_UINT_EQ(g_state.live, 0);
     NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
 }
@@ -2967,6 +2973,498 @@ NAOS_TEST(attribute_readers_return_fixed_values)
     check_no_attributes(NULL, AMARK_NODE_NONE);
 }
 
+/* ---- adding and setting under allocation failure (7.8, 12.10) ---- */
+
+#define OP_APPEND 0
+#define OP_INSERT_BEFORE 1
+#define OP_WRAP 2
+#define OP_SETTERS 3
+#define OP_COUNT 4
+
+/* The number of calls each loop makes when no allocation fails. */
+#define OP_CALLS 300
+
+/*
+ * Prepares g_doc for operation op without failure injection: a thematic
+ * break under the root for the adding operations (so that insert_before and
+ * wrap have a node to work on), the nodes of add_attr_nodes for the
+ * setters.
+ */
+static void prepare_op(size_t op)
+{
+    if (op == OP_SETTERS) {
+        add_attr_nodes();
+    } else {
+        (void)add(1, AMARK_KIND_THEMATIC_BREAK, MIXED_LENGTH, MIXED_LENGTH);
+    }
+}
+
+/*
+ * Makes call i of operation op on g_doc: appends a thematic break to the
+ * root, inserts one before the first child of the root, wraps all children
+ * of the root in a block quote, or sets the attributes of node i + 2.
+ */
+static amark_error_t run_op(size_t op, size_t i, amark_node_id_t *out)
+{
+    const amark_node_t *root = node_at(g_doc, 1);
+
+    switch (op) {
+    case OP_APPEND:
+        return amark_tree_append(g_doc, 1, AMARK_KIND_THEMATIC_BREAK,
+                                 AMARK_NODE_CLASS_AUTO, MIXED_LENGTH,
+                                 MIXED_LENGTH, out);
+    case OP_INSERT_BEFORE:
+        return amark_tree_insert_before(g_doc, root->first_child,
+                                        AMARK_KIND_THEMATIC_BREAK,
+                                        AMARK_NODE_CLASS_AUTO, MIXED_LENGTH,
+                                        MIXED_LENGTH, out);
+    case OP_WRAP:
+        return amark_tree_wrap(g_doc, root->first_child, root->last_child,
+                               AMARK_KIND_BLOCK_QUOTE, AMARK_NODE_CLASS_AUTO,
+                               0, MIXED_LENGTH, out);
+    default:
+        *out = AMARK_NODE_NONE;
+        return set_by_index((amark_node_id_t)(i + 2), i % SETTER_COUNT, i);
+    }
+}
+
+/*
+ * Makes OP_CALLS calls of operation op. Stops at the first failure, checks
+ * that the failed call changed neither the node array (byte for byte) nor
+ * the attribute array, and that the tree of an adding operation still
+ * passes the whole-tree check, and returns its error. *done receives the
+ * number of calls that succeeded.
+ */
+static amark_error_t run_ops(size_t op, size_t *done)
+{
+    size_t i;
+
+    *done = 0;
+    for (i = 0; i < OP_CALLS; i++) {
+        size_t attrs_len = amark_array_len(&g_doc->attrs);
+        void *attrs_data = g_doc->attrs.data;
+        amark_node_id_t out = 999;
+        amark_error_t err;
+
+        save_nodes();
+        err = run_op(op, i, &out);
+        if (err != AMARK_ERROR_NONE) {
+            NAOS_CHECK_UINT_EQ(out, AMARK_NODE_NONE);
+            check_nodes_unchanged();
+            NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), attrs_len);
+            NAOS_CHECK_PTR_EQ(g_doc->attrs.data, attrs_data);
+            if (op != OP_SETTERS) {
+                NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                                  AMARK_TREE_VIOLATION_NONE);
+            }
+            return err;
+        }
+        if (op != OP_SETTERS) {
+            /* Node i + 2 was there before the loop; IDs come in order. */
+            NAOS_CHECK_UINT_EQ(out, (amark_node_id_t)(i + 3));
+        }
+        (*done)++;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+NAOS_TEST(every_operation_leaves_the_tree_unchanged_on_failure)
+{
+    size_t op;
+
+    for (op = 0; op < OP_COUNT; op++) {
+        size_t fail_at;
+        size_t failures = 0;
+        bool completed = false;
+
+        for (fail_at = 1; fail_at < 1000; fail_at++) {
+            size_t target;
+            size_t done = 0;
+            amark_error_t err;
+
+            amark_test_alloc_init(&g_state);
+            NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+            prepare_op(op);
+            target = g_state.malloc_calls + fail_at;
+            g_state.fail_at = target;
+
+            err = run_ops(op, &done);
+            g_state.fail_at = 0;
+            if (err == AMARK_ERROR_NONE) {
+                NAOS_CHECK_UINT_EQ(done, OP_CALLS);
+                completed = true;
+            } else {
+                NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+                /* The failed call made the injected allocation the last. */
+                NAOS_CHECK_UINT_EQ(g_state.malloc_calls, target);
+                failures++;
+            }
+            if (op != OP_SETTERS) {
+                NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc),
+                                   done + 2);
+                NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                                  AMARK_TREE_VIOLATION_NONE);
+            } else {
+                NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), done + 1);
+            }
+
+            amark_document_destroy(g_doc);
+            g_doc = NULL;
+            NAOS_CHECK_UINT_EQ(g_state.live, 0);
+            NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+            if (completed) {
+                break;
+            }
+        }
+        NAOS_CHECK_TRUE(completed);
+        /* 300 nodes or attribute elements outgrow the first arena block. */
+        NAOS_CHECK_UINT_GE(failures, 1);
+    }
+}
+
+/* ---- a deep tree (5.4, 6.9, 12.11) ---- */
+
+#define DEEP_LEVELS 100000u
+
+NAOS_TEST(deep_chain_walk_check_and_destroy)
+{
+    amark_node_id_t parent = 1;
+    amark_node_id_t root;
+    amark_node_id_t node;
+    size_t visits = 0;
+    size_t i;
+    amark_tree_check_result_t result;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    for (i = 0; i < DEEP_LEVELS; i++) {
+        parent = add(parent, AMARK_KIND_BLOCK_QUOTE, 0, MIXED_LENGTH);
+    }
+    /* A leaf at the bottom: 100 000 block quotes and a paragraph. */
+    (void)add(parent, AMARK_KIND_PARAGRAPH, 0, MIXED_LENGTH);
+    NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_doc), DEEP_LEVELS + 2);
+
+    /*
+     * The walk of the public header's example, with the public readers
+     * only: down the chain to the leaf, then up all the levels again. The
+     * nodes come in the order of their IDs, each once.
+     */
+    root = amark_document_root(g_doc);
+    node = root;
+    while (node != AMARK_NODE_NONE) {
+        amark_node_id_t next;
+
+        /* Visit node. */
+        NAOS_REQUIRE_UINT_EQ(node, (amark_node_id_t)(visits + 1));
+        visits++;
+
+        next = amark_node_first_child(g_doc, node);
+        while (next == AMARK_NODE_NONE && node != root) {
+            next = amark_node_next_sibling(g_doc, node);
+            if (next == AMARK_NODE_NONE) {
+                node = amark_node_parent(g_doc, node);
+            }
+        }
+        node = next;
+    }
+    NAOS_CHECK_UINT_EQ(visits, DEEP_LEVELS + 2);
+
+    result = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(result.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(result.node, AMARK_NODE_NONE);
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, g_state.malloc_calls);
+}
+
+/* ---- determinism and independence (5.6, 12.7) ---- */
+
+/* The nodes one run of the operation sequence keeps track of. */
+typedef struct sequence_state {
+    amark_node_id_t p1, t1, h, list, item1, item2, e1, t2, t3, emph, p2,
+        link, d, x;
+} sequence_state_t;
+
+#define SEQUENCE_STEPS 25
+
+static const unsigned char k_sequence_bytes[8] = {9, 8, 7, 6, 5, 4, 3, 2};
+
+/*
+ * Step k of an operation sequence on doc that uses every builder operation
+ * and adds diagnostics; variant changes values but not the shape. Leaves
+ * the test on failure. The resulting tree passes the whole-tree check.
+ */
+static void sequence_step(amark_document_t *doc, sequence_state_t *s,
+                          size_t k, unsigned variant)
+{
+    amark_error_t err = AMARK_ERROR_NONE;
+    amark_range_t dest;
+
+    dest.start = 8;
+    dest.end = 9;
+    switch (k) {
+    case 0:
+        err = amark_tree_append(doc, 1, AMARK_KIND_PARAGRAPH,
+                                AMARK_NODE_CLASS_AUTO, 0, 3, &s->p1);
+        break;
+    case 1:
+        err = amark_tree_append(doc, s->p1, AMARK_KIND_TEXT,
+                                AMARK_NODE_CLASS_AUTO, 0, 2, &s->t1);
+        break;
+    case 2:
+        err = amark_tree_insert_before(doc, s->p1, AMARK_KIND_HEADING,
+                                       AMARK_NODE_CLASS_AUTO, 0, 0, &s->h);
+        break;
+    case 3:
+        err = amark_tree_set_heading(doc, s->h, 1 + variant,
+                                     AMARK_HEADING_ATX);
+        break;
+    case 4:
+        err = amark_tree_append(doc, 1, AMARK_KIND_LIST,
+                                AMARK_NODE_CLASS_AUTO, 3, 12, &s->list);
+        break;
+    case 5:
+        err = amark_tree_append(doc, s->list, AMARK_KIND_LIST_ITEM,
+                                AMARK_NODE_CLASS_AUTO, 3, 7, &s->item1);
+        break;
+    case 6:
+        err = amark_tree_append(doc, s->list, AMARK_KIND_LIST_ITEM,
+                                AMARK_NODE_CLASS_AUTO, 7, 12, &s->item2);
+        break;
+    case 7:
+        err = amark_tree_set_list(doc, s->list, AMARK_LIST_ORDERED, '.',
+                                  5 + variant, AMARK_LIST_TIGHT);
+        break;
+    case 8:
+        err = amark_document_add_diagnostic(doc, 4 + variant,
+                                            AMARK_SEVERITY_WARNING,
+                                            variant ? "first b" : "first a");
+        break;
+    case 9:
+        err = amark_tree_append(doc, s->item1, AMARK_KIND_PARAGRAPH,
+                                AMARK_NODE_CLASS_AUTO, 3, 7, &s->e1);
+        break;
+    case 10:
+        err = amark_tree_append(doc, s->e1, AMARK_KIND_TEXT,
+                                AMARK_NODE_CLASS_AUTO, 3, 5, &s->t2);
+        break;
+    case 11:
+        err = amark_tree_append(doc, s->e1, AMARK_KIND_TEXT,
+                                AMARK_NODE_CLASS_AUTO, 5, 7, &s->t3);
+        break;
+    case 12:
+        err = amark_tree_wrap(doc, s->t2, s->t3, AMARK_KIND_EMPHASIS,
+                              AMARK_NODE_CLASS_AUTO, 3, 7, &s->emph);
+        break;
+    case 13:
+        err = amark_tree_append(doc, s->item2, AMARK_KIND_PARAGRAPH,
+                                AMARK_NODE_CLASS_AUTO, 7, 12, &s->p2);
+        break;
+    case 14:
+        err = amark_tree_append(doc, s->p2, AMARK_KIND_LINK,
+                                AMARK_NODE_CLASS_AUTO, 7, 10, &s->link);
+        break;
+    case 15:
+        err = amark_tree_set_link(doc, s->link, AMARK_LINK_INLINE, &dest,
+                                  NULL, AMARK_NODE_NONE);
+        break;
+    case 16:
+        err = amark_tree_append(doc, s->p2, AMARK_KIND_DIALECT_MIN + variant,
+                                AMARK_NODE_CLASS_INLINE, 10, 12, &s->d);
+        break;
+    case 17:
+        err = amark_tree_set_dialect_data(doc, s->d, k_sequence_bytes,
+                                          4 + variant);
+        break;
+    case 18:
+        amark_tree_set_range(doc, s->t1, 0, 1 + variant);
+        break;
+    case 19:
+        err = amark_tree_append(doc, s->p1, AMARK_KIND_TEXT,
+                                AMARK_NODE_CLASS_AUTO, 2, 3, &s->x);
+        break;
+    case 20:
+        amark_tree_remove(doc, s->x);
+        break;
+    case 21:
+        amark_tree_set_kind(doc, s->t2, AMARK_KIND_CODE_SPAN,
+                            AMARK_NODE_CLASS_AUTO);
+        break;
+    case 22:
+        /* A node added after the removal gets a new ID. */
+        err = amark_tree_append(doc, s->p1, AMARK_KIND_SOFT_BREAK,
+                                AMARK_NODE_CLASS_AUTO, 2, 3, &s->x);
+        break;
+    case 23:
+        err = amark_tree_set_heading(doc, s->h, 3 + variant,
+                                     AMARK_HEADING_ATX);
+        break;
+    default:
+        err = amark_document_add_diagnostic(doc, MIXED_LENGTH,
+                                            AMARK_SEVERITY_ERROR,
+                                            variant ? "last b" : "last a");
+        break;
+    }
+    NAOS_REQUIRE_INT_EQ(err, AMARK_ERROR_NONE);
+}
+
+static void check_same_range(bool answered_a, const amark_range_t *a,
+                             bool answered_b, const amark_range_t *b)
+{
+    NAOS_CHECK_INT_EQ(answered_a, answered_b);
+    NAOS_CHECK_UINT_EQ(a->start, b->start);
+    NAOS_CHECK_UINT_EQ(a->end, b->end);
+}
+
+/*
+ * Checks that a and b hold the same tree: every node (removed ones too) has
+ * the same kind, class, range, lines, five links and attribute index, every
+ * attribute reads the same through the public readers, and the diagnostics
+ * are the same.
+ */
+static void check_same_documents(const amark_document_t *a,
+                                 const amark_document_t *b)
+{
+    size_t i;
+
+    NAOS_REQUIRE_UINT_EQ(amark_array_len(&a->nodes),
+                         amark_array_len(&b->nodes));
+    NAOS_CHECK_UINT_EQ(amark_array_len(&a->attrs),
+                       amark_array_len(&b->attrs));
+    for (i = 1; i < amark_array_len(&a->nodes); i++) {
+        amark_node_id_t id = (amark_node_id_t)i;
+        const amark_node_t *na = node_at(a, id);
+        const amark_node_t *nb = node_at(b, id);
+        amark_range_t ra;
+        amark_range_t rb;
+        uint32_t sa = 0;
+        uint32_t sb = 0;
+        size_t za = 0;
+        size_t zb = 0;
+        const void *da;
+        const void *db;
+
+        NAOS_CHECK_UINT_EQ(na->kind, nb->kind);
+        NAOS_CHECK_UINT_EQ(na->is_inline, nb->is_inline);
+        NAOS_CHECK_UINT_EQ(na->start, nb->start);
+        NAOS_CHECK_UINT_EQ(na->end, nb->end);
+        NAOS_CHECK_UINT_EQ(na->start_line, nb->start_line);
+        NAOS_CHECK_UINT_EQ(na->end_line, nb->end_line);
+        NAOS_CHECK_UINT_EQ(na->parent, nb->parent);
+        NAOS_CHECK_UINT_EQ(na->first_child, nb->first_child);
+        NAOS_CHECK_UINT_EQ(na->last_child, nb->last_child);
+        NAOS_CHECK_UINT_EQ(na->prev_sibling, nb->prev_sibling);
+        NAOS_CHECK_UINT_EQ(na->next_sibling, nb->next_sibling);
+        NAOS_CHECK_UINT_EQ(na->attr, nb->attr);
+
+        NAOS_CHECK_UINT_EQ(amark_heading_level(a, id),
+                           amark_heading_level(b, id));
+        NAOS_CHECK_INT_EQ(amark_heading_style(a, id),
+                          amark_heading_style(b, id));
+        NAOS_CHECK_INT_EQ(amark_list_type(a, id), amark_list_type(b, id));
+        NAOS_CHECK_INT_EQ(amark_list_spacing(a, id),
+                          amark_list_spacing(b, id));
+        NAOS_CHECK_INT_EQ(amark_list_delimiter(a, id),
+                          amark_list_delimiter(b, id));
+        NAOS_CHECK_INT_EQ(amark_list_start(a, id, &sa),
+                          amark_list_start(b, id, &sb));
+        NAOS_CHECK_UINT_EQ(sa, sb);
+        NAOS_CHECK_INT_EQ(amark_link_form(a, id), amark_link_form(b, id));
+        memset(&ra, 0, sizeof(ra));
+        memset(&rb, 0, sizeof(rb));
+        check_same_range(amark_link_destination(a, id, &ra), &ra,
+                         amark_link_destination(b, id, &rb), &rb);
+        check_same_range(amark_link_title(a, id, &ra), &ra,
+                         amark_link_title(b, id, &rb), &rb);
+        NAOS_CHECK_UINT_EQ(amark_link_definition(a, id),
+                           amark_link_definition(b, id));
+        da = amark_node_dialect_data(a, id, &za);
+        db = amark_node_dialect_data(b, id, &zb);
+        NAOS_REQUIRE_UINT_EQ(za, zb);
+        NAOS_CHECK_INT_EQ(da == NULL, db == NULL);
+        if (da != NULL && db != NULL) {
+            NAOS_CHECK_TRUE(memcmp(da, db, za) == 0);
+        }
+    }
+
+    NAOS_REQUIRE_UINT_EQ(amark_document_diagnostic_count(a),
+                         amark_document_diagnostic_count(b));
+    for (i = 0; i < amark_document_diagnostic_count(a); i++) {
+        amark_diagnostic_t xa;
+        amark_diagnostic_t xb;
+
+        NAOS_REQUIRE_TRUE(amark_document_diagnostic(a, i, &xa));
+        NAOS_REQUIRE_TRUE(amark_document_diagnostic(b, i, &xb));
+        NAOS_CHECK_UINT_EQ(xa.offset, xb.offset);
+        NAOS_CHECK_UINT_EQ(xa.line, xb.line);
+        NAOS_CHECK_INT_EQ(xa.severity, xb.severity);
+        NAOS_CHECK_STR_EQ(xa.message, xb.message);
+        NAOS_CHECK_STR_EQ(xa.filename, xb.filename);
+    }
+}
+
+/* Runs the whole sequence with variant on doc, alone. */
+static void run_sequence(amark_document_t *doc, unsigned variant)
+{
+    sequence_state_t s;
+    size_t k;
+
+    memset(&s, 0, sizeof(s));
+    for (k = 0; k < SEQUENCE_STEPS; k++) {
+        sequence_step(doc, &s, k, variant);
+    }
+}
+
+NAOS_TEST(same_sequence_gives_the_same_document)
+{
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc2), AMARK_ERROR_NONE);
+    run_sequence(g_doc, 0);
+    run_sequence(g_doc2, 0);
+
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    /* 15 nodes were added (one of them removed) besides the root. */
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 16);
+    check_same_documents(g_doc, g_doc2);
+}
+
+NAOS_TEST(interleaved_documents_equal_documents_built_alone)
+{
+    sequence_state_t sa;
+    sequence_state_t sb;
+    size_t k;
+    unsigned variant;
+
+    /* Steps of two different sequences, one document after the other. */
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc2), AMARK_ERROR_NONE);
+    memset(&sa, 0, sizeof(sa));
+    memset(&sb, 0, sizeof(sb));
+    for (k = 0; k < SEQUENCE_STEPS; k++) {
+        sequence_step(g_doc, &sa, k, 0);
+        sequence_step(g_doc2, &sb, k, 1);
+    }
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc2).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+
+    /* Each equals the same sequence run alone on a fresh document. */
+    for (variant = 0; variant < 2; variant++) {
+        NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc3), AMARK_ERROR_NONE);
+        run_sequence(g_doc3, variant);
+        check_same_documents(variant == 0 ? g_doc : g_doc2, g_doc3);
+        amark_document_destroy(g_doc3);
+        g_doc3 = NULL;
+    }
+
+    /* The variants differ, so the comparison can tell documents apart. */
+    NAOS_CHECK_UINT_NE(amark_heading_level(g_doc, sa.h),
+                       amark_heading_level(g_doc2, sb.h));
+}
+
 NAOS_SUITE(tree,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -3012,7 +3510,11 @@ NAOS_SUITE(tree,
     NAOS_ADD_TEST(public_definition_attributes),
     NAOS_ADD_TEST(public_autolink_attributes),
     NAOS_ADD_TEST(public_dialect_data),
-    NAOS_ADD_TEST(attribute_readers_return_fixed_values)
+    NAOS_ADD_TEST(attribute_readers_return_fixed_values),
+    NAOS_ADD_TEST(every_operation_leaves_the_tree_unchanged_on_failure),
+    NAOS_ADD_TEST(deep_chain_walk_check_and_destroy),
+    NAOS_ADD_TEST(same_sequence_gives_the_same_document),
+    NAOS_ADD_TEST(interleaved_documents_equal_documents_built_alone)
 )
 
 NAOS_MAIN(

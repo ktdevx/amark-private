@@ -5,11 +5,14 @@
 
 /*
  * Unit tests of the document (src/document.h): create and destroy, and
- * adding and reading diagnostics.
+ * adding and reading diagnostics. Nodes are added with the tree builder
+ * (src/tree.h) where a test needs nodes and diagnostics together.
  */
 
 #include "document.h"
 #include "test_alloc.h"
+#include "tree.h"
+#include "tree_check.h"
 
 #include <naos/naos.h>
 
@@ -785,6 +788,131 @@ NAOS_TEST(failure_injection_loop_add_diagnostics)
     NAOS_CHECK_UINT_GE(failures, 4);
 }
 
+#define STEP_NODES 100
+#define STEP_DIAGNOSTICS 10
+
+/*
+ * Adds STEP_NODES nodes (thematic breaks, children of the root) and, after
+ * every tenth node, one diagnostic, to g_doc. Stops at the first failure:
+ * checks that the failed call left the node count and the diagnostics (count
+ * and contents) as they were and the tree whole, and returns its error.
+ * *nodes and *diagnostics receive the numbers added.
+ */
+static amark_error_t add_nodes_and_diagnostics(size_t *nodes,
+                                               size_t *diagnostics,
+                                               bool *diagnostic_failed)
+{
+    size_t i;
+
+    *nodes = 0;
+    *diagnostics = 0;
+    *diagnostic_failed = false;
+    for (i = 0; i < STEP_NODES; i++) {
+        size_t count = amark_document_node_count(g_doc);
+        amark_node_id_t out = 999;
+        amark_error_t err;
+
+        take_snapshot(&g_before);
+        err = amark_tree_append(g_doc, 1, AMARK_KIND_THEMATIC_BREAK,
+                                AMARK_NODE_CLASS_AUTO, MIXED_LENGTH,
+                                MIXED_LENGTH, &out);
+        if (err == AMARK_ERROR_NONE && i % 10 == 9) {
+            (*nodes)++;
+            count++;
+            /*
+             * A message longer than the next arena block gets a block of
+             * its own, so every add calls the allocator at least once.
+             */
+            NAOS_REQUIRE_UINT_LE(g_doc->arena.next_block_size, BIG_MESSAGE);
+            err = amark_document_add_diagnostic(
+                g_doc, i % (MIXED_LENGTH + 1), AMARK_SEVERITY_WARNING,
+                big_message(g_doc->arena.next_block_size));
+            if (err == AMARK_ERROR_NONE) {
+                (*diagnostics)++;
+                continue;
+            }
+            *diagnostic_failed = true;
+        } else if (err == AMARK_ERROR_NONE) {
+            (*nodes)++;
+            continue;
+        } else {
+            NAOS_CHECK_UINT_EQ(out, AMARK_NODE_NONE);
+        }
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), count);
+        check_snapshot(&g_before);
+        NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                          AMARK_TREE_VIOLATION_NONE);
+        return err;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+NAOS_TEST(failure_injection_loop_nodes_and_diagnostics)
+{
+    size_t fail_at;
+    size_t create_failures = 0;
+    size_t node_failures = 0;
+    size_t diagnostic_failures = 0;
+    bool completed = false;
+
+    /*
+     * For each n, create a document and add 100 nodes and 10 diagnostics
+     * with the n-th allocator call made to fail. The failing call returns
+     * NOMEM and changes nothing that was there, and destroying the document
+     * leaves no block.
+     */
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_error_t err;
+        size_t nodes = 0;
+        size_t diagnostics = 0;
+        bool diagnostic_failed = false;
+
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        err = create_mixed(0, MIXED_LENGTH, "steps.md");
+        if (err != AMARK_ERROR_NONE) {
+            NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+            NAOS_CHECK_NULL(g_doc);
+            NAOS_CHECK_UINT_EQ(g_state.live, 0);
+            create_failures++;
+            continue;
+        }
+        err = add_nodes_and_diagnostics(&nodes, &diagnostics,
+                                        &diagnostic_failed);
+        if (err == AMARK_ERROR_NONE) {
+            NAOS_CHECK_UINT_EQ(nodes, STEP_NODES);
+            NAOS_CHECK_UINT_EQ(diagnostics, STEP_DIAGNOSTICS);
+            completed = true;
+        } else {
+            /* The failed call made the injected allocation the last one. */
+            NAOS_CHECK_UINT_EQ(g_state.malloc_calls, fail_at);
+            if (diagnostic_failed) {
+                diagnostic_failures++;
+            } else {
+                node_failures++;
+            }
+        }
+        NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), nodes + 1);
+        NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc),
+                           diagnostics);
+        g_state.fail_at = 0;
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+        NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+        if (completed) {
+            break;
+        }
+    }
+    NAOS_CHECK_TRUE(completed);
+    NAOS_CHECK_UINT_GE(create_failures, 2);
+    /* 100 nodes and 10 copied messages outgrow the first arena block, so
+     * both kinds of call meet a failing allocation. */
+    NAOS_CHECK_UINT_GE(node_failures, 1);
+    NAOS_CHECK_UINT_GE(diagnostic_failures, 1);
+}
+
 NAOS_SUITE(document,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -817,7 +945,8 @@ NAOS_SUITE(document,
     NAOS_ADD_TEST(no_diagnostic_for_unanswerable_calls),
     NAOS_ADD_TEST(failed_message_copy_keeps_diagnostics),
     NAOS_ADD_TEST(failed_append_keeps_diagnostics),
-    NAOS_ADD_TEST(failure_injection_loop_add_diagnostics)
+    NAOS_ADD_TEST(failure_injection_loop_add_diagnostics),
+    NAOS_ADD_TEST(failure_injection_loop_nodes_and_diagnostics)
 )
 
 /* The default allocator (malloc and free) works too. */
