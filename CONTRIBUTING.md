@@ -211,7 +211,10 @@ To move to a new Unicode version or a newer `entities.json`:
    --check` and `python3 -B tools/test_gen_tables.py`.
 4. Build and run all tests as described in [README.md](README.md). The unit
    tests `test_unicode` and `test_entity` read `tools/data/` themselves and
-   compare every entry with the library.
+   compare every entry with the library. `test_entity` also checks the
+   number of names ending in `;` (`EXPECTED_COUNT` in
+   `tests/unit/test_entity.c`); update it if a newer `entities.json` changes
+   that number.
 5. Check the year in the Unicode copyright line in [LICENSE](LICENSE)
    (`Copyright © 1991-<year> Unicode, Inc.`) against
    <https://www.unicode.org/license.txt> and update it if it changed.

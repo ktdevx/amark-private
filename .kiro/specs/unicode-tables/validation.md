@@ -143,3 +143,13 @@ ctest --test-dir $C -C Release --output-on-failure
 - 公開シンボルの一覧、可変の静的データ、著作権表示は、既存の検査で問題がない。
 - Clang の ASan は環境の制約でリンクできない（基準のコミットでも同じ）。
 - OS によるバイト単位の一致（1.2）と、Windows・macOS での確認（3.1）は、CI が未実行のため未確認である。
+
+## 7. 機能全体の検証（`/kiro-validate-impl` の相当）
+
+- 判定：**MANUAL_VERIFY_REQUIRED**。手元で確かめられることは、すべて通った。CI でしか確かめられない 1.2（OS によらず同じバイト列）と 3.1（Windows の MSVC・MinGW と macOS）が残っている。
+- 機械的な検査：動的・Release・警告のエラー化の構成で 172/172 が通った。インストールした先に対する consumer のテストは 1/1 が通り、`gen_tables.py --check` も通った。TBD/TODO の残りと秘密の文字列はない（UCD のデータの中の文字名 "Todo" は誤検出）。
+- タスクをまたぐ確認：生成物の表の名前・型・マクロと、`unicode.c`・`entity.c` の期待が一致する。並び順、`to[2]==0` の決まり、UTF-8 の詰め方、CTest と CI のコマンドも一致する。要件の 58 項目は、どれも実装かテストに対応する。File Structure Plan と変更したファイルは設計と一致し、公開の API と公開シンボルは変わっていない。
+- 直したこと：`CONTRIBUTING.md` の版を上げる手順に、`test_entity` の `EXPECTED_COUNT` を更新することを足した。
+- 残すこと（止めるものではない）：
+  - `write_outputs` は 2 つのファイルを順に置き換えるので、2 つ目の書き込みで OS のエラーが起きると片方だけが新しくなる。入力の不備では何も書かないので、要件 1.7 は満たしている。
+  - CI のログで、Windows・macOS・MinGW の各ジョブで `checks.generated_tables` と `checks.generator` が実際に動いたことを確かめる。
