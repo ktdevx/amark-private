@@ -105,4 +105,37 @@ typedef struct amark_list_marker {
 bool amark_scan_list_marker(const unsigned char *p, size_t len,
                             amark_list_marker_t *out);
 
+/*
+ * Returns the number (1 to 7) of the HTML block start condition the line
+ * meets, or 0 when it meets none. The conditions are tried in order, and the
+ * first one met is returned:
+ *
+ *   1. "<pre", "<script", "<style" or "<textarea", followed by a space, a
+ *      tab, '>' or the end of the line.
+ *   2. "<!--".
+ *   3. "<?".
+ *   4. "<!" followed by an ASCII letter.
+ *   5. "<![CDATA[".
+ *   6. '<' or "</" followed by one of the block tag names of the
+ *      specification, followed by a space, a tab, the end of the line, '>'
+ *      or "/>".
+ *   7. A complete open tag whose name is not pre, script, style or textarea,
+ *      or a complete closing tag, followed only by white space.
+ *
+ * Tag names are compared without regard to ASCII case; "CDATA" is compared
+ * as is. That condition 7 does not interrupt a paragraph is decided by the
+ * caller.
+ */
+unsigned amark_scan_html_start(const unsigned char *p, size_t len);
+
+/*
+ * Returns true when the line contains the end condition of the HTML block
+ * start condition type: for 1, one of "</pre>", "</script>", "</style>" or
+ * "</textarea>" without regard to ASCII case (it need not match the start
+ * tag); for 2, "-->"; for 3, "?>"; for 4, '>'; for 5, "]]>". The search
+ * takes time linear in len. For any other type it returns false: the end
+ * condition of 6 and 7 (a blank line) is decided by the caller.
+ */
+bool amark_scan_html_end(const unsigned char *p, size_t len, unsigned type);
+
 #endif /* AMARK_SCAN_H */

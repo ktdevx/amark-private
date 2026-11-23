@@ -5,13 +5,13 @@
 
 /*
  * Unit tests of the block scanners (src/scan.h): thematic breaks, ATX
- * headings, setext heading underlines, opening and closing code fences, and
- * list item markers. Each case is one line given as bytes, starting at the
- * first byte that is not white space (the indentation is the caller's
- * business), taken from the matching and non-matching examples of the
- * CommonMark 0.31.2 sections 4.1, 4.2, 4.3, 4.5 and 5.2. Only the space
- * and the tab are white space; U+0000 and Unicode white space (U+00A0 as
- * C2 A0) are not.
+ * headings, setext heading underlines, opening and closing code fences, list
+ * item markers, and the start and end conditions of HTML blocks. Each case
+ * is one line given as bytes, starting at the first byte that is not white
+ * space (the indentation is the caller's business), taken from the matching
+ * and non-matching examples of the CommonMark 0.31.2 sections 4.1, 4.2,
+ * 4.3, 4.5, 4.6 and 5.2. Only the space and the tab are white space; U+0000
+ * and Unicode white space (U+00A0 as C2 A0) are not.
  */
 
 #include "scan.h"
@@ -554,6 +554,377 @@ NAOS_TEST(list_marker_reads_only_the_given_bytes)
     NAOS_CHECK_TRUE(got.blank_after);
 }
 
+/* ---- HTML blocks (4.6) -------------------------------------------------- */
+
+#define HTML_START(line) amark_scan_html_start(BYTES(line))
+#define HTML_END(line, type) amark_scan_html_end(BYTES(line), (type))
+
+NAOS_TEST(html_start_type_1_raw_text_tags)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<pre language=\"haskell\"><code>"), 1);
+    NAOS_CHECK_UINT_EQ(HTML_START("<script type=\"text/javascript\">"), 1);
+    NAOS_CHECK_UINT_EQ(HTML_START("<style"), 1);
+    NAOS_CHECK_UINT_EQ(HTML_START("<textarea>"), 1);
+    NAOS_CHECK_UINT_EQ(HTML_START("<pre\tx"), 1);
+    NAOS_CHECK_UINT_EQ(HTML_START("<PRE>"), 1);
+    NAOS_CHECK_UINT_EQ(HTML_START("<ScRiPt>"), 1);
+    NAOS_CHECK_UINT_EQ(HTML_START("<style>p{color:red;}</style>"), 1);
+}
+
+NAOS_TEST(html_start_type_1_needs_a_delimiter_after_the_name)
+{
+    /* Not type 1; these are complete open tags of other names (type 7). */
+    NAOS_CHECK_UINT_EQ(HTML_START("<prex>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<pre-x>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<scripts>"), 7);
+    /* A complete tag of a raw text name is not type 7, and "/" is not a
+       delimiter of type 1. */
+    NAOS_CHECK_UINT_EQ(HTML_START("<pre/>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<Script/>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<pr"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<pre\xC2\xA0x"), 0);
+}
+
+NAOS_TEST(html_start_type_2_comment)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<!--"), 2);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!-- Foo"), 2);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!-->"), 2);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!-- a -->"), 2);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!-"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!-x"), 0);
+}
+
+NAOS_TEST(html_start_type_3_processing_instruction)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<?php"), 3);
+    NAOS_CHECK_UINT_EQ(HTML_START("<?"), 3);
+    NAOS_CHECK_UINT_EQ(HTML_START("<?xml ?>"), 3);
+    NAOS_CHECK_UINT_EQ(HTML_START("<"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START(" <?php"), 0);
+}
+
+NAOS_TEST(html_start_type_4_declaration)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<!DOCTYPE html>"), 4);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!doctype html>"), 4);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!X"), 4);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!z"), 4);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<!1"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<! DOCTYPE"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<![x"), 0);
+}
+
+NAOS_TEST(html_start_type_5_cdata)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<![CDATA["), 5);
+    NAOS_CHECK_UINT_EQ(HTML_START("<![CDATA[x]]>"), 5);
+    /* CDATA is case-sensitive. */
+    NAOS_CHECK_UINT_EQ(HTML_START("<![cdata["), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<![CDATA"), 0);
+}
+
+NAOS_TEST(html_start_type_6_block_tag_names)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<table><tr><td>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("</div>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("</div"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div id=\"foo\""), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div\tclass"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div/>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div *?\?\?-&&&-<---"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("</ins>"), 7);
+    /* The first, the last and the longest names, and names with digits. */
+    NAOS_CHECK_UINT_EQ(HTML_START("<address>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<ul>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<blockquote>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<figcaption>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<h1>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<h6>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<p>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<search>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<menuitem>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<track>"), 6);
+}
+
+NAOS_TEST(html_start_type_6_every_name_of_the_list)
+{
+    static const char names[] =
+        "address article aside base basefont blockquote body caption center "
+        "col colgroup dd details dialog dir div dl dt fieldset figcaption "
+        "figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr "
+        "html iframe legend li link main menu menuitem nav noframes ol "
+        "optgroup option p param search section summary table tbody td "
+        "tfoot th thead title tr track ul ";
+    unsigned char line[16];
+    size_t start = 0;
+    size_t i;
+    unsigned count = 0;
+
+    for (i = 0; names[i] != '\0'; i++) {
+        size_t n;
+        if (names[i] != ' ') {
+            continue;
+        }
+        n = i - start;
+        NAOS_REQUIRE_TRUE(n + 2 <= sizeof(line));
+        line[0] = '<';
+        memcpy(line + 1, names + start, n);
+        line[n + 1] = '>';
+        NAOS_CHECK_UINT_EQ(amark_scan_html_start(line, n + 2), 6);
+        NAOS_CHECK_UINT_EQ(amark_scan_html_start(line, n + 1), 6);
+        start = i + 1;
+        count++;
+    }
+    NAOS_CHECK_UINT_EQ(count, 62);
+}
+
+NAOS_TEST(html_start_type_6_names_ignore_ascii_case)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<DIV>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("</DiV>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<BlockQuote>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<H2 class=x>"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<ADDRESS"), 6);
+    NAOS_CHECK_UINT_EQ(HTML_START("<UL/>"), 6);
+}
+
+NAOS_TEST(html_start_type_6_rejects_other_names_and_delimiters)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<divx"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div-x"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div/"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div/x>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<h7>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<h>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<blockquotes>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<abc>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<zzz>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div\xC2\xA0"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<div\0"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("< div>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<</div>"), 0);
+}
+
+NAOS_TEST(html_start_type_7_complete_open_tags)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("<a href=\"foo\">"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<Warning>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<del>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a>  \t"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a/>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a />"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<my-tag1>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b c>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a _b :c.d-e_f=1>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b='x\"y' c=\"x'y\" d=z>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b = 'c' >"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b=''>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a\tb\t=\t\"c\"\t/>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("<Prez>"), 7);
+}
+
+NAOS_TEST(html_start_type_7_complete_closing_tags)
+{
+    NAOS_CHECK_UINT_EQ(HTML_START("</a>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("</a \t>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("</ins>"), 7);
+    /* A closing tag of a raw text name is type 7. */
+    NAOS_CHECK_UINT_EQ(HTML_START("</pre>"), 7);
+    NAOS_CHECK_UINT_EQ(HTML_START("</SCRIPT>"), 7);
+}
+
+NAOS_TEST(html_start_type_7_rejects_incomplete_or_followed_tags)
+{
+    /* Only white space may follow the tag. */
+    NAOS_CHECK_UINT_EQ(HTML_START("<a> x"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<del>*foo*</del>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a><b>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a>\xC2\xA0"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a>\0"), 0);
+    /* Incomplete tags. */
+    NAOS_CHECK_UINT_EQ(HTML_START("<a"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a href=\"foo"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a href='foo>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b="), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b=>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("</a"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("</"), 0);
+    /* Bad names, attributes and values. */
+    NAOS_CHECK_UINT_EQ(HTML_START("<1a>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a_b>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a.b>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a 1b>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b=c=d>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b=c`d>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b=c<d>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b=\"c\"d>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a b='c'd='e'>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a/ >"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a//>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("</a b>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("</a/>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a\xC2\xA0" "b>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<a\vb>"), 0);
+}
+
+NAOS_TEST(html_start_rejects_other_lines)
+{
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start(NULL, 0), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("div>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("<\xC3\xA9>"), 0);
+    NAOS_CHECK_UINT_EQ(HTML_START("Foo"), 0);
+}
+
+NAOS_TEST(html_start_reads_only_the_given_bytes)
+{
+    static const char div[] = "<divx>";
+    static const char pre[] = "<prex";
+    static const char tag[] = "<a> x";
+    static const char cdata[] = "<![CDATA[";
+
+    /* The bytes after len must not count: "<div" ends the line. */
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start((const unsigned char *)div, 4),
+                       6);
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start((const unsigned char *)div, 5),
+                       0);
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start((const unsigned char *)pre, 4),
+                       1);
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start((const unsigned char *)tag, 3),
+                       7);
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start((const unsigned char *)tag, 2),
+                       0);
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start((const unsigned char *)cdata, 8),
+                       0);
+    NAOS_CHECK_UINT_EQ(amark_scan_html_start((const unsigned char *)cdata, 3),
+                       0);
+}
+
+NAOS_TEST(html_end_type_1_closing_raw_text_tags)
+{
+    NAOS_CHECK_TRUE(HTML_END("</pre>", 1));
+    NAOS_CHECK_TRUE(HTML_END("main = print $ parseTags tags</code></pre>", 1));
+    NAOS_CHECK_TRUE(HTML_END("</script>", 1));
+    NAOS_CHECK_TRUE(HTML_END("x</style>y", 1));
+    NAOS_CHECK_TRUE(HTML_END("</textarea>", 1));
+    /* Case-insensitive, and need not match the start tag. */
+    NAOS_CHECK_TRUE(HTML_END("</PRE>", 1));
+    NAOS_CHECK_TRUE(HTML_END("</TextArea>", 1));
+    NAOS_CHECK_FALSE(HTML_END("</pre", 1));
+    NAOS_CHECK_FALSE(HTML_END("</pre >", 1));
+    NAOS_CHECK_FALSE(HTML_END("<pre>", 1));
+    NAOS_CHECK_FALSE(HTML_END("</div>", 1));
+    NAOS_CHECK_FALSE(HTML_END("</prex>", 1));
+    NAOS_CHECK_FALSE(HTML_END("", 1));
+    NAOS_CHECK_FALSE(amark_scan_html_end(NULL, 0, 1));
+}
+
+NAOS_TEST(html_end_type_1_after_partial_matches)
+{
+    /* A failed candidate must not hide a match that starts inside it. */
+    NAOS_CHECK_TRUE(HTML_END("</</pre>", 1));
+    NAOS_CHECK_TRUE(HTML_END("<</style>", 1));
+    NAOS_CHECK_TRUE(HTML_END("</scrip</script>", 1));
+    NAOS_CHECK_TRUE(HTML_END("</textare</textarea>", 1));
+}
+
+NAOS_TEST(html_end_types_2_3_and_5_substrings)
+{
+    NAOS_CHECK_TRUE(HTML_END("-->", 2));
+    NAOS_CHECK_TRUE(HTML_END("bar baz -->", 2));
+    NAOS_CHECK_TRUE(HTML_END("<!-- a -->", 2));
+    NAOS_CHECK_TRUE(HTML_END("<!-->", 2));
+    NAOS_CHECK_TRUE(HTML_END("--->", 2));
+    NAOS_CHECK_FALSE(HTML_END("-- >", 2));
+    NAOS_CHECK_FALSE(HTML_END("->", 2));
+    NAOS_CHECK_FALSE(HTML_END("<!--", 2));
+
+    NAOS_CHECK_TRUE(HTML_END("?>", 3));
+    NAOS_CHECK_TRUE(HTML_END("<?php echo 1; ?> x", 3));
+    NAOS_CHECK_FALSE(HTML_END("? >", 3));
+    NAOS_CHECK_FALSE(HTML_END(">?", 3));
+
+    NAOS_CHECK_TRUE(HTML_END("]]>", 5));
+    NAOS_CHECK_TRUE(HTML_END("<![CDATA[x]]>", 5));
+    NAOS_CHECK_TRUE(HTML_END("]]]>", 5));
+    NAOS_CHECK_FALSE(HTML_END("]>", 5));
+    NAOS_CHECK_FALSE(HTML_END("]] >", 5));
+}
+
+NAOS_TEST(html_end_type_4_greater_than)
+{
+    NAOS_CHECK_TRUE(HTML_END(">", 4));
+    NAOS_CHECK_TRUE(HTML_END("<!DOCTYPE html>", 4));
+    NAOS_CHECK_FALSE(HTML_END("<!DOCTYPE html", 4));
+    NAOS_CHECK_FALSE(HTML_END("", 4));
+}
+
+NAOS_TEST(html_end_types_6_and_7_are_decided_by_the_caller)
+{
+    NAOS_CHECK_FALSE(HTML_END("</div>", 6));
+    NAOS_CHECK_FALSE(HTML_END("", 6));
+    NAOS_CHECK_FALSE(HTML_END("<a>", 7));
+    NAOS_CHECK_FALSE(HTML_END("-->", 0));
+    NAOS_CHECK_FALSE(HTML_END("-->", 8));
+}
+
+NAOS_TEST(html_end_on_the_start_line)
+{
+    /* The start line itself may hold the end condition. */
+    static const char *const lines[] = {
+        "<style>p{color:red;}</style>", "<!-- foo -->", "<?php ?>",
+        "<!DOCTYPE html>", "<![CDATA[x]]>"
+    };
+    unsigned i;
+
+    for (i = 0; i < 5; i++) {
+        const unsigned char *p = (const unsigned char *)lines[i];
+        size_t len = strlen(lines[i]);
+        NAOS_CHECK_UINT_EQ(amark_scan_html_start(p, len), i + 1);
+        NAOS_CHECK_TRUE(amark_scan_html_end(p, len, i + 1));
+    }
+}
+
+NAOS_TEST(html_end_reads_only_the_given_bytes)
+{
+    static const char line[] = "x</pre>";
+    static const char comment[] = "a-->";
+
+    NAOS_CHECK_TRUE(amark_scan_html_end((const unsigned char *)line, 7, 1));
+    NAOS_CHECK_FALSE(amark_scan_html_end((const unsigned char *)line, 6, 1));
+    NAOS_CHECK_FALSE(amark_scan_html_end((const unsigned char *)comment, 3,
+                                         2));
+    NAOS_CHECK_FALSE(amark_scan_html_end((const unsigned char *)comment, 3,
+                                         4));
+}
+
+NAOS_TEST(html_end_scans_a_long_line_of_near_misses)
+{
+    /* Many candidates that fail late, then a match at the very end. */
+    unsigned char line[3 * 4096];
+    size_t i;
+
+    for (i = 0; i < sizeof(line); i += 3) {
+        line[i] = '<';
+        line[i + 1] = '/';
+        line[i + 2] = 'p';
+    }
+    NAOS_CHECK_FALSE(amark_scan_html_end(line, sizeof(line), 1));
+    NAOS_CHECK_FALSE(amark_scan_html_end(line, sizeof(line), 2));
+    line[sizeof(line) - 3] = '-';
+    line[sizeof(line) - 2] = '-';
+    line[sizeof(line) - 1] = '>';
+    NAOS_CHECK_TRUE(amark_scan_html_end(line, sizeof(line), 2));
+    NAOS_CHECK_TRUE(amark_scan_html_end(line, sizeof(line), 4));
+    NAOS_CHECK_FALSE(amark_scan_html_end(line, sizeof(line), 1));
+}
+
 NAOS_SUITE(thematic_break,
     NAOS_ADD_TEST(thematic_break_accepts_three_characters_of_one_kind),
     NAOS_ADD_TEST(thematic_break_rejects_other_characters_and_fewer_than_three),
@@ -603,10 +974,37 @@ NAOS_SUITE(list_marker,
     NAOS_ADD_TEST(list_marker_reads_only_the_given_bytes)
 )
 
+NAOS_SUITE(html_block,
+    NAOS_ADD_TEST(html_start_type_1_raw_text_tags),
+    NAOS_ADD_TEST(html_start_type_1_needs_a_delimiter_after_the_name),
+    NAOS_ADD_TEST(html_start_type_2_comment),
+    NAOS_ADD_TEST(html_start_type_3_processing_instruction),
+    NAOS_ADD_TEST(html_start_type_4_declaration),
+    NAOS_ADD_TEST(html_start_type_5_cdata),
+    NAOS_ADD_TEST(html_start_type_6_block_tag_names),
+    NAOS_ADD_TEST(html_start_type_6_every_name_of_the_list),
+    NAOS_ADD_TEST(html_start_type_6_names_ignore_ascii_case),
+    NAOS_ADD_TEST(html_start_type_6_rejects_other_names_and_delimiters),
+    NAOS_ADD_TEST(html_start_type_7_complete_open_tags),
+    NAOS_ADD_TEST(html_start_type_7_complete_closing_tags),
+    NAOS_ADD_TEST(html_start_type_7_rejects_incomplete_or_followed_tags),
+    NAOS_ADD_TEST(html_start_rejects_other_lines),
+    NAOS_ADD_TEST(html_start_reads_only_the_given_bytes),
+    NAOS_ADD_TEST(html_end_type_1_closing_raw_text_tags),
+    NAOS_ADD_TEST(html_end_type_1_after_partial_matches),
+    NAOS_ADD_TEST(html_end_types_2_3_and_5_substrings),
+    NAOS_ADD_TEST(html_end_type_4_greater_than),
+    NAOS_ADD_TEST(html_end_types_6_and_7_are_decided_by_the_caller),
+    NAOS_ADD_TEST(html_end_on_the_start_line),
+    NAOS_ADD_TEST(html_end_reads_only_the_given_bytes),
+    NAOS_ADD_TEST(html_end_scans_a_long_line_of_near_misses)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(thematic_break),
     NAOS_ADD_SUITE(atx_heading),
     NAOS_ADD_SUITE(setext_underline),
     NAOS_ADD_SUITE(fence),
-    NAOS_ADD_SUITE(list_marker)
+    NAOS_ADD_SUITE(list_marker),
+    NAOS_ADD_SUITE(html_block)
 )

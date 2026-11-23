@@ -58,7 +58,7 @@
   - 完了の状態：リストの印の判定のテストが通る
   - _Requirements: 8.1, 8.4_
 
-- [ ] 3.3 HTML ブロックの開始条件と終了条件の判定を実装する
+- [x] 3.3 HTML ブロックの開始条件と終了条件の判定を実装する
   - 7 つの開始条件の番号を返し、1 から 5 番の終了条件の文字列を行の中から探す。6 番のタグの名前は、名前の順に並べた固定長の文字の 2 次元配列を二分探索で引き、ASCII の大文字と小文字を区別しない
   - 判定の単体テストに、7 つの条件のそれぞれの合う例と合わない例、タグ名の大文字と小文字、終了条件が同じ行にある場合を確かめるテストを足す
   - 完了の状態：HTML の判定のテストが通り、オブジェクトの検査でポインタを含む const の表と可変の静的データが見つからない
@@ -244,3 +244,4 @@
 - 1.3: `amark_test_dump_blocks(doc, buf, size)`（`tests/support/tree_dump.h`、`amark_test_support` に含まれる）。設定されていない属性は `none`、種類のないリストは `(list)`、短い名前のない種類は `(?)`、info が書かれていれば空でも `info` と書く。
 - 2.1: 解析のデータを作るときの行の内容の終わりは、`src/parse_data.c` の static な `init_records` が範囲の中のバイトだけで求める（依存の向きを守るため line.c を呼ばない）。2.2 の `amark_line_bounds` は、これと同じ `content_end` を返す必要がある（CR と LF の間で切れる範囲でも）。
 - 2.2: `src/line.c` は行の開始位置を O(1) で得るため `line_index` の `line_starts` と `length` を直接読む（行の索引に O(1) の取得関数がないため。上流に足すなら置き換える）。行末記号の判定は `init_records` と 2 か所にあり、`bounds_agree_with_initial_records_for_every_range` で一致を固定している。
+- 3.3: HTML の型 7 は spec.txt の文言どおり、名前が pre・script・style・textarea の開始タグを外す（`<pre/>` は 0、`</pre>` は 7）。cmark と commonmark.js はこれを外さないが、spec.txt の例はこの違いによらない。
