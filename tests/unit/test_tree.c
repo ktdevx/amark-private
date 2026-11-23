@@ -4,7 +4,7 @@
  */
 
 /*
- * Unit tests of the tree builder (src/tree.h): adding nodes as the last
+ * Unit tests of the tree builder (src/tree_internal.h): adding nodes as the last
  * child of a parent and before a sibling, the lines derived from the range,
  * changing the range and the kind, removing and wrapping nodes, setting the
  * attributes of each kind, the node and attribute limits, allocation
@@ -17,7 +17,7 @@
 
 #include "document.h"
 #include "test_alloc.h"
-#include "tree.h"
+#include "tree_internal.h"
 #include "tree_check.h"
 
 #include <naos/naos.h>

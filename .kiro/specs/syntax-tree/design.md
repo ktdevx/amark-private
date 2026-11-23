@@ -50,7 +50,7 @@
 次の変更は、下流の spec（block-parser、inline-parser、source-text、dialect-extension、spec-conformance）の見直しを要する。
 - 種類の ID の値、`AMARK_KIND_DIALECT_MIN`、`amark_error_t` の値の変更
 - 公開の関数の引数や戻り値、`amark_range_t`・`amark_diagnostic_t`・`amark_config_t` の項目の変更
-- 内部 API（`src/tree.h`、`src/document.h`、`src/config.h`）の関数の契約の変更
+- 内部 API（`src/tree_internal.h`、`src/document.h`、`src/config_internal.h`）の関数の契約の変更
 - 不変条件の追加・削除・意味の変更
 - 範囲と行の定義（どこから数えるか、終了行の決め方）の変更
 - 「取り除いたノードの要素を再利用しない」という決まりの変更（ID の寿命が変わる）
@@ -139,9 +139,9 @@ include/amark/
 ├── config.h           # amark_config_t、amark_utf8_mode_t、AMARK_END_OF_CONTENT、初期化と検査の関数
 └── tree.h             # 文書、ノードの ID、種類、範囲、属性、診断の型と、読み出しと解放の関数
 src/
-├── config.c / config.h        # 設定の初期化・検査・解決（amark_resolved_config_t）
+├── config.c / config_internal.h  # 設定の初期化・検査・解決（amark_resolved_config_t）
 ├── document.c / document.h    # 文書の本体とノードのレイアウト、文書を作る・解放する、診断を足す・読む
-├── tree.c / tree.h            # 木を作る内部 API（足す、差し込む、変える、取り除く、包む、属性の設定）
+├── tree.c / tree_internal.h      # 木を作る内部 API（足す、差し込む、変える、取り除く、包む、属性の設定）
 ├── node.c                     # 公開の読み出しの関数（たどる、種類、範囲、行、属性）。内部ヘッダは持たない
 └── tree_check.c / tree_check.h  # 不変条件の検査
 tests/
@@ -304,7 +304,7 @@ while (node != AMARK_NODE_NONE) {
 | 7.9 | ノードの数の上限 | TreeBuilder | `AMARK_ERROR_LIMIT_EXCEEDED` |
 | 7.10 | 作りかけの文書の解放 | Document | `amark_document_destroy` |
 | 7.11 | 途中の木を検査に渡せる | TreeBuilder、TreeCheck | つながりを常に正しく保つ |
-| 7.12 | 公開しない | TreeBuilder | `src/tree.h`、`AMARK_API` を付けない |
+| 7.12 | 公開しない | TreeBuilder | `src/tree_internal.h`、`AMARK_API` を付けない |
 | 7.13 | 再帰を使わない | TreeBuilder | どの操作もループを持たないか、1 重のループ |
 | 8.1 | 設定の項目 | Config | `amark_config_t` |
 | 8.2 | 規則を変える項目がない | Config | `amark_config_t` |
@@ -454,7 +454,7 @@ AMARK_API void amark_config_init(amark_config_t *config);
 AMARK_API amark_error_t amark_config_validate(const amark_config_t *config,
                                                size_t content_length);
 
-/* src/config.h */
+/* src/config_internal.h */
 typedef struct amark_resolved_config {
     const amark_dialect_t *dialect;
     size_t start;
@@ -658,7 +658,7 @@ AMARK_API bool amark_document_diagnostic(const amark_document_t *doc, size_t ind
 
 ##### Service Interface
 ```c
-/* src/tree.h */
+/* src/tree_internal.h */
 typedef enum amark_node_class {
     AMARK_NODE_CLASS_AUTO = 0,  /* CommonMark の種類：ID から決める */
     AMARK_NODE_CLASS_BLOCK = 1,
@@ -1060,5 +1060,5 @@ struct amark_document {
 ## Supporting References
 - 後の段階の候補との関係（roadmap の Future Phases）：
   - **source-edit**（範囲を指定して原文を差し替える）は、ノードの範囲と属性の範囲だけで作れる。データモデルの変更は要らない。
-  - **markdown-writer**（木から Markdown を書き出す）が、プログラムで組み立てた木を扱うには、木を作る公開 API が要る。そのときは `src/tree.h` の関数を公開の形に整えればよく、ノードの表し方は変えなくてよい。ただし、原文を持たない木では範囲が意味を持たないので、その扱いは markdown-writer の spec で決める。
+  - **markdown-writer**（木から Markdown を書き出す）が、プログラムで組み立てた木を扱うには、木を作る公開 API が要る。そのときは `src/tree_internal.h` の関数を公開の形に整えればよく、ノードの表し方は変えなくてよい。ただし、原文を持たない木では範囲が意味を持たないので、その扱いは markdown-writer の spec で決める。
 - 判断の経緯と、採らなかった案は `research.md` にある。

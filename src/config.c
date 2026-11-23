@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "config.h"
+#include "config_internal.h"
 
 #include "alloc.h"
 

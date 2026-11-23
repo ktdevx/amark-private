@@ -62,7 +62,11 @@ its root and requires both lines within the first 5 lines of every
   ```
 
 - File names are lowercase with underscores (`line_index.c`). A module is a
-  `.c` file and an internal header of the same name in `src/`.
+  `.c` file and an internal header of the same name in `src/`. If the module
+  also has a public header of that name in `include/amark/`, the internal
+  header takes the suffix `_internal` (`config.c`, `src/config_internal.h`
+  and `include/amark/config.h`), so that no installed file shares a name
+  with an internal header.
 - CMake: the project and package are `Amark` (`find_package(Amark)`,
   `AmarkConfig.cmake`), the library target and file are `amark`, and users
   link `Amark::amark`. Options and CMake functions of Amark start with

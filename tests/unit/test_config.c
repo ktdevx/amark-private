@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* Unit tests of the parse configuration (src/config.h) and the error type. */
+/* Unit tests of the parse configuration (src/config_internal.h) and the error type. */
 
-#include "config.h"
+#include "config_internal.h"
 #include "test_alloc.h"
 
 #include <naos/naos.h>

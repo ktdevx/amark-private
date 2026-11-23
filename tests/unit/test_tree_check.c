@@ -8,14 +8,14 @@
  * line, nesting and attribute conditions, the first violation in document
  * order, the subtree check, that the check changes nothing and allocates
  * nothing, and that it ends on trees of a million nodes and on cycles.
- * Valid trees are built with the tree builder (src/tree.h); broken trees are
+ * Valid trees are built with the tree builder (src/tree_internal.h); broken trees are
  * made by passing wrong ranges to it or by writing the node fields through
  * the internal layout (src/document.h).
  */
 
 #include "document.h"
 #include "test_alloc.h"
-#include "tree.h"
+#include "tree_internal.h"
 #include "tree_check.h"
 
 #include <naos/naos.h>

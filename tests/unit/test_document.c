@@ -6,12 +6,12 @@
 /*
  * Unit tests of the document (src/document.h): create and destroy, and
  * adding and reading diagnostics. Nodes are added with the tree builder
- * (src/tree.h) where a test needs nodes and diagnostics together.
+ * (src/tree_internal.h) where a test needs nodes and diagnostics together.
  */
 
 #include "document.h"
 #include "test_alloc.h"
-#include "tree.h"
+#include "tree_internal.h"
 #include "tree_check.h"
 
 #include <naos/naos.h>

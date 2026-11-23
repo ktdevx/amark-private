@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "tree.h"
+#include "tree_internal.h"
 
 #include <stdint.h>
 #include <string.h>
