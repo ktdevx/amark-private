@@ -172,3 +172,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND AMARK_NM)
         )
     endif()
 endif()
+
+# Every C, C++ and CMake source and template file in the repository carries
+# the license header in its first 5 lines. Reads only files, so registered in
+# every configuration with tests, whatever the compiler or OS. The build
+# directory is skipped, also when it lies inside the source tree.
+add_test(NAME checks.license_headers
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DBINARY_DIR=${CMAKE_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckLicenseHeaders.cmake"
+)
