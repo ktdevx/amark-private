@@ -34,8 +34,8 @@
 - 内部の部品の契約：`amark/error.h`（syntax-tree で公開ヘッダに移した）、`alloc.h`、`arena.h`、`array.h`、`line_index.h`、`utf8.h`
 
 ### Out of Boundary
-- 確保関数の型を公開ヘッダに出すことと、設定の誤りの検査（syntax-tree）。この spec の `amark_allocator_t` は内部ヘッダにある。
-- 内部の状態（`amark_error_t`）を公開のエラーの種類に対応づけること（syntax-tree）
+- 確保関数の型を公開ヘッダに出すことと、設定の誤りの検査（syntax-tree）。syntax-tree が `amark_allocator_t` などの型を `include/amark/allocator.h` に移し、`src/alloc.h` はそれを取り込む。
+- エラーの型を公開すること（syntax-tree）。syntax-tree が `amark_error_t` を `include/amark/error.h` に移し、ライブラリ全体で 1 つの型にした。
 - 文書がアリーナをどう持つか、解析の途中の作業用メモリをどう分けるか（syntax-tree、block-parser）
 - 置き換えた結果の位置と原文の位置の対応づけ（置き換えを適用する spec）
 - U+0000 の置き換え、BOM の除去、行末以外の文字の分類
@@ -589,7 +589,7 @@ typedef enum amark_error {
 
 ##### Service Interface
 ```c
-/* src/alloc.h */
+/* src/alloc.h（3 つの型は syntax-tree が include/amark/allocator.h に移し、src/alloc.h はそれを取り込む） */
 typedef void *(*amark_malloc_fn_t)(void *ctx, size_t size);  /* 失敗したら NULL */
 typedef void (*amark_free_fn_t)(void *ctx, void *ptr);        /* ptr は NULL でない */
 

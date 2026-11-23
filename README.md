@@ -27,8 +27,9 @@ parsing yet. The repository currently provides the foundation: the build,
 install and package configuration, the test setup, CI, and the internal
 building blocks (allocator abstraction, arena, growable array, line index,
 UTF-8 validation and replacement), the parse configuration, and the syntax
-tree with its read-only public API (see [Public API](#public-api)). There is no public function that
-parses yet, so the tree cannot be obtained from Markdown. The API and ABI will
+tree with its read-only public API (see [Public API](#public-api)). There is
+no public function that parses yet, so the tree cannot be obtained from
+Markdown. The API and ABI will
 change without notice before 1.0, and a new minor version may be incompatible
 with the previous one.
 
