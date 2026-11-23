@@ -80,7 +80,7 @@ use:
   variables that change. Read-only tables (`static const`) are fine.
 - **`abort`, `exit`, `_Exit`, `setjmp`, `longjmp`** and their variants
   (`_exit`, `quick_exit`, `sigsetjmp`, `siglongjmp`). Report failures through
-  return values (`amark_error_t` in `src/error.h`).
+  return values (`amark_error_t` in `include/amark/error.h`).
 - **`assert`.** It calls `abort`. Preconditions are the caller's
   responsibility; tests and sanitizers catch violations.
 - **Recursion.** Use loops and explicit stacks, also for traversal and

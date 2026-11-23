@@ -177,11 +177,11 @@ NAOS_TEST(array_overflow_does_not_call_the_allocator)
     void *ptr = &g_state;
 
     NAOS_CHECK_INT_EQ(amark_malloc_array(&g_allocator, SIZE_MAX, 2, &ptr),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_NULL(ptr);
     ptr = &g_state;
     NAOS_CHECK_INT_EQ(amark_malloc_array(&g_allocator, 2, SIZE_MAX / 2 + 1, &ptr),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_NULL(ptr);
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
 }

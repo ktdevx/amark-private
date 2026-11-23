@@ -8,8 +8,9 @@
 
 #include <stddef.h>
 
+#include <amark/error.h>
+
 #include "alloc.h"
-#include "error.h"
 
 /*
  * The arena. It takes blocks from an allocator, keeps them in a singly linked
@@ -64,15 +65,15 @@ void amark_arena_init(amark_arena_t *arena, const amark_allocator_t *allocator);
  * Allocates size bytes (1 byte if size is 0), aligned to AMARK_ARENA_ALIGN.
  * The contents are not initialized. On success, stores the pointer in *out
  * and returns AMARK_ERROR_NONE. On failure, stores NULL in *out and returns
- * AMARK_ERROR_NOMEM (the allocator failed) or AMARK_ERROR_OVERFLOW (the size
- * with the block header and the alignment does not fit in size_t); the arena
- * is then unchanged and the memory it returned before stays valid.
+ * AMARK_ERROR_NOMEM (the allocator failed) or AMARK_ERROR_LIMIT_EXCEEDED (the
+ * size with the block header and the alignment does not fit in size_t); the
+ * arena is then unchanged and the memory it returned before stays valid.
  */
 amark_error_t amark_arena_alloc(amark_arena_t *arena, size_t size, void **out);
 
 /*
  * Allocates count * elem_size bytes, as amark_arena_alloc does. If the
- * product overflows, returns AMARK_ERROR_OVERFLOW.
+ * product overflows, returns AMARK_ERROR_LIMIT_EXCEEDED.
  */
 amark_error_t amark_arena_alloc_array(amark_arena_t *arena, size_t count,
                                       size_t elem_size, void **out);

@@ -10,8 +10,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <amark/error.h>
+
 #include "arena.h"
-#include "error.h"
 
 /*
  * UTF-8. Well-formedness follows Table 3-7 (Well-Formed UTF-8 Byte
@@ -95,10 +96,10 @@ typedef struct amark_utf8_replaced {
  * input alive for as long as it uses the result. Otherwise allocates the
  * result from arena exactly once.
  *
- * Returns AMARK_ERROR_NONE on success. Returns AMARK_ERROR_OVERFLOW if the
- * result length does not fit in size_t, or AMARK_ERROR_NOMEM (or
- * AMARK_ERROR_OVERFLOW) if the arena fails; on failure nothing is allocated
- * and *out is not changed. Takes time proportional to length.
+ * Returns AMARK_ERROR_NONE on success. Returns AMARK_ERROR_LIMIT_EXCEEDED if
+ * the result length does not fit in size_t, or AMARK_ERROR_NOMEM (or
+ * AMARK_ERROR_LIMIT_EXCEEDED) if the arena fails; on failure nothing is
+ * allocated and *out is not changed. Takes time proportional to length.
  */
 amark_error_t amark_utf8_replace(amark_arena_t *arena,
                                  const unsigned char *bytes, size_t length,

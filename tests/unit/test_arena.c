@@ -504,21 +504,21 @@ NAOS_TEST(size_max_is_overflow)
 
     ptr = &g_state;
     NAOS_CHECK_INT_EQ(amark_arena_alloc(&g_arena, SIZE_MAX, &ptr),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_NULL(ptr);
     ptr = &g_state;
     /* Fits after rounding but not with the block header. */
     NAOS_CHECK_INT_EQ(
         amark_arena_alloc(&g_arena, SIZE_MAX - AMARK_ARENA_ALIGN, &ptr),
-        AMARK_ERROR_OVERFLOW);
+        AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_NULL(ptr);
     ptr = &g_state;
     NAOS_CHECK_INT_EQ(amark_arena_alloc_array(&g_arena, SIZE_MAX, 2, &ptr),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_NULL(ptr);
     ptr = &g_state;
     NAOS_CHECK_INT_EQ(amark_arena_alloc_array(&g_arena, SIZE_MAX / 4, 8, &ptr),
-                      AMARK_ERROR_OVERFLOW);
+                      AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_NULL(ptr);
 
     /* Nothing changed, and the earlier memory is intact. */

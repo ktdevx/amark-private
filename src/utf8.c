@@ -140,12 +140,12 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena,
         size = amark_utf8_inspect(bytes + i, length - i, &well_formed);
         if (well_formed) {
             if (!amark_size_add(result_length, size, &result_length)) {
-                return AMARK_ERROR_OVERFLOW;
+                return AMARK_ERROR_LIMIT_EXCEEDED;
             }
         } else {
             if (!amark_size_add(result_length, sizeof(replacement),
                                 &result_length)) {
-                return AMARK_ERROR_OVERFLOW;
+                return AMARK_ERROR_LIMIT_EXCEEDED;
             }
             count++; /* at most length, so it cannot overflow */
         }

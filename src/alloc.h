@@ -9,7 +9,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "error.h"
+#include <amark/error.h>
 
 /*
  * The allocator abstraction. Every allocation and release in the library
@@ -56,7 +56,7 @@ amark_error_t amark_malloc(const amark_allocator_t *allocator, size_t size,
 
 /*
  * Allocates count * elem_size bytes, as amark_malloc does. If the product
- * overflows, stores NULL in *out and returns AMARK_ERROR_OVERFLOW without
+ * overflows, stores NULL in *out and returns AMARK_ERROR_LIMIT_EXCEEDED without
  * calling the allocator.
  */
 amark_error_t amark_malloc_array(const amark_allocator_t *allocator,
