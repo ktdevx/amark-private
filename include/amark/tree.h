@@ -13,6 +13,7 @@
 #ifndef AMARK_TREE_H
 #define AMARK_TREE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -154,6 +155,22 @@ typedef struct amark_diagnostic {
  * nor released. Does nothing if doc is NULL.
  */
 AMARK_API void amark_document_destroy(amark_document_t *doc);
+
+/*
+ * Returns the number of diagnostics of doc, or 0 if doc is NULL. The
+ * diagnostics are numbered from 0 in the order they were added.
+ */
+AMARK_API size_t amark_document_diagnostic_count(const amark_document_t *doc);
+
+/*
+ * Stores the diagnostic number index of doc in *out and returns true. The
+ * message and the file name in *out are copies the document holds, valid
+ * until doc is destroyed. Returns false and leaves *out unchanged if doc or
+ * out is NULL, or if index is not less than the number of diagnostics.
+ */
+AMARK_API bool amark_document_diagnostic(const amark_document_t *doc,
+                                         size_t index,
+                                         amark_diagnostic_t *out);
 
 #ifdef __cplusplus
 }

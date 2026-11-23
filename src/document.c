@@ -10,29 +10,39 @@
 #include "alloc.h"
 
 /*
- * Copies filename (with its NUL) into the arena of doc and stores the copy
- * in doc->filename. A NULL filename leaves doc->filename NULL.
+ * Copies the NUL-terminated string str (with its NUL) into the arena of doc
+ * and stores the copy in *out. On failure, *out is unchanged.
  */
-static amark_error_t copy_filename(amark_document_t *doc, const char *filename)
+static amark_error_t copy_string(amark_document_t *doc, const char *str,
+                                 const char **out)
 {
     size_t size;
     void *mem = NULL;
     amark_error_t err;
 
-    doc->filename = NULL;
-    if (filename == NULL) {
-        return AMARK_ERROR_NONE;
-    }
-    if (!amark_size_add(strlen(filename), 1, &size)) {
+    if (!amark_size_add(strlen(str), 1, &size)) {
         return AMARK_ERROR_LIMIT_EXCEEDED;
     }
     err = amark_arena_alloc(&doc->arena, size, &mem);
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
-    memcpy(mem, filename, size);
-    doc->filename = (const char *)mem;
+    memcpy(mem, str, size);
+    *out = (const char *)mem;
     return AMARK_ERROR_NONE;
+}
+
+/*
+ * Copies filename into the arena of doc and stores the copy in
+ * doc->filename. A NULL filename leaves doc->filename NULL.
+ */
+static amark_error_t copy_filename(amark_document_t *doc, const char *filename)
+{
+    doc->filename = NULL;
+    if (filename == NULL) {
+        return AMARK_ERROR_NONE;
+    }
+    return copy_string(doc, filename, &doc->filename);
 }
 
 /*
@@ -122,6 +132,53 @@ amark_error_t amark_document_create(const amark_allocator_t *allocator,
     }
     *out = doc;
     return AMARK_ERROR_NONE;
+}
+
+amark_error_t amark_document_add_diagnostic(amark_document_t *doc,
+                                            size_t offset,
+                                            amark_severity_t severity,
+                                            const char *message)
+{
+    amark_stored_diagnostic_t diag;
+    amark_error_t err;
+
+    diag.offset = offset;
+    diag.line = amark_line_index_line_at(&doc->lines, offset);
+    diag.severity = severity;
+    diag.message = NULL;
+    /* Copy first: a failed append then leaves only an unused copy. */
+    err = copy_string(doc, message, &diag.message);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    return amark_array_push(&doc->diagnostics, &diag);
+}
+
+size_t amark_document_diagnostic_count(const amark_document_t *doc)
+{
+    if (doc == NULL) {
+        return 0;
+    }
+    return amark_array_len(&doc->diagnostics);
+}
+
+bool amark_document_diagnostic(const amark_document_t *doc, size_t index,
+                               amark_diagnostic_t *out)
+{
+    const amark_stored_diagnostic_t *diag;
+
+    if (doc == NULL || out == NULL ||
+        index >= amark_array_len(&doc->diagnostics)) {
+        return false;
+    }
+    diag = (const amark_stored_diagnostic_t *)amark_array_at(
+        &doc->diagnostics, index);
+    out->offset = diag->offset;
+    out->line = diag->line;
+    out->severity = diag->severity;
+    out->message = diag->message;
+    out->filename = doc->filename;
+    return true;
 }
 
 const unsigned char *amark_document_content(const amark_document_t *doc)

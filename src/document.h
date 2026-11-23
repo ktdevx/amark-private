@@ -137,6 +137,24 @@ amark_error_t amark_document_create(const amark_allocator_t *allocator,
                                     const char *filename,
                                     amark_document_t **out);
 
+/*
+ * Adds a diagnostic at the end of the diagnostics of doc: message is copied
+ * into the document, and the line is derived from offset with the line index
+ * (the line that contains offset; offset == the content length is on the
+ * last line). offset <= the content length. message is a NUL-terminated
+ * string.
+ *
+ * The message is copied first and then appended. If either step fails,
+ * returns AMARK_ERROR_NOMEM (the allocator failed) or
+ * AMARK_ERROR_LIMIT_EXCEEDED (a size computation overflowed), and the
+ * diagnostics and the tree are unchanged (a copied message stays in the
+ * arena, referred to by nothing).
+ */
+amark_error_t amark_document_add_diagnostic(amark_document_t *doc,
+                                            size_t offset,
+                                            amark_severity_t severity,
+                                            const char *message);
+
 /* Return the content and its length as given to amark_document_create. */
 const unsigned char *amark_document_content(const amark_document_t *doc);
 size_t amark_document_content_length(const amark_document_t *doc);
