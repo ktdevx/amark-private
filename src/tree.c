@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "arena.h"
 #include "array.h"
 
 static amark_node_t *node_at(amark_document_t *doc, amark_node_id_t id)
@@ -225,4 +226,156 @@ void amark_tree_remove(amark_document_t *doc, amark_node_id_t node)
     n->parent = AMARK_NODE_NONE;
     n->prev_sibling = AMARK_NODE_NONE;
     n->next_sibling = AMARK_NODE_NONE;
+}
+
+static amark_opt_range_t opt_range_of(const amark_range_t *range)
+{
+    amark_opt_range_t r;
+
+    memset(&r, 0, sizeof(r));
+    if (range != NULL) {
+        r.start = range->start;
+        r.end = range->end;
+        r.present = true;
+    }
+    return r;
+}
+
+/*
+ * Stores attr as the attribute element of node: overwrites the element node
+ * already has, or adds one. Only adding can fail, and then node is
+ * unchanged.
+ */
+static amark_error_t store_attr(amark_document_t *doc, amark_node_id_t node,
+                                const amark_node_attr_t *attr)
+{
+    amark_node_t *n = node_at(doc, node);
+    size_t len;
+    amark_error_t err;
+
+    if (n->attr != 0) {
+        *(amark_node_attr_t *)amark_array_at(&doc->attrs, n->attr) = *attr;
+        return AMARK_ERROR_NONE;
+    }
+    /* The new element's index must fit in the 32-bit attr field. */
+    len = amark_array_len(&doc->attrs);
+    if (len > (size_t)UINT32_MAX) {
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    }
+    err = amark_array_push(&doc->attrs, attr);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    /* The push may move the attribute array, never the node array. */
+    n->attr = (uint32_t)len;
+    return AMARK_ERROR_NONE;
+}
+
+amark_error_t amark_tree_set_heading(amark_document_t *doc,
+                                     amark_node_id_t node, unsigned level,
+                                     amark_heading_style_t style)
+{
+    amark_node_attr_t attr;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.heading.level = level;
+    attr.heading.style = style;
+    return store_attr(doc, node, &attr);
+}
+
+amark_error_t amark_tree_set_list(amark_document_t *doc, amark_node_id_t node,
+                                  amark_list_type_t type, char marker,
+                                  uint32_t start_number,
+                                  amark_list_spacing_t spacing)
+{
+    amark_node_attr_t attr;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.list.type = type;
+    attr.list.spacing = spacing;
+    attr.list.marker = marker;
+    attr.list.start_number = start_number;
+    return store_attr(doc, node, &attr);
+}
+
+amark_error_t amark_tree_set_code_block(amark_document_t *doc,
+                                        amark_node_id_t node,
+                                        amark_code_block_style_t style,
+                                        char fence_char, size_t fence_length,
+                                        const amark_range_t *info)
+{
+    amark_node_attr_t attr;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.code_block.style = style;
+    attr.code_block.fence_char = fence_char;
+    attr.code_block.fence_length = fence_length;
+    attr.code_block.info = opt_range_of(info);
+    return store_attr(doc, node, &attr);
+}
+
+amark_error_t amark_tree_set_link(amark_document_t *doc, amark_node_id_t node,
+                                  amark_link_form_t form,
+                                  const amark_range_t *destination,
+                                  const amark_range_t *title,
+                                  amark_node_id_t definition)
+{
+    amark_node_attr_t attr;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.link.form = form;
+    attr.link.destination = opt_range_of(destination);
+    attr.link.title = opt_range_of(title);
+    attr.link.definition = definition;
+    return store_attr(doc, node, &attr);
+}
+
+amark_error_t amark_tree_set_definition(amark_document_t *doc,
+                                        amark_node_id_t node,
+                                        const amark_range_t *label,
+                                        const amark_range_t *destination,
+                                        const amark_range_t *title)
+{
+    amark_node_attr_t attr;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.definition.label = opt_range_of(label);
+    attr.definition.destination = opt_range_of(destination);
+    attr.definition.title = opt_range_of(title);
+    return store_attr(doc, node, &attr);
+}
+
+amark_error_t amark_tree_set_autolink(amark_document_t *doc,
+                                      amark_node_id_t node,
+                                      amark_autolink_type_t type)
+{
+    amark_node_attr_t attr;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.autolink.type = type;
+    return store_attr(doc, node, &attr);
+}
+
+amark_error_t amark_tree_set_dialect_data(amark_document_t *doc,
+                                          amark_node_id_t node,
+                                          const void *data, size_t size)
+{
+    amark_node_attr_t attr;
+    void *copy = NULL;
+    amark_error_t err;
+
+    if (size == 0) {
+        node_at(doc, node)->attr = 0;
+        return AMARK_ERROR_NONE;
+    }
+    /* The arena aligns every allocation to AMARK_ARENA_ALIGN. */
+    err = amark_arena_alloc(&doc->arena, size, &copy);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    memcpy(copy, data, size);
+    memset(&attr, 0, sizeof(attr));
+    attr.dialect.data = copy;
+    attr.dialect.size = size;
+    return store_attr(doc, node, &attr);
 }

@@ -99,4 +99,73 @@ void amark_tree_set_kind(amark_document_t *doc, amark_node_id_t node,
  */
 void amark_tree_remove(amark_document_t *doc, amark_node_id_t node);
 
+/*
+ * The attribute setters. The kind of node must be one that has the
+ * attribute (a heading, a list, a code block, a link or an image, a link
+ * reference definition, an autolink, a dialect kind).
+ *
+ * If node has no attribute element yet, one is added to the attribute array;
+ * this is the only step that can fail, with AMARK_ERROR_NOMEM (the allocator
+ * failed) or AMARK_ERROR_LIMIT_EXCEEDED (the attribute array is full), and
+ * then node is unchanged. Otherwise the element is overwritten as a whole,
+ * which cannot fail.
+ *
+ * A range argument that is NULL means "not written in the source"; a range
+ * with start == end means "written but empty". Ranges are byte offsets from
+ * the start of the content, start <= end <= the content length.
+ */
+
+amark_error_t amark_tree_set_heading(amark_document_t *doc,
+                                     amark_node_id_t node, unsigned level,
+                                     amark_heading_style_t style);
+
+/*
+ * marker is the bullet character of a bullet list and the delimiter of an
+ * ordered list. start_number has a meaning for an ordered list only. Call
+ * again when the spacing is decided later.
+ */
+amark_error_t amark_tree_set_list(amark_document_t *doc, amark_node_id_t node,
+                                  amark_list_type_t type, char marker,
+                                  uint32_t start_number,
+                                  amark_list_spacing_t spacing);
+
+/* An indented code block takes fence_char 0, fence_length 0, info NULL. */
+amark_error_t amark_tree_set_code_block(amark_document_t *doc,
+                                        amark_node_id_t node,
+                                        amark_code_block_style_t style,
+                                        char fence_char, size_t fence_length,
+                                        const amark_range_t *info);
+
+/*
+ * For links and images. The inline form takes definition AMARK_NODE_NONE;
+ * the reference forms take destination and title NULL.
+ */
+amark_error_t amark_tree_set_link(amark_document_t *doc, amark_node_id_t node,
+                                  amark_link_form_t form,
+                                  const amark_range_t *destination,
+                                  const amark_range_t *title,
+                                  amark_node_id_t definition);
+
+amark_error_t amark_tree_set_definition(amark_document_t *doc,
+                                        amark_node_id_t node,
+                                        const amark_range_t *label,
+                                        const amark_range_t *destination,
+                                        const amark_range_t *title);
+
+amark_error_t amark_tree_set_autolink(amark_document_t *doc,
+                                      amark_node_id_t node,
+                                      amark_autolink_type_t type);
+
+/*
+ * Copies size bytes from data into the document, aligned for any type, and
+ * makes them the attribute of node, a dialect kind. data may be NULL only
+ * when size is 0. The copy is made before the attribute element is added;
+ * if that fails, the copy stays in the arena, referred to by nothing. A size
+ * of 0 makes the attribute "none" (node->attr becomes 0, as
+ * amark_tree_set_kind does) and cannot fail.
+ */
+amark_error_t amark_tree_set_dialect_data(amark_document_t *doc,
+                                          amark_node_id_t node,
+                                          const void *data, size_t size);
+
 #endif /* AMARK_TREE_INTERNAL_H */

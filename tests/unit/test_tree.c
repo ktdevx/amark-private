@@ -6,8 +6,9 @@
 /*
  * Unit tests of the tree builder (src/tree.h): adding nodes as the last
  * child of a parent and before a sibling, the lines derived from the range,
- * changing the range and the kind, removing and wrapping nodes, the node
- * limit and allocation failures. The results are checked through
+ * changing the range and the kind, removing and wrapping nodes, setting the
+ * attributes of each kind, the node and attribute limits and allocation
+ * failures. The results are checked through
  * the internal layout of the document (src/document.h).
  */
 
@@ -25,15 +26,16 @@
 /*
  * Fixture. NAOS_REQUIRE_* leaves a test with longjmp, so the documents a
  * test creates are kept in g_doc and g_doc2, and teardown (which always
- * runs) restores a node array length a test changed, destroys them and then
- * checks that no block is left and that every call received the context
- * value it was given.
+ * runs) restores a node or attribute array length a test changed, destroys
+ * them and then checks that no block is left and that every call received
+ * the context value it was given.
  */
 static amark_test_alloc_t g_state;
 static amark_allocator_t g_allocator;
 static amark_document_t *g_doc;
 static amark_document_t *g_doc2;
 static size_t g_saved_len; /* 0: the length of g_doc's node array is real */
+static size_t g_saved_attrs_len; /* the same for the attribute array */
 
 NAOS_SETUP(counting)
 {
@@ -42,6 +44,7 @@ NAOS_SETUP(counting)
     g_doc = NULL;
     g_doc2 = NULL;
     g_saved_len = 0;
+    g_saved_attrs_len = 0;
 }
 
 NAOS_TEARDOWN(counting)
@@ -50,7 +53,11 @@ NAOS_TEARDOWN(counting)
     if (g_doc != NULL && g_saved_len != 0) {
         g_doc->nodes.len = g_saved_len;
     }
+    if (g_doc != NULL && g_saved_attrs_len != 0) {
+        g_doc->attrs.len = g_saved_attrs_len;
+    }
     g_saved_len = 0;
+    g_saved_attrs_len = 0;
     amark_document_destroy(g_doc);
     amark_document_destroy(g_doc2);
     g_doc = NULL;
@@ -1229,6 +1236,686 @@ NAOS_TEST(wrap_failure_injection_loop)
     NAOS_CHECK_UINT_GE(wrap_failures, 1);
 }
 
+/* ---- the attributes (3.1-3.14, 7.4, 7.6, 7.8) ---- */
+
+/* Returns the attribute element of node id, which must have one. */
+static const amark_node_attr_t *attr_of(amark_node_id_t id)
+{
+    const amark_node_t *n;
+
+    NAOS_REQUIRE_UINT_LT(id, amark_array_len(&g_doc->nodes));
+    n = node_at(g_doc, id);
+    NAOS_REQUIRE_UINT_NE(n->attr, 0);
+    NAOS_REQUIRE_UINT_LT(n->attr, amark_array_len(&g_doc->attrs));
+    return (const amark_node_attr_t *)amark_array_at(&g_doc->attrs, n->attr);
+}
+
+/* Checks an optional range: not present, or present with [start, end). */
+static void check_opt(const amark_opt_range_t *r, bool present, size_t start,
+                      size_t end)
+{
+    NAOS_CHECK_TRUE(r->present == present);
+    if (present) {
+        NAOS_CHECK_UINT_EQ(r->start, start);
+        NAOS_CHECK_UINT_EQ(r->end, end);
+    }
+}
+
+static amark_node_id_t add_class(amark_node_id_t parent, amark_kind_t kind,
+                                 amark_node_class_t cls, size_t start,
+                                 size_t end)
+{
+    amark_node_id_t id = AMARK_NODE_NONE;
+
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(g_doc, parent, kind, cls, start,
+                                          end, &id),
+                        AMARK_ERROR_NONE);
+    return id;
+}
+
+NAOS_TEST(heading_attributes_and_overwrite)
+{
+    amark_node_id_t h;
+    const amark_node_attr_t *a;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    /* Element 0 of the attribute array is not used. */
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 1);
+    h = add(1, AMARK_KIND_HEADING, 0, 3);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->attr, 0);
+
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, h, 3, AMARK_HEADING_ATX),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->attr, 1);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 2);
+    a = attr_of(h);
+    NAOS_CHECK_UINT_EQ(a->heading.level, 3);
+    NAOS_CHECK_INT_EQ(a->heading.style, AMARK_HEADING_ATX);
+
+    /* A second call overwrites the same element and adds none. */
+    NAOS_REQUIRE_INT_EQ(
+        amark_tree_set_heading(g_doc, h, 6, AMARK_HEADING_SETEXT),
+        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->attr, 1);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 2);
+    a = attr_of(h);
+    NAOS_CHECK_UINT_EQ(a->heading.level, 6);
+    NAOS_CHECK_INT_EQ(a->heading.style, AMARK_HEADING_SETEXT);
+
+    /* The kind, range, lines and links are untouched. */
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->kind, AMARK_KIND_HEADING);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->start, 0);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->end, 3);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->start_line, 1);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->end_line, 1);
+    check_links(h, 1, AMARK_NODE_NONE, AMARK_NODE_NONE, AMARK_NODE_NONE,
+                AMARK_NODE_NONE);
+}
+
+NAOS_TEST(list_attributes_and_start_numbers)
+{
+    amark_node_id_t bullet;
+    amark_node_id_t zero;
+    amark_node_id_t big;
+    const amark_node_attr_t *a;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    bullet = add(1, AMARK_KIND_LIST, 0, 3);
+    zero = add(1, AMARK_KIND_LIST, 3, 7);
+    big = add(1, AMARK_KIND_LIST, 7, 12);
+
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_list(g_doc, bullet, AMARK_LIST_BULLET,
+                                            '-', 0, AMARK_LIST_TIGHT),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_list(g_doc, zero, AMARK_LIST_ORDERED,
+                                            ')', 0, AMARK_LIST_TIGHT),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_list(g_doc, big, AMARK_LIST_ORDERED,
+                                            '.', 999999999u, AMARK_LIST_LOOSE),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 4);
+
+    a = attr_of(bullet);
+    NAOS_CHECK_INT_EQ(a->list.type, AMARK_LIST_BULLET);
+    NAOS_CHECK_INT_EQ(a->list.marker, '-');
+    NAOS_CHECK_INT_EQ(a->list.spacing, AMARK_LIST_TIGHT);
+    a = attr_of(zero);
+    NAOS_CHECK_INT_EQ(a->list.type, AMARK_LIST_ORDERED);
+    NAOS_CHECK_INT_EQ(a->list.marker, ')');
+    NAOS_CHECK_UINT_EQ(a->list.start_number, 0);
+    NAOS_CHECK_INT_EQ(a->list.spacing, AMARK_LIST_TIGHT);
+    a = attr_of(big);
+    NAOS_CHECK_INT_EQ(a->list.type, AMARK_LIST_ORDERED);
+    NAOS_CHECK_INT_EQ(a->list.marker, '.');
+    NAOS_CHECK_UINT_EQ(a->list.start_number, 999999999u);
+    NAOS_CHECK_INT_EQ(a->list.spacing, AMARK_LIST_LOOSE);
+
+    /* The spacing decided later: the call is made again and overwrites. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_list(g_doc, bullet, AMARK_LIST_BULLET,
+                                            '*', 0, AMARK_LIST_LOOSE),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 4);
+    a = attr_of(bullet);
+    NAOS_CHECK_INT_EQ(a->list.marker, '*');
+    NAOS_CHECK_INT_EQ(a->list.spacing, AMARK_LIST_LOOSE);
+    /* The other lists are unaffected. */
+    NAOS_CHECK_UINT_EQ(attr_of(big)->list.start_number, 999999999u);
+    NAOS_CHECK_UINT_EQ(attr_of(zero)->list.start_number, 0);
+}
+
+NAOS_TEST(code_block_attributes_and_info)
+{
+    amark_node_id_t indented;
+    amark_node_id_t empty_info;
+    amark_node_id_t info;
+    amark_range_t r;
+    const amark_node_attr_t *a;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    indented = add(1, AMARK_KIND_CODE_BLOCK, 0, 3);
+    empty_info = add(1, AMARK_KIND_CODE_BLOCK, 3, 7);
+    info = add(1, AMARK_KIND_CODE_BLOCK, 7, 12);
+
+    /* No info: not written. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_code_block(g_doc, indented,
+                                                  AMARK_CODE_BLOCK_INDENTED,
+                                                  0, 0, NULL),
+                        AMARK_ERROR_NONE);
+    /* start == end: written but empty. */
+    r.start = 5;
+    r.end = 5;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_code_block(g_doc, empty_info,
+                                                  AMARK_CODE_BLOCK_FENCED,
+                                                  '`', 3, &r),
+                        AMARK_ERROR_NONE);
+    r.start = 8;
+    r.end = 12;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_code_block(g_doc, info,
+                                                  AMARK_CODE_BLOCK_FENCED,
+                                                  '~', 5, &r),
+                        AMARK_ERROR_NONE);
+    /* The range was copied: changing it afterwards changes nothing. */
+    r.start = 0;
+    r.end = 0;
+
+    a = attr_of(indented);
+    NAOS_CHECK_INT_EQ(a->code_block.style, AMARK_CODE_BLOCK_INDENTED);
+    NAOS_CHECK_INT_EQ(a->code_block.fence_char, 0);
+    NAOS_CHECK_UINT_EQ(a->code_block.fence_length, 0);
+    check_opt(&a->code_block.info, false, 0, 0);
+    a = attr_of(empty_info);
+    NAOS_CHECK_INT_EQ(a->code_block.style, AMARK_CODE_BLOCK_FENCED);
+    NAOS_CHECK_INT_EQ(a->code_block.fence_char, '`');
+    NAOS_CHECK_UINT_EQ(a->code_block.fence_length, 3);
+    check_opt(&a->code_block.info, true, 5, 5);
+    a = attr_of(info);
+    NAOS_CHECK_INT_EQ(a->code_block.fence_char, '~');
+    NAOS_CHECK_UINT_EQ(a->code_block.fence_length, 5);
+    check_opt(&a->code_block.info, true, 8, 12);
+
+    /* Overwriting with no info makes the info "not written" again. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_code_block(g_doc, info,
+                                                  AMARK_CODE_BLOCK_FENCED,
+                                                  '`', 4, NULL),
+                        AMARK_ERROR_NONE);
+    a = attr_of(info);
+    NAOS_CHECK_INT_EQ(a->code_block.fence_char, '`');
+    NAOS_CHECK_UINT_EQ(a->code_block.fence_length, 4);
+    check_opt(&a->code_block.info, false, 0, 0);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 4);
+}
+
+NAOS_TEST(link_and_image_attributes)
+{
+    amark_node_id_t para;
+    amark_node_id_t def;
+    amark_node_id_t l1;
+    amark_node_id_t l2;
+    amark_node_id_t img;
+    amark_node_id_t ref;
+    amark_range_t dest;
+    amark_range_t title;
+    const amark_node_attr_t *a;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    def = add(1, AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 3);
+    para = add(1, AMARK_KIND_PARAGRAPH, 3, 12);
+    l1 = add(para, AMARK_KIND_LINK, 3, 5);
+    l2 = add(para, AMARK_KIND_LINK, 5, 7);
+    img = add(para, AMARK_KIND_IMAGE, 7, 10);
+    ref = add(para, AMARK_KIND_LINK, 10, 12);
+
+    /* Inline: a destination, no title. */
+    dest.start = 4;
+    dest.end = 5;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, l1, AMARK_LINK_INLINE,
+                                            &dest, NULL, AMARK_NODE_NONE),
+                        AMARK_ERROR_NONE);
+    /* Inline: an empty destination and an empty title. */
+    dest.start = 6;
+    dest.end = 6;
+    title.start = 6;
+    title.end = 6;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, l2, AMARK_LINK_INLINE,
+                                            &dest, &title, AMARK_NODE_NONE),
+                        AMARK_ERROR_NONE);
+    /* An image, inline: a destination and a title. */
+    dest.start = 7;
+    dest.end = 8;
+    title.start = 8;
+    title.end = 10;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, img, AMARK_LINK_INLINE,
+                                            &dest, &title, AMARK_NODE_NONE),
+                        AMARK_ERROR_NONE);
+    /* A reference: the definition, no ranges. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, ref, AMARK_LINK_FULL, NULL,
+                                            NULL, def),
+                        AMARK_ERROR_NONE);
+
+    a = attr_of(l1);
+    NAOS_CHECK_INT_EQ(a->link.form, AMARK_LINK_INLINE);
+    check_opt(&a->link.destination, true, 4, 5);
+    check_opt(&a->link.title, false, 0, 0);
+    NAOS_CHECK_UINT_EQ(a->link.definition, AMARK_NODE_NONE);
+    a = attr_of(l2);
+    check_opt(&a->link.destination, true, 6, 6);
+    check_opt(&a->link.title, true, 6, 6);
+    a = attr_of(img);
+    NAOS_CHECK_INT_EQ(a->link.form, AMARK_LINK_INLINE);
+    check_opt(&a->link.destination, true, 7, 8);
+    check_opt(&a->link.title, true, 8, 10);
+    a = attr_of(ref);
+    NAOS_CHECK_INT_EQ(a->link.form, AMARK_LINK_FULL);
+    check_opt(&a->link.destination, false, 0, 0);
+    check_opt(&a->link.title, false, 0, 0);
+    NAOS_CHECK_UINT_EQ(a->link.definition, def);
+
+    /* Each reference form; the last call overwrites the element. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, ref, AMARK_LINK_COLLAPSED,
+                                            NULL, NULL, def),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(attr_of(ref)->link.form, AMARK_LINK_COLLAPSED);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, ref, AMARK_LINK_SHORTCUT,
+                                            NULL, NULL, def),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(attr_of(ref)->link.form, AMARK_LINK_SHORTCUT);
+    NAOS_CHECK_UINT_EQ(attr_of(ref)->link.definition, def);
+
+    /* Inline to reference: the old ranges do not survive. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, img, AMARK_LINK_SHORTCUT,
+                                            NULL, NULL, def),
+                        AMARK_ERROR_NONE);
+    a = attr_of(img);
+    NAOS_CHECK_INT_EQ(a->link.form, AMARK_LINK_SHORTCUT);
+    check_opt(&a->link.destination, false, 0, 0);
+    check_opt(&a->link.title, false, 0, 0);
+    NAOS_CHECK_UINT_EQ(a->link.definition, def);
+
+    /* One element per link; the paragraph and definition have none. */
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 5);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, para)->attr, 0);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, def)->attr, 0);
+}
+
+NAOS_TEST(definition_attributes)
+{
+    amark_node_id_t none;
+    amark_node_id_t empty;
+    amark_node_id_t full;
+    amark_range_t label;
+    amark_range_t dest;
+    amark_range_t title;
+    const amark_node_attr_t *a;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    none = add(1, AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 3);
+    empty = add(1, AMARK_KIND_LINK_REFERENCE_DEFINITION, 3, 7);
+    full = add(1, AMARK_KIND_LINK_REFERENCE_DEFINITION, 7, 12);
+
+    label.start = 0;
+    label.end = 1;
+    dest.start = 1;
+    dest.end = 2;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_definition(g_doc, none, &label, &dest,
+                                                  NULL),
+                        AMARK_ERROR_NONE);
+    label.start = 3;
+    label.end = 4;
+    dest.start = 5;
+    dest.end = 5;
+    title.start = 6;
+    title.end = 6;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_definition(g_doc, empty, &label, &dest,
+                                                  &title),
+                        AMARK_ERROR_NONE);
+    label.start = 7;
+    label.end = 8;
+    dest.start = 8;
+    dest.end = 10;
+    title.start = 10;
+    title.end = 12;
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_definition(g_doc, full, &label, &dest,
+                                                  &title),
+                        AMARK_ERROR_NONE);
+
+    a = attr_of(none);
+    check_opt(&a->definition.label, true, 0, 1);
+    check_opt(&a->definition.destination, true, 1, 2);
+    check_opt(&a->definition.title, false, 0, 0);
+    a = attr_of(empty);
+    check_opt(&a->definition.label, true, 3, 4);
+    check_opt(&a->definition.destination, true, 5, 5);
+    check_opt(&a->definition.title, true, 6, 6);
+    a = attr_of(full);
+    check_opt(&a->definition.label, true, 7, 8);
+    check_opt(&a->definition.destination, true, 8, 10);
+    check_opt(&a->definition.title, true, 10, 12);
+
+    /* Overwrite: the title becomes "not written". */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_definition(g_doc, full, &label, &dest,
+                                                  NULL),
+                        AMARK_ERROR_NONE);
+    a = attr_of(full);
+    check_opt(&a->definition.label, true, 7, 8);
+    check_opt(&a->definition.title, false, 0, 0);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 4);
+}
+
+NAOS_TEST(autolink_attributes)
+{
+    amark_node_id_t para;
+    amark_node_id_t uri;
+    amark_node_id_t email;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    para = add(1, AMARK_KIND_PARAGRAPH, 0, 12);
+    uri = add(para, AMARK_KIND_AUTOLINK, 0, 2);
+    email = add(para, AMARK_KIND_AUTOLINK, 3, 5);
+
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_autolink(g_doc, uri,
+                                                AMARK_AUTOLINK_URI),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_autolink(g_doc, email,
+                                                AMARK_AUTOLINK_EMAIL),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(attr_of(uri)->autolink.type, AMARK_AUTOLINK_URI);
+    NAOS_CHECK_INT_EQ(attr_of(email)->autolink.type, AMARK_AUTOLINK_EMAIL);
+
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_autolink(g_doc, uri,
+                                                AMARK_AUTOLINK_EMAIL),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(attr_of(uri)->autolink.type, AMARK_AUTOLINK_EMAIL);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 3);
+}
+
+NAOS_TEST(dialect_data_is_copied_and_aligned)
+{
+    amark_node_id_t block;
+    amark_node_id_t span;
+    amark_node_id_t empty;
+    unsigned char bytes[13];
+    unsigned char other[3] = { 7, 8, 9 };
+    const amark_node_attr_t *a;
+    const unsigned char *copy;
+    size_t i;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    block = add_class(1, AMARK_KIND_DIALECT_MIN, AMARK_NODE_CLASS_BLOCK, 0, 12);
+    span = add_class(block, AMARK_KIND_DIALECT_MIN + 1,
+                     AMARK_NODE_CLASS_INLINE, 0, 2);
+    empty = add_class(block, AMARK_KIND_DIALECT_MIN + 2,
+                      AMARK_NODE_CLASS_INLINE, 3, 5);
+
+    for (i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = (unsigned char)(0xA0 + i);
+    }
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, block, bytes,
+                                                    sizeof(bytes)),
+                        AMARK_ERROR_NONE);
+    /* An odd size first, so the next copy shows the alignment is kept. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, span, bytes, 1),
+                        AMARK_ERROR_NONE);
+    /* Size 0: "none", and no element is added. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, empty, NULL, 0),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, empty)->attr, 0);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 3);
+
+    /* Change the caller's array: the copies stay as they were. */
+    memset(bytes, 0, sizeof(bytes));
+
+    a = attr_of(block);
+    NAOS_CHECK_UINT_EQ(a->dialect.size, sizeof(bytes));
+    NAOS_REQUIRE_TRUE(a->dialect.data != NULL);
+    NAOS_CHECK_TRUE(a->dialect.data != (const void *)bytes);
+    NAOS_CHECK_UINT_EQ((uintptr_t)a->dialect.data % AMARK_ARENA_ALIGN, 0);
+    copy = (const unsigned char *)a->dialect.data;
+    for (i = 0; i < sizeof(bytes); i++) {
+        NAOS_CHECK_UINT_EQ(copy[i], 0xA0 + i);
+    }
+    a = attr_of(span);
+    NAOS_CHECK_UINT_EQ(a->dialect.size, 1);
+    NAOS_REQUIRE_TRUE(a->dialect.data != NULL);
+    NAOS_CHECK_UINT_EQ((uintptr_t)a->dialect.data % AMARK_ARENA_ALIGN, 0);
+    NAOS_CHECK_UINT_EQ(((const unsigned char *)a->dialect.data)[0], 0xA0);
+
+    /* Overwrite: the same element, a new copy of the new bytes. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, block, other,
+                                                    sizeof(other)),
+                        AMARK_ERROR_NONE);
+    other[0] = 0;
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 3);
+    a = attr_of(block);
+    NAOS_CHECK_UINT_EQ(a->dialect.size, 3);
+    NAOS_REQUIRE_TRUE(a->dialect.data != NULL);
+    NAOS_CHECK_UINT_EQ((uintptr_t)a->dialect.data % AMARK_ARENA_ALIGN, 0);
+    copy = (const unsigned char *)a->dialect.data;
+    NAOS_CHECK_UINT_EQ(copy[0], 7);
+    NAOS_CHECK_UINT_EQ(copy[1], 8);
+    NAOS_CHECK_UINT_EQ(copy[2], 9);
+
+    /* Size 0 on a node with data makes its attribute "none". */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_dialect_data(g_doc, span, other, 0),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, span)->attr, 0);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, span)->is_inline, 1);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, block)->is_inline, 0);
+}
+
+NAOS_TEST(elements_only_for_nodes_with_attributes)
+{
+    amark_node_id_t ids[8];
+    size_t i;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    for (i = 0; i < 8; i++) {
+        ids[i] = add(1, i % 2 == 0 ? AMARK_KIND_HEADING : AMARK_KIND_PARAGRAPH,
+                     i, i + 1);
+    }
+    /* Only the headings at 2 and 6 get attributes. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, ids[2], 2,
+                                               AMARK_HEADING_ATX),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, ids[6], 4,
+                                               AMARK_HEADING_ATX),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, ids[2], 5,
+                                               AMARK_HEADING_SETEXT),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), 3);
+    for (i = 0; i < 8; i++) {
+        uint32_t expected = i == 2 ? 1u : i == 6 ? 2u : 0u;
+
+        NAOS_CHECK_UINT_EQ(node_at(g_doc, ids[i])->attr, expected);
+    }
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, 1)->attr, 0);
+    NAOS_CHECK_UINT_EQ(attr_of(ids[2])->heading.level, 5);
+    NAOS_CHECK_UINT_EQ(attr_of(ids[6])->heading.level, 4);
+
+    /* After set_kind the node has none; setting again adds an element. */
+    amark_tree_set_kind(g_doc, ids[2], AMARK_KIND_HEADING,
+                        AMARK_NODE_CLASS_AUTO);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, ids[2])->attr, 0);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, ids[2], 1,
+                                               AMARK_HEADING_ATX),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, ids[2])->attr, 3);
+    NAOS_CHECK_UINT_EQ(attr_of(ids[2])->heading.level, 1);
+}
+
+/* The seven setters, chosen by which (0 to 6), on a node of the kind. */
+#define SETTER_COUNT 7
+static const amark_kind_t k_setter_kinds[SETTER_COUNT] = {
+    AMARK_KIND_HEADING,
+    AMARK_KIND_LIST,
+    AMARK_KIND_CODE_BLOCK,
+    AMARK_KIND_LINK,
+    AMARK_KIND_LINK_REFERENCE_DEFINITION,
+    AMARK_KIND_AUTOLINK,
+    AMARK_KIND_DIALECT_MIN
+};
+
+static const unsigned char k_dialect_bytes[24] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+    13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24
+};
+
+static amark_error_t set_by_index(amark_node_id_t id, size_t which, size_t i)
+{
+    amark_range_t r;
+
+    r.start = 1;
+    r.end = 2;
+    switch (which) {
+    case 0:
+        return amark_tree_set_heading(g_doc, id, (unsigned)(i % 6 + 1),
+                                      AMARK_HEADING_ATX);
+    case 1:
+        return amark_tree_set_list(g_doc, id, AMARK_LIST_ORDERED, '.',
+                                   (uint32_t)i, AMARK_LIST_TIGHT);
+    case 2:
+        return amark_tree_set_code_block(g_doc, id, AMARK_CODE_BLOCK_FENCED,
+                                         '`', i, &r);
+    case 3:
+        return amark_tree_set_link(g_doc, id, AMARK_LINK_INLINE, &r, &r,
+                                   AMARK_NODE_NONE);
+    case 4:
+        return amark_tree_set_definition(g_doc, id, &r, &r, &r);
+    case 5:
+        return amark_tree_set_autolink(g_doc, id, AMARK_AUTOLINK_URI);
+    default:
+        return amark_tree_set_dialect_data(g_doc, id, k_dialect_bytes,
+                                           i % sizeof(k_dialect_bytes) + 1);
+    }
+}
+
+#define ATTR_NODES 300
+
+/*
+ * Adds ATTR_NODES nodes to the root (the kinds of the setters in turn)
+ * without failure injection; node i has ID i + 2.
+ */
+static void add_attr_nodes(void)
+{
+    size_t i;
+
+    for (i = 0; i < ATTR_NODES; i++) {
+        size_t which = i % SETTER_COUNT;
+
+        (void)add_class(1, k_setter_kinds[which],
+                        which == SETTER_COUNT - 1 ? AMARK_NODE_CLASS_BLOCK
+                                                  : AMARK_NODE_CLASS_AUTO,
+                        0, MIXED_LENGTH);
+    }
+}
+
+/*
+ * Sets the attributes of the nodes from add_attr_nodes in order. Stops at
+ * the first failure, checks that the failed call changed neither the node
+ * nor the attribute array and returns its error; *done receives the number
+ * of nodes whose attributes were set.
+ */
+static amark_error_t set_attr_nodes(size_t *done)
+{
+    size_t i;
+
+    *done = 0;
+    for (i = 0; i < ATTR_NODES; i++) {
+        amark_node_id_t id = (amark_node_id_t)(i + 2);
+        amark_node_t before = *node_at(g_doc, id);
+        size_t attrs_len = amark_array_len(&g_doc->attrs);
+        void *attrs_data = g_doc->attrs.data;
+        amark_error_t err = set_by_index(id, i % SETTER_COUNT, i);
+
+        if (err != AMARK_ERROR_NONE) {
+            NAOS_CHECK_TRUE(memcmp(node_at(g_doc, id), &before,
+                                   sizeof(before)) == 0);
+            NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), attrs_len);
+            NAOS_CHECK_PTR_EQ(g_doc->attrs.data, attrs_data);
+            return err;
+        }
+        NAOS_CHECK_UINT_EQ(node_at(g_doc, id)->attr, (uint32_t)(i + 1));
+        (*done)++;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+NAOS_TEST(setter_failure_injection_loop)
+{
+    size_t fail_at;
+    size_t set_failures = 0;
+    bool completed = false;
+
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_error_t err;
+        size_t done = 0;
+        size_t target;
+        size_t i;
+
+        amark_test_alloc_init(&g_state);
+        NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+        add_attr_nodes();
+        target = g_state.malloc_calls + fail_at;
+        g_state.fail_at = target;
+
+        err = set_attr_nodes(&done);
+        g_state.fail_at = 0;
+        if (err == AMARK_ERROR_NONE) {
+            NAOS_CHECK_UINT_EQ(done, ATTR_NODES);
+            completed = true;
+        } else {
+            NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+            /* The failed call made the injected allocation the last one. */
+            NAOS_CHECK_UINT_EQ(g_state.malloc_calls, target);
+            set_failures++;
+        }
+        /* The nodes set keep their elements; the others have none. */
+        NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), done + 1);
+        for (i = 0; i < ATTR_NODES; i++) {
+            NAOS_CHECK_UINT_EQ(node_at(g_doc, (amark_node_id_t)(i + 2))->attr,
+                               i < done ? (uint32_t)(i + 1) : 0u);
+        }
+        /* A failed call can be made again and succeeds. */
+        if (err != AMARK_ERROR_NONE) {
+            NAOS_CHECK_INT_EQ(set_by_index((amark_node_id_t)(done + 2),
+                                           done % SETTER_COUNT, done),
+                              AMARK_ERROR_NONE);
+            NAOS_CHECK_UINT_EQ(
+                node_at(g_doc, (amark_node_id_t)(done + 2))->attr,
+                (uint32_t)(done + 1));
+        }
+
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+        NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+        if (completed) {
+            break;
+        }
+    }
+    NAOS_CHECK_TRUE(completed);
+    /* 300 attribute elements and the dialect copies outgrow the arena. */
+    NAOS_CHECK_UINT_GE(set_failures, 1);
+}
+
+NAOS_TEST(attribute_limit_leaves_the_node_unchanged)
+{
+    amark_node_id_t h;
+    amark_node_id_t d;
+    amark_node_t before;
+    size_t saved;
+    size_t mallocs;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    h = add(1, AMARK_KIND_HEADING, 0, 3);
+    d = add_class(1, AMARK_KIND_DIALECT_MIN, AMARK_NODE_CLASS_BLOCK, 3, 7);
+
+    /* Pretend that the attribute array has UINT32_MAX + 1 elements. */
+    saved = g_doc->attrs.len;
+    g_saved_attrs_len = saved;
+    g_doc->attrs.len = (size_t)UINT32_MAX + 1;
+    mallocs = g_state.malloc_calls;
+
+    before = *node_at(g_doc, h);
+    NAOS_CHECK_INT_EQ(amark_tree_set_heading(g_doc, h, 1, AMARK_HEADING_ATX),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(memcmp(node_at(g_doc, h), &before, sizeof(before)) == 0);
+    before = *node_at(g_doc, d);
+    NAOS_CHECK_INT_EQ(amark_tree_set_dialect_data(g_doc, d, k_dialect_bytes,
+                                                  4),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(memcmp(node_at(g_doc, d), &before, sizeof(before)) == 0);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+    NAOS_CHECK_UINT_EQ(g_doc->attrs.len, (size_t)UINT32_MAX + 1);
+
+    /* With the real length, the element is added at the next index. */
+    g_doc->attrs.len = saved;
+    g_saved_attrs_len = 0;
+    NAOS_CHECK_INT_EQ(amark_tree_set_heading(g_doc, h, 2, AMARK_HEADING_ATX),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->attr, (uint32_t)saved);
+}
+
 NAOS_SUITE(tree,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -1250,7 +1937,17 @@ NAOS_SUITE(tree,
     NAOS_ADD_TEST(wrap_one_several_and_all_children),
     NAOS_ADD_TEST(changes_after_removing_and_wrapping),
     NAOS_ADD_TEST(wrap_limit_leaves_the_tree_unchanged),
-    NAOS_ADD_TEST(wrap_failure_injection_loop)
+    NAOS_ADD_TEST(wrap_failure_injection_loop),
+    NAOS_ADD_TEST(heading_attributes_and_overwrite),
+    NAOS_ADD_TEST(list_attributes_and_start_numbers),
+    NAOS_ADD_TEST(code_block_attributes_and_info),
+    NAOS_ADD_TEST(link_and_image_attributes),
+    NAOS_ADD_TEST(definition_attributes),
+    NAOS_ADD_TEST(autolink_attributes),
+    NAOS_ADD_TEST(dialect_data_is_copied_and_aligned),
+    NAOS_ADD_TEST(elements_only_for_nodes_with_attributes),
+    NAOS_ADD_TEST(setter_failure_injection_loop),
+    NAOS_ADD_TEST(attribute_limit_leaves_the_node_unchanged)
 )
 
 NAOS_MAIN(
