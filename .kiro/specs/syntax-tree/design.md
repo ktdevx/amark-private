@@ -195,14 +195,14 @@ sequenceDiagram
     alt 成功
         P-->>U: 文書
         U->>D: 読み出しの関数
-        U->>D: amark_document_free
+        U->>D: amark_document_destroy
     else 失敗
-        P->>D: amark_document_free
+        P->>D: amark_document_destroy
         P-->>U: エラーの種類
     end
 ```
 
-- 解析が失敗したときは、解析器が作りかけの文書を `amark_document_free` で解放する。内部 API のどの失敗の後でも、文書は解放できる状態にある。
+- 解析が失敗したときは、解析器が作りかけの文書を `amark_document_destroy` で解放する。内部 API のどの失敗の後でも、文書は解放できる状態にある。
 - 図の「解析器」は block-parser 以降の spec である。この spec のテストでは、テストのコードが解析器の役をする。
 
 ### 文書の順の走査（利用者の側）
@@ -275,9 +275,9 @@ while (node != AMARK_NODE_NONE) {
 | 4.12 | 同じ文書を並行して読む | NodeReader | 読み出しは書き込みもキャッシュも持たない |
 | 4.13 | 書き換える公開 API がない | PublicTree | 公開ヘッダに宣言しない |
 | 4.14 | 解放まで有効 | Document | ID と範囲の寿命 |
-| 5.1 | すべて解放する | Document | `amark_document_free` |
+| 5.1 | すべて解放する | Document | `amark_document_destroy` |
 | 5.2 | 作ったときの確保関数で | Document | 文書が確保関数の写しを持つ |
-| 5.3 | 「文書がない」では何もしない | Document | `amark_document_free(NULL)` |
+| 5.3 | 「文書がない」では何もしない | Document | `amark_document_destroy(NULL)` |
 | 5.4 | 再帰なしの解放 | Document | アリーナの解放 |
 | 5.5 | 内容に触れない | Document | 内容は持ち主ではない |
 | 5.6 | 別々の文書は独立 | Document | 共有する状態がない |
@@ -302,7 +302,7 @@ while (node != AMARK_NODE_NONE) {
 | 7.7 | 文書の確保関数だけを使う | Document | 文書のアリーナ |
 | 7.8 | 確保の失敗 | TreeBuilder | `AMARK_ERROR_NOMEM` |
 | 7.9 | ノードの数の上限 | TreeBuilder | `AMARK_ERROR_LIMIT_EXCEEDED` |
-| 7.10 | 作りかけの文書の解放 | Document | `amark_document_free` |
+| 7.10 | 作りかけの文書の解放 | Document | `amark_document_destroy` |
 | 7.11 | 途中の木を検査に渡せる | TreeBuilder、TreeCheck | つながりを常に正しく保つ |
 | 7.12 | 公開しない | TreeBuilder | `src/tree.h`、`AMARK_API` を付けない |
 | 7.13 | 再帰を使わない | TreeBuilder | どの操作もループを持たないか、1 重のループ |
@@ -615,7 +615,7 @@ const amark_line_index_t *amark_document_line_index(const amark_document_t *doc)
 size_t amark_document_node_count(const amark_document_t *doc);
 
 /* include/amark/tree.h */
-AMARK_API void amark_document_free(amark_document_t *doc);
+AMARK_API void amark_document_destroy(amark_document_t *doc);
 AMARK_API size_t amark_document_diagnostic_count(const amark_document_t *doc);
 AMARK_API bool amark_document_diagnostic(const amark_document_t *doc, size_t index,
                                          amark_diagnostic_t *out);
@@ -629,7 +629,7 @@ AMARK_API bool amark_document_diagnostic(const amark_document_t *doc, size_t ind
   - Postconditions: メッセージを文書の中に写し、行番号を `offset` から定めて、診断の最後に足す。
   - メッセージを写してから配列に足す。どちらかが失敗したら `NOMEM` か `LIMIT_EXCEEDED` を返し、すでにある診断と木は変わらない（写したメッセージはアリーナに残るが、どこからも参照されない）。
 - `amark_document_node_count`：これまでに作ったノードの数を返す。取り除いたノードも数える。block-parser がノードの数の上限と比べるのに使う。
-- `amark_document_free`：`doc` が `NULL` なら何もしない。そうでなければ、確保関数の写しを取り、アリーナを解放し、本体を解放する。
+- `amark_document_destroy`：`doc` が `NULL` なら何もしない。そうでなければ、確保関数の写しを取り、アリーナを解放し、本体を解放する。
 - `amark_document_diagnostic`：`index` が件数以上のとき、または `doc` か `out` が `NULL` のとき、`false` を返して `*out` を変えない。`amark_document_diagnostic_count` は、`doc` が `NULL` なら 0 を返す。
 
 ##### State Management
@@ -997,7 +997,7 @@ struct amark_document {
 
 ### 単体テスト：`tests/unit/test_document.c`
 - `amark_document_create` が作った文書は、根だけを持ち、根の種類が文書で、範囲が `[start, end)` で、行番号が内容の先頭から数えた値である（2.2、2.7、7.1）。内容が空のときも作れる。
-- 文書を作って解放すると、数える確保関数の `live` が 0 に戻り、`ctx_mismatch` が 0 である（5.1、5.2）。`amark_document_free(NULL)` は確保関数を呼ばない（5.3）。
+- 文書を作って解放すると、数える確保関数の `live` が 0 に戻り、`ctx_mismatch` が 0 である（5.1、5.2）。`amark_document_destroy(NULL)` は確保関数を呼ばない（5.3）。
 - 診断を 3 件足すと、足した順に読める。行番号が `offset` に対応する。メッセージとファイル名は、渡した文字列の配列を書き換えた後も変わらない（11.3、11.4、11.6、11.7、11.9、11.10）。
 - ファイル名なしで作った文書の診断は、`filename` が `NULL` である（11.5）。
 - 件数以上の番号、`NULL` の文書、`NULL` の `out` で `amark_document_diagnostic` が `false` を返し、`*out` を変えない（11.8）。
@@ -1038,7 +1038,7 @@ struct amark_document {
 - `amark_config_init` の後の各項目が既定の値で、`amark_config_validate` が成功する（8.1、8.3、9.1、9.10）。
 - 初期化していない（0 で埋めた）設定が `INVALID_CONFIG` になる。
 - 確保関数の片方だけを指定した設定、範囲が逆の設定、`utf8_mode` が 2 の設定が `INVALID_CONFIG` になる。
-- `NULL` の文書で、`amark_document_free`、`amark_document_root`、`amark_document_diagnostic_count`、たどる関数が、決まった値を返して終わる（5.3）。
+- `NULL` の文書で、`amark_document_destroy`、`amark_document_root`、`amark_document_diagnostic_count`、たどる関数が、決まった値を返して終わる（5.3）。
 - `header_cxx.cpp`：`<amark/amark.h>` を C++ として取り込み、設定の初期化と検査を呼ぶ。種類の ID のマクロと属性の列挙の値を `switch` の `case` で使える（12.2、12.3）。
 - 木を読む関数の正常な動作は、公開 API だけでは木を作れないので、単体テスト（`test_tree.c`）で確かめる。公開 API だけを通した確認は、解析の入口ができる block-parser 以降で行う。
 
