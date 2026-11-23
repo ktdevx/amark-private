@@ -21,8 +21,9 @@
  * builds the block tree of the document with a stack of open blocks (the
  * "three phases per line" of CommonMark 0.31.2, appendix "A parsing
  * strategy"). While it parses it writes the line records and the inline
- * contents of the parse data. It recurses nowhere and keeps no state outside
- * the call.
+ * contents of the parse data, and at the end it builds the definition table
+ * from the link reference definitions taken off the starts of paragraphs.
+ * It recurses nowhere and keeps no state outside the call.
  */
 
 /*
@@ -86,13 +87,15 @@ void amark_line_pos_advance(amark_line_pos_t *pos, const unsigned char *bytes,
  * has parse data (amark_parse_data_create). config is the resolved
  * configuration doc was made with; only max_nesting_depth and max_node_count
  * are read from it (the dialect is not read). scratch is an initialized
- * arena for the working state of the parse (the stack of open blocks); the
+ * arena for the working state of the parse (the stack of open blocks, the
+ * definitions for the table and the table's working arrays); the
  * caller releases it. With AMARK_UTF8_STRICT the caller has checked that the
  * range is valid UTF-8.
  *
  * On success, returns AMARK_ERROR_NONE: the tree satisfies every invariant
  * of the tree check, the range of the root is still the parsed range, and
- * the line records and the inline contents are written.
+ * the line records, the inline contents and the definition table are
+ * written.
  *
  * On failure, returns AMARK_ERROR_NOMEM (an allocation failed) or
  * AMARK_ERROR_LIMIT_EXCEEDED (a block would be deeper than max_nesting_depth,

@@ -13,8 +13,10 @@
 #include <amark/tree.h>
 
 #include "array.h"
+#include "definition.h"
 #include "line.h"
 #include "parse_data.h"
+#include "refdef.h"
 #include "scan.h"
 #include "tree_internal.h"
 
@@ -158,11 +160,21 @@ typedef struct open_block {
 
     /* Headings and paragraphs: the level, and the inline content. */
     unsigned level;
+    amark_heading_style_t heading_style;
     size_t content_start;
     size_t content_end;
 
     /* Indented code blocks: the end of the last line that is not blank. */
     size_t last_nonblank_end;
+
+    /*
+     * Paragraphs: the link reference definitions at its start took every
+     * line (before a setext underline), so it has no line yet. It stays
+     * open as a paragraph for the rules that interrupt one; the next line
+     * added becomes its first line, and closed without one it makes no
+     * node.
+     */
+    bool emptied;
 
     /*
      * Containers: the number of blocks opened inside this one, leaves still
@@ -184,6 +196,8 @@ typedef struct block_parser {
     size_t max_depth;     /* 0: no limit */
     size_t max_nodes;     /* 0: no limit */
     amark_array_t stack;  /* open_block_t, in the scratch arena */
+    amark_array_t definitions; /* amark_definition_entry_t, in document
+                                  order, in the scratch arena */
     amark_line_pos_t pos;
     bool all_matched;     /* every open block matched on this line */
     bool line_taken;      /* a leaf opened on this line took all of it */
@@ -237,15 +251,84 @@ static bool can_contain(amark_kind_t parent, amark_kind_t child)
 /* ------------------------------------------------------------------------ */
 
 /*
- * Closes a paragraph: adds its node under the element at parent and its
- * inline content.
+ * Takes the link reference definitions off the start of the paragraph
+ * block, whose lines are all recorded: while its content starts with '[',
+ * reads a definition with amark_refdef_parse, adds its node with its label,
+ * destination and title under the element at parent, adds it to the
+ * definitions for the table, and moves the start of the paragraph (and of
+ * its inline content) to the content_start of the line after the
+ * definition. Sets *rest to whether any of the paragraph is left.
+ */
+static amark_error_t extract_definitions(block_parser_t *p, size_t parent,
+                                         open_block_t *block, bool *rest)
+{
+    size_t start = block->start;
+
+    while (p->bytes[start] == '[') {
+        amark_refdef_t def;
+        amark_definition_entry_t entry;
+        amark_line_record_t record;
+        amark_node_id_t node;
+        amark_error_t err;
+
+        if (!amark_refdef_parse(p->doc, start, block->end, &def)) {
+            break;
+        }
+        err = append_node(p, parent, AMARK_KIND_LINK_REFERENCE_DEFINITION,
+                          start, def.end, &node);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+        err = amark_tree_set_definition(p->doc, node, &def.label,
+                                        &def.destination,
+                                        def.has_title ? &def.title : NULL);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+        entry.node = node;
+        entry.label_start = def.label.start;
+        entry.label_end = def.label.end;
+        err = amark_array_push(&p->definitions, &entry);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+        /*
+         * A definition ending where the paragraph ends took its last line.
+         * Otherwise the next line belongs to the paragraph, and its record
+         * is its first non-space byte.
+         */
+        if (def.end >= block->end ||
+            !amark_line_get(p->doc, def.last_line + 1, &record)) {
+            *rest = false;
+            return AMARK_ERROR_NONE;
+        }
+        start = record.content_start;
+    }
+    block->start = start;
+    block->content_start = start;
+    *rest = true;
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Closes a paragraph: takes the link reference definitions off its start,
+ * then adds a node for what is left, if anything, under the element at
+ * parent, and its inline content.
  */
 static amark_error_t close_paragraph(block_parser_t *p, size_t parent,
-                                     const open_block_t *block)
+                                     open_block_t *block)
 {
     amark_node_id_t node;
+    bool rest;
     amark_error_t err;
 
+    if (block->emptied) {
+        return AMARK_ERROR_NONE;
+    }
+    err = extract_definitions(p, parent, block, &rest);
+    if (err != AMARK_ERROR_NONE || !rest) {
+        return err;
+    }
     err = append_node(p, parent, AMARK_KIND_PARAGRAPH, block->start,
                       block->end, &node);
     if (err != AMARK_ERROR_NONE) {
@@ -260,8 +343,7 @@ static amark_error_t close_paragraph(block_parser_t *p, size_t parent,
  * level and style, and its inline content (of length 0 when it is empty).
  */
 static amark_error_t close_heading(block_parser_t *p, size_t parent,
-                                   const open_block_t *block,
-                                   amark_heading_style_t style)
+                                   const open_block_t *block)
 {
     amark_node_id_t node;
     amark_error_t err;
@@ -271,7 +353,8 @@ static amark_error_t close_heading(block_parser_t *p, size_t parent,
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
-    err = amark_tree_set_heading(p->doc, node, block->level, style);
+    err = amark_tree_set_heading(p->doc, node, block->level,
+                                 block->heading_style);
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
@@ -331,8 +414,7 @@ static amark_error_t close_block(block_parser_t *p, size_t parent,
         amark_tree_set_range(p->doc, block->node, block->start, block->end);
         return AMARK_ERROR_NONE;
     case AMARK_KIND_HEADING:
-        /* A heading opened as an element of its own is an ATX heading. */
-        return close_heading(p, parent, block, AMARK_HEADING_ATX);
+        return close_heading(p, parent, block);
     case AMARK_KIND_THEMATIC_BREAK:
         return append_node(p, parent, AMARK_KIND_THEMATIC_BREAK, block->start,
                            block->end, &node);
@@ -600,9 +682,61 @@ static amark_error_t start_atx_heading(block_parser_t *p, size_t *container,
     }
     block = stack_at(p, *container);
     block->level = level;
+    block->heading_style = AMARK_HEADING_ATX;
     block->content_start = first + content_start;
     block->content_end = first + content_end;
     return AMARK_ERROR_NONE;
+}
+
+/*
+ * Handles a setext heading underline. The caller has checked that the
+ * indentation is at most 3 columns. Only a paragraph that is the innermost
+ * open block, with every open block matched (so not on a lazy continuation
+ * line), is underlined. The link reference definitions at the start of the
+ * paragraph are taken off first. If some of the paragraph is left, it
+ * becomes a heading over its lines and the underline, with the paragraph's
+ * inline content, and closes; the underline line is recorded at its first
+ * character. If nothing is left, the paragraph stays open with no line, and
+ * the line is tried as the start of other blocks; if none starts, it
+ * becomes the paragraph's first line.
+ */
+static amark_error_t start_setext_heading(block_parser_t *p,
+                                          size_t *container,
+                                          start_result_t *result)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    size_t first = pos->first_nonspace;
+    open_block_t *block = stack_at(p, *container);
+    unsigned level;
+    bool rest;
+    amark_error_t err;
+
+    if (block->kind != AMARK_KIND_PARAGRAPH || block->emptied ||
+        *container != stack_top(p) || !p->all_matched) {
+        return AMARK_ERROR_NONE;
+    }
+    level = amark_scan_setext_underline(p->bytes + first,
+                                        pos->content_end - first);
+    if (level == 0) {
+        return AMARK_ERROR_NONE;
+    }
+    err = extract_definitions(p, *container - 1, block, &rest);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    if (!rest) {
+        block->emptied = true;
+        return AMARK_ERROR_NONE;
+    }
+    block->kind = AMARK_KIND_HEADING;
+    block->level = level;
+    block->heading_style = AMARK_HEADING_SETEXT;
+    block->end = pos->content_end;
+    amark_line_set(p->doc, pos->line, first, 0);
+    p->line_taken = true;
+    *container -= 1;
+    *result = START_LEAF;
+    return close_above(p, *container);
 }
 
 /*
@@ -765,6 +899,10 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
             if (err != AMARK_ERROR_NONE || *result != START_NONE) {
                 return err;
             }
+            err = start_setext_heading(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
             err = start_thematic_break(p, container, result);
             if (err != AMARK_ERROR_NONE || *result != START_NONE) {
                 return err;
@@ -813,6 +951,12 @@ static void paragraph_add_line(block_parser_t *p, size_t index)
     amark_line_pos_advance(pos, p->bytes, pos->first_nonspace - pos->offset,
                            AMARK_ADVANCE_BYTES);
     amark_line_set(p->doc, pos->line, pos->offset, pos->pad);
+    if (block->emptied) {
+        /* The first line of a paragraph emptied by its definitions. */
+        block->emptied = false;
+        block->start = pos->offset;
+        block->content_start = pos->offset;
+    }
     while (end > pos->offset &&
            (p->bytes[end - 1] == ' ' || p->bytes[end - 1] == '\t')) {
         end--;
@@ -971,6 +1115,7 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     amark_line_bounds_t bounds;
     amark_range_t range;
     size_t line;
+    size_t count;
     amark_error_t err;
 
     p.doc = doc;
@@ -980,6 +1125,8 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     p.all_matched = false;
     p.line_taken = false;
     amark_array_init(&p.stack, scratch, sizeof(open_block_t));
+    amark_array_init(&p.definitions, scratch,
+                     sizeof(amark_definition_entry_t));
 
     /*
      * The root is element 0. Its range is the parsed range and is never set
@@ -1007,5 +1154,17 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     }
 
     /* Close what is still open, from the inside out. */
-    return close_above(&p, 0);
+    err = close_above(&p, 0);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+
+    /* The definition table, from the definitions in document order. */
+    count = amark_array_len(&p.definitions);
+    return amark_definitions_build(
+        doc, scratch,
+        count > 0 ? (const amark_definition_entry_t *)amark_array_at(
+                        &p.definitions, 0)
+                  : NULL,
+        count);
 }

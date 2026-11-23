@@ -7,16 +7,19 @@
  * Unit tests of the block parser (src/block.h), calling amark_block_parse
  * directly on a document made with amark_document_create and
  * amark_parse_data_create: paragraphs and blank lines, thematic breaks and
- * ATX headings, the ranges and lines of their nodes, heading attributes,
- * their inline contents, the line records, ranges that start past offset 0,
- * the line position (the cached search for the first non-space byte and the
- * two advances), the node count and nesting depth limits, and allocation
- * failures. Every parsed document goes through amark_tree_check.
+ * ATX headings, code blocks, HTML blocks, link reference definitions and
+ * setext headings, the ranges and lines of their nodes, their attributes,
+ * the definition table, their inline contents, the line records, ranges
+ * that start past offset 0, the line position (the cached search for the
+ * first non-space byte and the two advances), the node count and nesting
+ * depth limits, and allocation failures. Every parsed document goes
+ * through amark_tree_check.
  */
 
 #include "arena.h"
 #include "block.h"
 #include "config_internal.h"
+#include "definition.h"
 #include "document.h"
 #include "line.h"
 #include "parse_data.h"
@@ -1258,6 +1261,444 @@ NAOS_TEST(node_count_limit_counts_html_blocks)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Link reference definitions and setext headings                         */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Checks the label, destination and title of a definition node; has_title
+ * false means no title is set (title_start and title_end are then unused).
+ */
+static void check_definition(amark_node_id_t node, size_t label_start,
+                             size_t label_end, size_t dest_start,
+                             size_t dest_end, bool has_title,
+                             size_t title_start, size_t title_end)
+{
+    amark_range_t range;
+
+    NAOS_REQUIRE_TRUE(amark_definition_label(g_doc, node, &range));
+    NAOS_CHECK_UINT_EQ(range.start, label_start);
+    NAOS_CHECK_UINT_EQ(range.end, label_end);
+    NAOS_REQUIRE_TRUE(amark_definition_destination(g_doc, node, &range));
+    NAOS_CHECK_UINT_EQ(range.start, dest_start);
+    NAOS_CHECK_UINT_EQ(range.end, dest_end);
+    if (has_title) {
+        NAOS_REQUIRE_TRUE(amark_definition_title(g_doc, node, &range));
+        NAOS_CHECK_UINT_EQ(range.start, title_start);
+        NAOS_CHECK_UINT_EQ(range.end, title_end);
+    } else {
+        NAOS_CHECK_FALSE(amark_definition_title(g_doc, node, &range));
+    }
+}
+
+/* The number of entries in the definition table of g_doc. */
+static size_t definition_count(void)
+{
+    return amark_document_parse_data(g_doc)->definition_count;
+}
+
+NAOS_TEST(paragraph_of_definitions_only_gives_no_paragraph)
+{
+    /*
+     * "[foo]: /url \"t\"\n" 0-15, "[bar]: <b>\n" 16-26. Each definition
+     * becomes a node ending at the end of its last line's content; nothing
+     * is left for a paragraph.
+     */
+    PARSE("[foo]: /url \"t\"\n[bar]: <b>\n");
+    check_dump("(doc (def) (def))");
+    check_root(0, 27, 1, 2);
+    check_node(root_child(0), AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 15, 1,
+               1);
+    check_definition(root_child(0), 1, 4, 7, 11, true, 13, 14);
+    check_node(root_child(1), AMARK_KIND_LINK_REFERENCE_DEFINITION, 16, 26, 2,
+               2);
+    check_definition(root_child(1), 17, 20, 24, 25, false, 0, 0);
+    /* Definitions are not inline content. */
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    check_record(1, 0, 0);
+    check_record(2, 16, 0);
+
+    NAOS_CHECK_UINT_EQ(definition_count(), 2);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 4), root_child(0));
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 17, 20), root_child(1));
+    /* "url" is no label of the document. */
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 8, 11), AMARK_NODE_NONE);
+}
+
+NAOS_TEST(definition_followed_by_paragraph_content)
+{
+    /* "[a]: /u\n" 0-7, "bar\n" 8-11, "baz" 12-14. */
+    PARSE("[a]: /u\nbar\nbaz");
+    check_dump("(doc (def) (p))");
+    check_node(root_child(0), AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 7, 1,
+               1);
+    check_definition(root_child(0), 1, 2, 5, 7, false, 0, 0);
+    /* The paragraph starts at what is left. */
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 8, 15, 2, 3);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 1);
+    check_content(0, root_child(1), 8, 15);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    check_record(1, 0, 0);
+    check_record(2, 8, 0);
+    check_record(3, 12, 0);
+}
+
+NAOS_TEST(definition_spanning_lines_with_title_on_the_next_line)
+{
+    /*
+     * "[foo]:\n" 0-6, "  /url\n" 7-13, "  'the title'\n" 14-27, "ok" 28-29.
+     * The lines of the definition are recorded at their first non-space
+     * byte, as paragraph lines are.
+     */
+    PARSE("[foo]:\n  /url\n  'the title'\nok");
+    check_dump("(doc (def) (p))");
+    check_node(root_child(0), AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 27, 1,
+               3);
+    check_definition(root_child(0), 1, 4, 9, 13, true, 17, 26);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 28, 30, 4, 4);
+    check_content(0, root_child(1), 28, 30);
+    check_record(1, 0, 0);
+    check_record(2, 9, 0);
+    check_record(3, 16, 0);
+    check_record(4, 28, 0);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 4), root_child(0));
+}
+
+NAOS_TEST(invalid_titles)
+{
+    /* A title followed by more on its line, on the destination's line: no
+     * definition at all. */
+    PARSE("[foo]: /url \"title\" ok");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 22, 1, 1);
+    NAOS_CHECK_UINT_EQ(definition_count(), 0);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 4), AMARK_NODE_NONE);
+    reset_doc();
+
+    /*
+     * On the next line: a definition without a title, and the title's line
+     * stays in the paragraph. "[foo]: /url\n" 0-11, "\"title\" ok" 12-21.
+     */
+    PARSE("[foo]: /url\n\"title\" ok");
+    check_dump("(doc (def) (p))");
+    check_node(root_child(0), AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 11, 1,
+               1);
+    check_definition(root_child(0), 1, 4, 7, 11, false, 0, 0);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 12, 22, 2, 2);
+    check_content(0, root_child(1), 12, 22);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 4), root_child(0));
+}
+
+NAOS_TEST(definitions_do_not_interrupt_a_paragraph)
+{
+    /* "foo\n" 0-3, "[a]: /u" 4-10: the second line is paragraph text. */
+    PARSE("foo\n[a]: /u");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 11, 1, 2);
+    NAOS_CHECK_UINT_EQ(definition_count(), 0);
+}
+
+NAOS_TEST(duplicate_labels_find_the_first_definition)
+{
+    /* "[Foo]: /a\n" 0-9, "[foo]: /b\n" 10-19, "[BAR]: /c" 20-28. */
+    PARSE("[Foo]: /a\n[foo]: /b\n[BAR]: /c");
+    check_dump("(doc (def) (def) (def))");
+    /* The later definition stays in the tree but not in the table. */
+    NAOS_CHECK_UINT_EQ(definition_count(), 2);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 4), root_child(0));
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 11, 14), root_child(0));
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 21, 24), root_child(2));
+    check_definition(root_child(1), 11, 14, 17, 19, false, 0, 0);
+}
+
+NAOS_TEST(definitions_in_separate_paragraphs_share_one_table)
+{
+    /* "[a]: /u\n" 0-7, "x\n" 8-9, "\n" 10, "[b]: /v\n" 11-18, "y" 19. */
+    PARSE("[a]: /u\nx\n\n[b]: /v\ny");
+    check_dump("(doc (def) (p) (def) (p))");
+    NAOS_CHECK_UINT_EQ(definition_count(), 2);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 2), root_child(0));
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 12, 13), root_child(2));
+    check_node(root_child(3), AMARK_KIND_PARAGRAPH, 19, 20, 5, 5);
+}
+
+NAOS_TEST(setext_headings_of_both_levels)
+{
+    /*
+     * "Foo\n" 0-3, "===\n" 4-7, "\n" 8, "Bar  \n" 9-14, "---" 15-17. The
+     * heading includes the underline; its content leaves it out and ends
+     * after the last non-space byte of the paragraph.
+     */
+    PARSE("Foo\n===\n\nBar  \n---");
+    check_dump("(doc (h 1 setext) (h 2 setext))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 7, 1, 2);
+    check_heading(root_child(0), 1, AMARK_HEADING_SETEXT);
+    check_node(root_child(1), AMARK_KIND_HEADING, 9, 18, 4, 5);
+    check_heading(root_child(1), 2, AMARK_HEADING_SETEXT);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 2);
+    check_content(0, root_child(0), 0, 3);
+    check_content(1, root_child(1), 9, 12);
+    /* The underline line is recorded at its first character. */
+    check_record(1, 0, 0);
+    check_record(2, 4, 0);
+    check_record(3, 8, 0);
+    check_record(4, 9, 0);
+    check_record(5, 15, 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+}
+
+NAOS_TEST(setext_heading_of_several_lines)
+{
+    /* "a\n" 0-1, "  b \n" 2-6, "  ==  " 7-12. */
+    PARSE("a\n  b \n  ==  ");
+    check_dump("(doc (h 1 setext))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 13, 1, 3);
+    check_content(0, root_child(0), 0, 5);
+    check_record(1, 0, 0);
+    check_record(2, 4, 0);
+    check_record(3, 9, 0);
+}
+
+NAOS_TEST(setext_underline_with_each_line_ending)
+{
+    static const char *const k_inputs[] = {"x\n-\n", "x\r-\r", "x\r\n-\r\n"};
+    static const size_t k_underline[] = {2, 2, 3};
+    static const size_t k_end[] = {3, 3, 4};
+    size_t i;
+
+    for (i = 0; i < 3; i++) {
+        size_t length = strlen(k_inputs[i]);
+
+        parse_range_ok(k_inputs[i], length, 0, length);
+        check_dump("(doc (h 2 setext))");
+        check_node(root_child(0), AMARK_KIND_HEADING, 0, k_end[i], 1, 2);
+        check_content(0, root_child(0), 0, 1);
+        check_record(2, k_underline[i], 0);
+        reset_doc();
+    }
+}
+
+NAOS_TEST(lines_that_are_not_setext_underlines)
+{
+    /* Indented 4 columns: a continuation line. */
+    PARSE("Foo\n    ===");
+    check_dump("(doc (p))");
+    reset_doc();
+
+    /* Spaces inside: "- - -" is a thematic break, "= =" text. */
+    PARSE("Foo\n- - -");
+    check_dump("(doc (p) (hr))");
+    reset_doc();
+    PARSE("Foo\n= =");
+    check_dump("(doc (p))");
+    reset_doc();
+
+    /* No paragraph before it. */
+    PARSE("===");
+    check_dump("(doc (p))");
+    reset_doc();
+    PARSE("# h\n===");
+    check_dump("(doc (h 1 atx) (p))");
+    reset_doc();
+    PARSE("Foo\n\n---");
+    check_dump("(doc (p) (hr))");
+}
+
+NAOS_TEST(setext_underline_takes_precedence_over_a_thematic_break)
+{
+    /* "Foo\n" 0-3, "---\n" 4-7, "---" 8-10. */
+    PARSE("Foo\n---\n---");
+    check_dump("(doc (h 2 setext) (hr))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 7, 1, 2);
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 8, 11, 3, 3);
+}
+
+NAOS_TEST(underline_after_definitions_only)
+{
+    /*
+     * "[foo]: /url\n" 0-11, "===" 12-14: no heading; the underline line
+     * becomes the first line of a paragraph.
+     */
+    PARSE("[foo]: /url\n===");
+    check_dump("(doc (def) (p))");
+    check_node(root_child(0), AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 11, 1,
+               1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 12, 15, 2, 2);
+    check_content(0, root_child(1), 12, 15);
+    check_record(2, 12, 0);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 4), root_child(0));
+    reset_doc();
+
+    /* The spec's example: the paragraph goes on. "[foo]" is 16-20. */
+    PARSE("[foo]: /url\n===\n[foo]");
+    check_dump("(doc (def) (p))");
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 12, 21, 2, 3);
+    check_content(0, root_child(1), 12, 21);
+    reset_doc();
+
+    /* "---" is then a thematic break. */
+    PARSE("[foo]: /url\n---");
+    check_dump("(doc (def) (hr))");
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 12, 15, 2, 2);
+    check_record(2, 12, 0);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    reset_doc();
+
+    /*
+     * The paragraph that the underline started can be underlined itself:
+     * "[a]: /u\n" 0-7, "===\n" 8-11, "===" 12-14.
+     */
+    PARSE("[a]: /u\n===\n===");
+    check_dump("(doc (def) (h 1 setext))");
+    check_node(root_child(1), AMARK_KIND_HEADING, 8, 15, 2, 3);
+    check_content(0, root_child(1), 8, 11);
+    reset_doc();
+
+    /* A blank line after it closes the empty paragraph: no node. */
+    PARSE("[a]: /u\n\n");
+    check_dump("(doc (def))");
+}
+
+NAOS_TEST(setext_heading_after_definitions)
+{
+    /* "[a]: /u\n" 0-7, "Foo\n" 8-11, "===" 12-14. */
+    PARSE("[a]: /u\nFoo\n===");
+    check_dump("(doc (def) (h 1 setext))");
+    check_node(root_child(0), AMARK_KIND_LINK_REFERENCE_DEFINITION, 0, 7, 1,
+               1);
+    check_node(root_child(1), AMARK_KIND_HEADING, 8, 15, 2, 3);
+    check_heading(root_child(1), 1, AMARK_HEADING_SETEXT);
+    check_content(0, root_child(1), 8, 11);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 1);
+    NAOS_CHECK_UINT_EQ(definition_count(), 1);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 1, 2), root_child(0));
+}
+
+NAOS_TEST(inline_contents_in_document_order)
+{
+    /*
+     * "[a]: /u\n" 0-7, "A\n" 8-9, "===\n" 10-13, "\n" 14, "B\n" 15-16,
+     * "# C\n" 17-20, "D\n" 21-22, "-" 23.
+     */
+    PARSE("[a]: /u\nA\n===\n\nB\n# C\nD\n-");
+    check_dump("(doc (def) (h 1 setext) (p) (h 1 atx) (h 2 setext))");
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 4);
+    check_content(0, root_child(1), 8, 9);
+    check_content(1, root_child(2), 15, 16);
+    check_content(2, root_child(3), 19, 20);
+    check_content(3, root_child(4), 21, 22);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 6);
+}
+
+NAOS_TEST(definitions_and_setext_in_a_range_starting_inside_a_line)
+{
+    /* "zz[a]: /u\n" 0-9 with the range from 2, "x\n" 10-11, "-" 12. */
+    PARSE_RANGE("zz[a]: /u\nx\n-", 2, 13);
+    check_dump("(doc (def) (h 2 setext))");
+    check_node(root_child(0), AMARK_KIND_LINK_REFERENCE_DEFINITION, 2, 9, 1,
+               1);
+    check_definition(root_child(0), 3, 4, 7, 9, false, 0, 0);
+    check_node(root_child(1), AMARK_KIND_HEADING, 10, 13, 2, 3);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 3, 4), root_child(0));
+}
+
+NAOS_TEST(node_count_limit_counts_definitions)
+{
+    set_content("[a]: /u\n[b]: /v", 15);
+    NAOS_CHECK_INT_EQ(parse_buffer(0, 15, 0, 2), AMARK_ERROR_LIMIT_EXCEEDED);
+    reset_doc();
+
+    set_content("[a]: /u\n[b]: /v", 15);
+    NAOS_REQUIRE_INT_EQ(parse_buffer(0, 15, 0, 3), AMARK_ERROR_NONE);
+    check_dump("(doc (def) (def))");
+}
+
+NAOS_TEST(many_definitions)
+{
+    /* 200 definitions "[dNNN]: /u\n" of 11 bytes, every 4th a duplicate. */
+    static char k_input[200 * 11 + 1];
+    size_t i;
+
+    for (i = 0; i < 200; i++) {
+        size_t n = i % 4 == 3 ? i - 1 : i;
+        char *line = k_input + i * 11;
+
+        line[0] = '[';
+        line[1] = 'd';
+        line[2] = (char)('0' + n / 100);
+        line[3] = (char)('0' + n / 10 % 10);
+        line[4] = (char)('0' + n % 10);
+        memcpy(line + 5, "]: /u\n", 6);
+    }
+    parse_range_ok(k_input, 200 * 11, 0, 200 * 11);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 201);
+    NAOS_CHECK_UINT_EQ(definition_count(), 150);
+    for (i = 0; i < 200; i++) {
+        size_t first = i % 4 == 3 ? i - 1 : i;
+
+        NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, i * 11 + 1,
+                                                  i * 11 + 5),
+                           root_child(first));
+    }
+}
+
+NAOS_TEST(definitions_and_setext_through_amark_parse)
+{
+    /*
+     * Through the public entry, which releases its scratch arena before it
+     * returns: the table lives in the document. "[Foo]: /u\n" 0-9,
+     * "Bar\n" 10-13, "---\n" 14-17, "[foo]: /v" 18-26.
+     */
+    static const char k_input[] = "[Foo]: /u\nBar\n---\n[foo]: /v";
+    amark_config_t config;
+
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    NAOS_REQUIRE_INT_EQ(amark_parse(k_input,
+                                    sizeof(k_input) - 1, &config, &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    check_dump("(doc (def) (h 2 setext) (def))");
+    check_node(root_child(1), AMARK_KIND_HEADING, 10, 17, 2, 3);
+    check_content(0, root_child(1), 10, 13);
+    NAOS_CHECK_UINT_EQ(definition_count(), 1);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 19, 22), root_child(0));
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
+}
+
+NAOS_TEST(allocation_failure_with_definitions_and_setext)
+{
+    static const char k_input[] =
+        "[a]: /u\n[b]: /v 't'\nFoo\n===\n\n[c]: /w\n---\nx\n[a]: /z\n";
+    size_t fail_at;
+    amark_error_t err = AMARK_ERROR_NOMEM;
+
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        set_content(k_input, sizeof(k_input) - 1);
+        err = parse_buffer(0, g_length, 0, 0);
+        g_state.fail_at = 0;
+        amark_arena_deinit(&g_scratch);
+        if (err == AMARK_ERROR_NONE) {
+            break;
+        }
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_REQUIRE_UINT_EQ(g_state.live, 0);
+    }
+    NAOS_REQUIRE_INT_EQ(err, AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_GT(fail_at, 1);
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    check_dump("(doc (def) (def) (h 1 setext) (def) (hr) (p))");
+    NAOS_CHECK_UINT_EQ(definition_count(), 3);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Parsed ranges that do not start at offset 0                           */
 /* ---------------------------------------------------------------------- */
 
@@ -1691,6 +2132,31 @@ NAOS_SUITE(block_leaves,
     NAOS_ADD_TEST(node_count_limit_counts_html_blocks)
 )
 
+NAOS_SUITE(block_definitions,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(paragraph_of_definitions_only_gives_no_paragraph),
+    NAOS_ADD_TEST(definition_followed_by_paragraph_content),
+    NAOS_ADD_TEST(definition_spanning_lines_with_title_on_the_next_line),
+    NAOS_ADD_TEST(invalid_titles),
+    NAOS_ADD_TEST(definitions_do_not_interrupt_a_paragraph),
+    NAOS_ADD_TEST(duplicate_labels_find_the_first_definition),
+    NAOS_ADD_TEST(definitions_in_separate_paragraphs_share_one_table),
+    NAOS_ADD_TEST(setext_headings_of_both_levels),
+    NAOS_ADD_TEST(setext_heading_of_several_lines),
+    NAOS_ADD_TEST(setext_underline_with_each_line_ending),
+    NAOS_ADD_TEST(lines_that_are_not_setext_underlines),
+    NAOS_ADD_TEST(setext_underline_takes_precedence_over_a_thematic_break),
+    NAOS_ADD_TEST(underline_after_definitions_only),
+    NAOS_ADD_TEST(setext_heading_after_definitions),
+    NAOS_ADD_TEST(inline_contents_in_document_order),
+    NAOS_ADD_TEST(definitions_and_setext_in_a_range_starting_inside_a_line),
+    NAOS_ADD_TEST(node_count_limit_counts_definitions),
+    NAOS_ADD_TEST(many_definitions),
+    NAOS_ADD_TEST(definitions_and_setext_through_amark_parse),
+    NAOS_ADD_TEST(allocation_failure_with_definitions_and_setext)
+)
+
 NAOS_SUITE(block_ranges,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -1727,6 +2193,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(block_line_position),
     NAOS_ADD_SUITE(block_paragraphs),
     NAOS_ADD_SUITE(block_leaves),
+    NAOS_ADD_SUITE(block_definitions),
     NAOS_ADD_SUITE(block_ranges),
     NAOS_ADD_SUITE(block_limits)
 )
