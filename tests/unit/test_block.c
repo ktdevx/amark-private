@@ -34,6 +34,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 /*
@@ -2252,8 +2253,8 @@ NAOS_TEST(allocation_failure_with_block_quotes)
 
 /*
  * Checks the attributes of the list node: a bullet list with its bullet
- * character, or an ordered list with its delimiter and start number. Until
- * the spacing is decided, a list is tight.
+ * character, or an ordered list with its delimiter and start number. The
+ * lists checked here are tight (the spacing has its own tests below).
  */
 static void check_list(amark_node_id_t node, amark_list_type_t type,
                        char marker, uint32_t start_number)
@@ -2432,6 +2433,7 @@ NAOS_TEST(content_indent_of_list_items)
      * the spaces. "-   a\n" 0-5, "\n" 6, "    b" 7-11: b is the item's.
      */
     PARSE_PUBLIC("-   a\n\n    b");
+    check_dump("(doc (ul - loose (li (p) (p))))");
     NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
     item = nth_child(root_child(0), 0);
     NAOS_CHECK_UINT_EQ(child_count(item), 2);
@@ -2538,6 +2540,7 @@ NAOS_TEST(blank_lines_inside_list_items)
 
     /* "- a\n" 0-3, "\n" 4, "  b" 5-7: the item goes on after the blank. */
     PARSE_PUBLIC("- a\n\n  b");
+    check_dump("(doc (ul - loose (li (p) (p))))");
     NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
     NAOS_CHECK_UINT_EQ(child_count(root_child(0)), 1);
     item = nth_child(root_child(0), 0);
@@ -2552,6 +2555,7 @@ NAOS_TEST(blank_lines_inside_list_items)
 
     /* Two blank lines: "- a\n" 0-3, "\n" 4, "\n" 5, "  b" 6-8. */
     PARSE_PUBLIC("- a\n\n\n  b");
+    check_dump("(doc (ul - loose (li (p) (p))))");
     NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
     item = nth_child(root_child(0), 0);
     NAOS_CHECK_UINT_EQ(child_count(item), 2);
@@ -2569,6 +2573,7 @@ NAOS_TEST(blank_lines_inside_list_items)
      * after the blank. "- [a]: /u\n" 0-9, "\n" 10, "  b" 11-13.
      */
     PARSE_PUBLIC("- [a]: /u\n\n  b");
+    check_dump("(doc (ul - loose (li (def) (p))))");
     NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
     item = nth_child(root_child(0), 0);
     NAOS_CHECK_UINT_EQ(child_count(item), 2);
@@ -2587,6 +2592,7 @@ NAOS_TEST(blank_lines_inside_list_items)
      * "- foo\n" 0-5, "\n" 6, "\t\tbar" 7-11.
      */
     PARSE_PUBLIC("- foo\n\n\t\tbar");
+    check_dump("(doc (ul - loose (li (p) (code indented))))");
     item = nth_child(root_child(0), 0);
     NAOS_CHECK_UINT_EQ(child_count(item), 2);
     check_node(item, AMARK_KIND_LIST_ITEM, 0, 12, 1, 3);
@@ -2600,6 +2606,7 @@ NAOS_TEST(blank_lines_inside_list_items)
      * on the tab with 2 columns left.
      */
     PARSE_PUBLIC("- a\n\n\t <div>");
+    check_dump("(doc (ul - loose (li (p) (html))))");
     item = nth_child(root_child(0), 0);
     NAOS_CHECK_UINT_EQ(child_count(item), 2);
     check_node(nth_child(item, 1), AMARK_KIND_HTML_BLOCK, 5, 12, 3, 3);
@@ -2922,6 +2929,526 @@ NAOS_TEST(allocation_failure_with_lists)
     check_dump("(doc (ul - tight (li (p) (ul - tight (li (p))))) "
                "(ol 1 . tight (li (p))) (bq (ul - tight (li (def)))))");
     NAOS_CHECK_UINT_EQ(definition_count(), 1);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Tight and loose lists                                                  */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Parses s and checks its dump, with the example number put before both so
+ * that a failure names the example.
+ */
+static void check_example_dump(int example, const char *s, const char *want)
+{
+    char got[DUMP_SIZE + 32];
+    char expected[DUMP_SIZE + 32];
+
+    parse_public_ok(s, strlen(s));
+    (void)amark_test_dump_blocks(g_doc, g_dump, DUMP_SIZE);
+    (void)snprintf(got, sizeof(got), "%d: %s", example, g_dump);
+    (void)snprintf(expected, sizeof(expected), "%d: %s", example, want);
+    NAOS_CHECK_STR_EQ(got, expected);
+    reset_doc();
+}
+
+/*
+ * Every example of the sections "List items" and "Lists" of spec.txt that
+ * has a list. The spacing of each list is the one the HTML of the example
+ * shows (a loose list wraps the paragraphs of its items in <p>); where no
+ * item has a paragraph, it follows the rules of section 5.3.
+ */
+NAOS_TEST(spec_list_examples_are_tight_or_loose)
+{
+    static const struct {
+        int example;
+        const char *input;
+        const char *dump;
+    } examples[] = {
+        {254,
+         "1.  A paragraph\n    with two lines.\n\n        indented code\n\n"
+         "    > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {255,
+         "- one\n\n two\n",
+         "(doc (ul - tight (li (p))) (p))"},
+        {256,
+         "- one\n\n  two\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {257,
+         " -    one\n\n     two\n",
+         "(doc (ul - tight (li (p))) (code indented))"},
+        {258,
+         " -    one\n\n      two\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {259,
+         "   > > 1.  one\n>>\n>>     two\n",
+         "(doc (bq (bq (ol 1 . loose (li (p) (p))))))"},
+        {260,
+         ">>- one\n>>\n  >  > two\n",
+         "(doc (bq (bq (ul - tight (li (p))) (p))))"},
+        {262,
+         "- foo\n\n\n  bar\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {263,
+         "1.  foo\n\n    ```\n    bar\n    ```\n\n    baz\n\n    > bam\n",
+         "(doc (ol 1 . loose (li (p) (code fenced ` 3) (p) (bq (p)))))"},
+        {264,
+         "- Foo\n\n      bar\n\n\n      baz\n",
+         "(doc (ul - loose (li (p) (code indented))))"},
+        {265,
+         "123456789. ok\n",
+         "(doc (ol 123456789 . tight (li (p))))"},
+        {267,
+         "0. ok\n",
+         "(doc (ol 0 . tight (li (p))))"},
+        {268,
+         "003. ok\n",
+         "(doc (ol 3 . tight (li (p))))"},
+        {270,
+         "- foo\n\n      bar\n",
+         "(doc (ul - loose (li (p) (code indented))))"},
+        {271,
+         "  10.  foo\n\n           bar\n",
+         "(doc (ol 10 . loose (li (p) (code indented))))"},
+        {273,
+         "1.     indented code\n\n   paragraph\n\n       more code\n",
+         "(doc (ol 1 . loose (li (code indented) (p) (code indented))))"},
+        {274,
+         "1.      indented code\n\n   paragraph\n\n       more code\n",
+         "(doc (ol 1 . loose (li (code indented) (p) (code indented))))"},
+        {276,
+         "-    foo\n\n  bar\n",
+         "(doc (ul - tight (li (p))) (p))"},
+        {277,
+         "-  foo\n\n   bar\n",
+         "(doc (ul - loose (li (p) (p))))"},
+        {278,
+         "-\n  foo\n-\n  ```\n  bar\n  ```\n-\n      baz\n",
+         "(doc (ul - tight (li (p)) (li (code fenced ` 3)) (li (code "
+         "indented))))"},
+        {279,
+         "-   \n  foo\n",
+         "(doc (ul - tight (li (p))))"},
+        {280,
+         "-\n\n  foo\n",
+         "(doc (ul - tight (li)) (p))"},
+        {281,
+         "- foo\n-\n- bar\n",
+         "(doc (ul - tight (li (p)) (li) (li (p))))"},
+        {282,
+         "- foo\n-   \n- bar\n",
+         "(doc (ul - tight (li (p)) (li) (li (p))))"},
+        {283,
+         "1. foo\n2.\n3. bar\n",
+         "(doc (ol 1 . tight (li (p)) (li) (li (p))))"},
+        {284,
+         "*\n",
+         "(doc (ul * tight (li)))"},
+        {286,
+         " 1.  A paragraph\n     with two lines.\n\n"
+         "         indented code\n\n     > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {287,
+         "  1.  A paragraph\n      with two lines.\n\n"
+         "          indented code\n\n      > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {288,
+         "   1.  A paragraph\n       with two lines.\n\n"
+         "           indented code\n\n       > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {290,
+         "  1.  A paragraph\nwith two lines.\n\n          indented code\n\n"
+         "      > A block quote.\n",
+         "(doc (ol 1 . loose (li (p) (code indented) (bq (p)))))"},
+        {291,
+         "  1.  A paragraph\n    with two lines.\n",
+         "(doc (ol 1 . tight (li (p))))"},
+        {292,
+         "> 1. > Blockquote\ncontinued here.\n",
+         "(doc (bq (ol 1 . tight (li (bq (p))))))"},
+        {293,
+         "> 1. > Blockquote\n> continued here.\n",
+         "(doc (bq (ol 1 . tight (li (bq (p))))))"},
+        {294,
+         "- foo\n  - bar\n    - baz\n      - boo\n",
+         "(doc (ul - tight (li (p) (ul - tight (li (p) (ul - tight (li (p) "
+         "(ul - tight (li (p))))))))))"},
+        {295,
+         "- foo\n - bar\n  - baz\n   - boo\n",
+         "(doc (ul - tight (li (p)) (li (p)) (li (p)) (li (p))))"},
+        {296,
+         "10) foo\n    - bar\n",
+         "(doc (ol 10 ) tight (li (p) (ul - tight (li (p))))))"},
+        {297,
+         "10) foo\n   - bar\n",
+         "(doc (ol 10 ) tight (li (p))) (ul - tight (li (p))))"},
+        {298,
+         "- - foo\n",
+         "(doc (ul - tight (li (ul - tight (li (p))))))"},
+        {299,
+         "1. - 2. foo\n",
+         "(doc (ol 1 . tight (li (ul - tight (li (ol 2 . tight (li "
+         "(p))))))))"},
+        {300,
+         "- # Foo\n- Bar\n  ---\n  baz\n",
+         "(doc (ul - tight (li (h 1 atx)) (li (h 2 setext) (p))))"},
+        {301,
+         "- foo\n- bar\n+ baz\n",
+         "(doc (ul - tight (li (p)) (li (p))) (ul + tight (li (p))))"},
+        {302,
+         "1. foo\n2. bar\n3) baz\n",
+         "(doc (ol 1 . tight (li (p)) (li (p))) (ol 3 ) tight (li (p))))"},
+        {303,
+         "Foo\n- bar\n- baz\n",
+         "(doc (p) (ul - tight (li (p)) (li (p))))"},
+        {305,
+         "The number of windows in my house is\n"
+         "1.  The number of doors is 6.\n",
+         "(doc (p) (ol 1 . tight (li (p))))"},
+        {306,
+         "- foo\n\n- bar\n\n\n- baz\n",
+         "(doc (ul - loose (li (p)) (li (p)) (li (p))))"},
+        {307,
+         "- foo\n  - bar\n    - baz\n\n\n      bim\n",
+         "(doc (ul - tight (li (p) (ul - tight (li (p) (ul - loose (li (p) "
+         "(p))))))))"},
+        {308,
+         "- foo\n- bar\n\n<!-- -->\n\n- baz\n- bim\n",
+         "(doc (ul - tight (li (p)) (li (p))) (html) (ul - tight (li (p)) "
+         "(li (p))))"},
+        {309,
+         "-   foo\n\n    notcode\n\n-   foo\n\n<!-- -->\n\n    code\n",
+         "(doc (ul - loose (li (p) (p)) (li (p))) (html) (code indented))"},
+        {310,
+         "- a\n - b\n  - c\n   - d\n  - e\n - f\n- g\n",
+         "(doc (ul - tight (li (p)) (li (p)) (li (p)) (li (p)) (li (p)) "
+         "(li (p)) (li (p))))"},
+        {311,
+         "1. a\n\n  2. b\n\n   3. c\n",
+         "(doc (ol 1 . loose (li (p)) (li (p)) (li (p))))"},
+        {312,
+         "- a\n - b\n  - c\n   - d\n    - e\n",
+         "(doc (ul - tight (li (p)) (li (p)) (li (p)) (li (p))))"},
+        {313,
+         "1. a\n\n  2. b\n\n    3. c\n",
+         "(doc (ol 1 . loose (li (p)) (li (p))) (code indented))"},
+        {314,
+         "- a\n- b\n\n- c\n",
+         "(doc (ul - loose (li (p)) (li (p)) (li (p))))"},
+        {315,
+         "* a\n*\n\n* c\n",
+         "(doc (ul * loose (li (p)) (li) (li (p))))"},
+        {316,
+         "- a\n- b\n\n  c\n- d\n",
+         "(doc (ul - loose (li (p)) (li (p) (p)) (li (p))))"},
+        {317,
+         "- a\n- b\n\n  [ref]: /url\n- d\n",
+         "(doc (ul - loose (li (p)) (li (p) (def)) (li (p))))"},
+        {318,
+         "- a\n- ```\n  b\n\n\n  ```\n- c\n",
+         "(doc (ul - tight (li (p)) (li (code fenced ` 3)) (li (p))))"},
+        {319,
+         "- a\n  - b\n\n    c\n- d\n",
+         "(doc (ul - tight (li (p) (ul - loose (li (p) (p)))) (li (p))))"},
+        {320,
+         "* a\n  > b\n  >\n* c\n",
+         "(doc (ul * tight (li (p) (bq (p))) (li (p))))"},
+        {321,
+         "- a\n  > b\n  ```\n  c\n  ```\n- d\n",
+         "(doc (ul - tight (li (p) (bq (p)) (code fenced ` 3)) (li (p))))"},
+        {322,
+         "- a\n",
+         "(doc (ul - tight (li (p))))"},
+        {323,
+         "- a\n  - b\n",
+         "(doc (ul - tight (li (p) (ul - tight (li (p))))))"},
+        {324,
+         "1. ```\n   foo\n   ```\n\n   bar\n",
+         "(doc (ol 1 . loose (li (code fenced ` 3) (p))))"},
+        {325,
+         "* foo\n  * bar\n\n  baz\n",
+         "(doc (ul * loose (li (p) (ul * tight (li (p))) (p))))"},
+        {326,
+         "- a\n  - b\n  - c\n\n- d\n  - e\n  - f\n",
+         "(doc (ul - loose (li (p) (ul - tight (li (p)) (li (p)))) (li (p) "
+         "(ul - tight (li (p)) (li (p))))))"},
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(examples) / sizeof(examples[0]); i++) {
+        check_example_dump(examples[i].example, examples[i].input,
+                           examples[i].dump);
+    }
+}
+
+NAOS_TEST(blank_line_between_items_makes_the_list_loose)
+{
+    /* "- a\n" 0-3, "\n" 4, "- b" 5-7. */
+    PARSE_PUBLIC("- a\n\n- b");
+    check_dump("(doc (ul - loose (li (p)) (li (p))))");
+    NAOS_CHECK_INT_EQ(amark_list_spacing(g_doc, root_child(0)),
+                      AMARK_LIST_LOOSE);
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 8, 1, 3);
+    reset_doc();
+
+    /* A line of spaces and tabs is blank too. */
+    PARSE_PUBLIC("1. a\n \t \n2. b");
+    check_dump("(doc (ol 1 . loose (li (p)) (li (p))))");
+    reset_doc();
+
+    /* Only between the second and the third item. */
+    PARSE_PUBLIC("- a\n- b\n\n- c");
+    check_dump("(doc (ul - loose (li (p)) (li (p)) (li (p))))");
+    reset_doc();
+
+    /* With CRLF line endings. */
+    PARSE_PUBLIC("- a\r\n\r\n- b\r\n");
+    check_dump("(doc (ul - loose (li (p)) (li (p))))");
+    reset_doc();
+
+    /* After an empty item: the blank line ends it, the list goes on. */
+    PARSE_PUBLIC("- a\n-\n\n- c");
+    check_dump("(doc (ul - loose (li (p)) (li) (li (p))))");
+    reset_doc();
+
+    /* An item ending with indented code then a blank line. */
+    PARSE_PUBLIC("-     a\n\n- b");
+    check_dump("(doc (ul - loose (li (code indented)) (li (p))))");
+    reset_doc();
+
+    /* Without a blank line, tight. */
+    PARSE_PUBLIC("- a\n- b\n- c");
+    check_dump("(doc (ul - tight (li (p)) (li (p)) (li (p))))");
+    NAOS_CHECK_INT_EQ(amark_list_spacing(g_doc, root_child(0)),
+                      AMARK_LIST_TIGHT);
+}
+
+NAOS_TEST(blank_line_between_children_of_an_item_makes_the_list_loose)
+{
+    /* Between two paragraphs of the only item. */
+    PARSE_PUBLIC("- a\n\n  b");
+    check_dump("(doc (ul - loose (li (p) (p))))");
+    reset_doc();
+
+    /* Between a paragraph and a nested list. */
+    PARSE_PUBLIC("- a\n\n  - b");
+    check_dump("(doc (ul - loose (li (p) (ul - tight (li (p))))))");
+    reset_doc();
+
+    /* Between a closed fenced code block and a paragraph. */
+    PARSE_PUBLIC("- ```\n  a\n  ```\n\n  b");
+    check_dump("(doc (ul - loose (li (code fenced ` 3) (p))))");
+    reset_doc();
+
+    /* Between a block quote and a paragraph. */
+    PARSE_PUBLIC("- > a\n\n  b");
+    check_dump("(doc (ul - loose (li (bq (p)) (p))))");
+    reset_doc();
+
+    /* After an HTML block that a blank line ends (condition 6). */
+    PARSE_PUBLIC("- <div>\n\n  b");
+    check_dump("(doc (ul - loose (li (html) (p))))");
+    reset_doc();
+
+    /* In the second item of a list; the first is tight on its own. */
+    PARSE_PUBLIC("1. a\n2. b\n\n   c");
+    check_dump("(doc (ol 1 . loose (li (p)) (li (p) (p))))");
+    reset_doc();
+
+    /* Children with no blank line between them: tight. */
+    PARSE_PUBLIC("- a\n  > b\n  # c\n  ---");
+    check_dump("(doc (ul - tight (li (p) (bq (p)) (h 1 atx) (hr))))");
+}
+
+/*
+ * A link reference definition is a block of the item, as in example 317,
+ * where the blank line before "[ref]: /url" makes the list loose. cmark and
+ * commonmark.js drop a paragraph of definitions only, so the first two
+ * inputs below are tight there.
+ */
+NAOS_TEST(definitions_count_as_children_of_an_item)
+{
+    /* A definition, a blank line, a paragraph. */
+    PARSE_PUBLIC("- [a]: /u\n\n  b");
+    check_dump("(doc (ul - loose (li (def) (p))))");
+    reset_doc();
+
+    /* A paragraph, a blank line, a definition. */
+    PARSE_PUBLIC("- b\n\n  [a]: /u");
+    check_dump("(doc (ul - loose (li (p) (def))))");
+    reset_doc();
+
+    /* A definition then a paragraph, no blank line between them. */
+    PARSE_PUBLIC("- [a]: /u\n  b");
+    check_dump("(doc (ul - tight (li (def) (p))))");
+    reset_doc();
+
+    /* An item of a definition only, then a blank line and an item. */
+    PARSE_PUBLIC("- [a]: /u\n\n- b");
+    check_dump("(doc (ul - loose (li (def)) (li (p))))");
+}
+
+NAOS_TEST(blank_line_in_a_nested_list_leaves_the_outer_list_tight)
+{
+    /* The blank line is between children of the inner item only. */
+    PARSE_PUBLIC("- a\n  - b\n\n    c\n- d");
+    check_dump("(doc (ul - tight (li (p) (ul - loose (li (p) (p)))) "
+               "(li (p))))");
+    reset_doc();
+
+    /* Between inner items. */
+    PARSE_PUBLIC("- a\n  - b\n\n  - c\n- d");
+    check_dump("(doc (ul - tight (li (p) (ul - loose (li (p)) (li (p)))) "
+               "(li (p))))");
+    reset_doc();
+
+    /* Three levels; the blank line is in the innermost one. */
+    PARSE_PUBLIC("- a\n  - b\n    - c\n\n      d\n  - e\n- f");
+    check_dump("(doc (ul - tight (li (p) (ul - tight (li (p) "
+               "(ul - loose (li (p) (p)))) (li (p)))) (li (p))))");
+    reset_doc();
+
+    /* The blank line ends the last item of the inner list and the outer
+     * list goes on: only the outer list is loose. */
+    PARSE_PUBLIC("- a\n  - b\n\n- c");
+    check_dump("(doc (ul - loose (li (p) (ul - tight (li (p)))) (li (p))))");
+    reset_doc();
+
+    /* The same, and the outer item goes on with a paragraph. */
+    PARSE_PUBLIC("- a\n  - b\n\n  c");
+    check_dump("(doc (ul - loose (li (p) (ul - tight (li (p))) (p))))");
+    reset_doc();
+
+    /* A blank line in the inner list that ends with the document. */
+    PARSE_PUBLIC("- a\n  - b\n\n");
+    check_dump("(doc (ul - tight (li (p) (ul - tight (li (p))))))");
+    reset_doc();
+
+    /* An empty inner item, a blank line, an outer item. */
+    PARSE_PUBLIC("- a\n  - b\n  -\n\n- c");
+    check_dump("(doc (ul - loose (li (p) (ul - tight (li (p)) (li))) "
+               "(li (p))))");
+}
+
+NAOS_TEST(blank_line_after_the_last_item_leaves_the_list_tight)
+{
+    /* At the end of the document, one or more, with spaces. */
+    PARSE_PUBLIC("- a\n- b\n");
+    check_dump("(doc (ul - tight (li (p)) (li (p))))");
+    reset_doc();
+    PARSE_PUBLIC("- a\n- b\n\n");
+    check_dump("(doc (ul - tight (li (p)) (li (p))))");
+    reset_doc();
+    PARSE_PUBLIC("- a\n- b\n\n  \n\t\n");
+    check_dump("(doc (ul - tight (li (p)) (li (p))))");
+    reset_doc();
+
+    /* Before a paragraph after the list. */
+    PARSE_PUBLIC("- a\n- b\n\nc");
+    check_dump("(doc (ul - tight (li (p)) (li (p))) (p))");
+    reset_doc();
+
+    /* Before a list of another marker. */
+    PARSE_PUBLIC("- a\n- b\n\n+ c\n+ d");
+    check_dump("(doc (ul - tight (li (p)) (li (p))) "
+               "(ul + tight (li (p)) (li (p))))");
+    reset_doc();
+
+    /* Before a heading and a thematic break. */
+    PARSE_PUBLIC("1. a\n2. b\n\n# c\n\n***");
+    check_dump("(doc (ol 1 . tight (li (p)) (li (p))) (h 1 atx) (hr))");
+    reset_doc();
+
+    /* After an item ending with a closed fence. */
+    PARSE_PUBLIC("- a\n- ```\n  b\n  ```\n\n");
+    check_dump("(doc (ul - tight (li (p)) (li (code fenced ` 3))))");
+}
+
+NAOS_TEST(blank_lines_inside_code_and_html_do_not_count)
+{
+    /* Fenced code in an item, blank lines inside it. */
+    PARSE_PUBLIC("- ```\n  a\n\n\n  b\n  ```\n- c");
+    check_dump("(doc (ul - tight (li (code fenced ` 3)) (li (p))))");
+    reset_doc();
+
+    /* A blank line right after the opening fence, then a new item. */
+    PARSE_PUBLIC("- ~~~\n\n  ~~~\n- c");
+    check_dump("(doc (ul - tight (li (code fenced ~ 3)) (li (p))))");
+    reset_doc();
+
+    /* Indented code in an item with a blank line inside it. */
+    PARSE_PUBLIC("-     a\n\n      b\n- c");
+    check_dump("(doc (ul - tight (li (code indented)) (li (p))))");
+    reset_doc();
+
+    /* An HTML block (condition 2) with a blank line inside it. */
+    PARSE_PUBLIC("- <!--\n\n  -->\n- c");
+    check_dump("(doc (ul - tight (li (html)) (li (p))))");
+    reset_doc();
+
+    /* Fenced code in a nested item. */
+    PARSE_PUBLIC("- a\n  - ```\n\n    ```\n- c");
+    check_dump("(doc (ul - tight (li (p) (ul - tight (li (code fenced ` 3)))) "
+               "(li (p))))");
+    reset_doc();
+
+    /* A blank line after the closing fence counts. */
+    PARSE_PUBLIC("- ```\n  a\n  ```\n\n- c");
+    check_dump("(doc (ul - loose (li (code fenced ` 3)) (li (p))))");
+}
+
+NAOS_TEST(items_that_start_with_a_blank_line_are_not_loose)
+{
+    /* The blank marker line is not a blank line between children. */
+    PARSE_PUBLIC("-\n  a\n-\n  b");
+    check_dump("(doc (ul - tight (li (p)) (li (p))))");
+    reset_doc();
+    PARSE_PUBLIC("1.  \n   a\n   b");
+    check_dump("(doc (ol 1 . tight (li (p))))");
+    reset_doc();
+
+    /* Empty items next to each other. */
+    PARSE_PUBLIC("-\n-\n-");
+    check_dump("(doc (ul - tight (li) (li) (li)))");
+    reset_doc();
+
+    /* An empty item then a blank line before the next one. */
+    PARSE_PUBLIC("-\n\n-");
+    check_dump("(doc (ul - loose (li) (li)))");
+}
+
+NAOS_TEST(lists_in_block_quotes_are_tight_or_loose)
+{
+    /* A blank quote line between items. */
+    PARSE_PUBLIC("> - a\n>\n> - b");
+    check_dump("(doc (bq (ul - loose (li (p)) (li (p)))))");
+    reset_doc();
+
+    /* Between children of an item. */
+    PARSE_PUBLIC("> - a\n>\n>   b");
+    check_dump("(doc (bq (ul - loose (li (p) (p)))))");
+    reset_doc();
+
+    /* At the end of the quote. */
+    PARSE_PUBLIC("> - a\n> - b\n>\n");
+    check_dump("(doc (bq (ul - tight (li (p)) (li (p)))))");
+    reset_doc();
+
+    /* A blank line ends the quote: two quotes, two lists. */
+    PARSE_PUBLIC("> - a\n\n> - b");
+    check_dump("(doc (bq (ul - tight (li (p)))) (bq (ul - tight (li (p)))))");
+    reset_doc();
+
+    /* A quote in an item whose last line is blank inside the quote. */
+    PARSE_PUBLIC("- > a\n  >\n- b");
+    check_dump("(doc (ul - tight (li (bq (p))) (li (p))))");
+    reset_doc();
+
+    /* Nested quotes and lists. */
+    PARSE_PUBLIC("> 1. > - a\n>    >\n>    > - b\n> 2. c");
+    check_dump("(doc (bq (ol 1 . tight (li (bq (ul - loose (li (p)) "
+               "(li (p))))) (li (p)))))");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -3424,6 +3951,20 @@ NAOS_SUITE(block_lists,
     NAOS_ADD_TEST(allocation_failure_with_lists)
 )
 
+NAOS_SUITE(block_list_spacing,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(spec_list_examples_are_tight_or_loose),
+    NAOS_ADD_TEST(blank_line_between_items_makes_the_list_loose),
+    NAOS_ADD_TEST(blank_line_between_children_of_an_item_makes_the_list_loose),
+    NAOS_ADD_TEST(definitions_count_as_children_of_an_item),
+    NAOS_ADD_TEST(blank_line_in_a_nested_list_leaves_the_outer_list_tight),
+    NAOS_ADD_TEST(blank_line_after_the_last_item_leaves_the_list_tight),
+    NAOS_ADD_TEST(blank_lines_inside_code_and_html_do_not_count),
+    NAOS_ADD_TEST(items_that_start_with_a_blank_line_are_not_loose),
+    NAOS_ADD_TEST(lists_in_block_quotes_are_tight_or_loose)
+)
+
 NAOS_SUITE(block_ranges,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -3463,6 +4004,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(block_definitions),
     NAOS_ADD_SUITE(block_quotes),
     NAOS_ADD_SUITE(block_lists),
+    NAOS_ADD_SUITE(block_list_spacing),
     NAOS_ADD_SUITE(block_ranges),
     NAOS_ADD_SUITE(block_limits)
 )

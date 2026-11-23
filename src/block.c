@@ -203,6 +203,8 @@ typedef struct block_parser {
     bool line_taken;      /* a leaf opened on this line took all of it */
     size_t break_kill;    /* no thematic break starts on this line before
                              this offset (see start_thematic_break) */
+    size_t blank_mark;    /* the index of the one open element whose
+                             ends_blank may be set (see note_blank_line) */
 } block_parser_t;
 
 static size_t stack_top(const block_parser_t *p)
@@ -410,11 +412,17 @@ static amark_error_t close_block(block_parser_t *p, size_t parent,
     case AMARK_KIND_PARAGRAPH:
         return close_paragraph(p, parent, block);
     case AMARK_KIND_BLOCK_QUOTE:
-    case AMARK_KIND_LIST:
     case AMARK_KIND_LIST_ITEM:
         /* The node was made when the container opened. */
         amark_tree_set_range(p->doc, block->node, block->start, block->end);
         return AMARK_ERROR_NONE;
+    case AMARK_KIND_LIST:
+        /* The spacing is decided now; the list opened tight. */
+        amark_tree_set_range(p->doc, block->node, block->start, block->end);
+        return amark_tree_set_list(p->doc, block->node, block->list_type,
+                                   block->marker, block->start_number,
+                                   block->loose ? AMARK_LIST_LOOSE
+                                                : AMARK_LIST_TIGHT);
     case AMARK_KIND_HEADING:
         return close_heading(p, parent, block);
     case AMARK_KIND_THEMATIC_BREAK:
@@ -476,10 +484,41 @@ static amark_error_t close_above(block_parser_t *p, size_t index)
 }
 
 /*
+ * Makes the list loose when a blank line separates the block about to be
+ * added inside the element at parent from the one before it. The earlier
+ * siblings have closed, so the parent holds the value its last child
+ * reported. An item added to a list follows an item that ended with a blank
+ * line, itself or its last child (item_blank is the item's own mark, read
+ * before it closed); a second or later child of an item follows a child that
+ * ended with a blank line, and the item's list is the one made loose.
+ */
+static void note_spacing(block_parser_t *p, size_t parent, amark_kind_t kind,
+                         bool item_blank)
+{
+    open_block_t *block = stack_at(p, parent);
+
+    if (block->child_count == 0) {
+        return;
+    }
+    if (block->kind == AMARK_KIND_LIST && kind == AMARK_KIND_LIST_ITEM) {
+        if (item_blank || block->last_child_blank) {
+            block->loose = true;
+        }
+    } else if (block->kind == AMARK_KIND_LIST_ITEM) {
+        if (block->last_child_blank) {
+            /* An item's parent is always its list. */
+            stack_at(p, parent - 1)->loose = true;
+        }
+    }
+}
+
+/*
  * Opens a block of kind starting at start inside the element at parent:
  * closes every element above parent, then parents that cannot contain kind
  * (never the root), checks the nesting depth limit, makes the node of a
- * container, and pushes the element. Stores its index in *index.
+ * container, and pushes the element. Stores its index in *index. A list
+ * that gets a new item or an item that gets a new child may become loose
+ * (note_spacing).
  */
 static amark_error_t push_block(block_parser_t *p, size_t parent,
                                 amark_kind_t kind, bool is_container,
@@ -487,8 +526,13 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
 {
     open_block_t block;
     size_t depth;
+    bool item_blank = false;
     amark_error_t err;
 
+    /* The open element just inside parent, if any, is its last child. */
+    if (stack_top(p) > parent) {
+        item_blank = stack_at(p, parent + 1)->ends_blank;
+    }
     err = close_above(p, parent);
     if (err != AMARK_ERROR_NONE) {
         return err;
@@ -500,7 +544,12 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
             return err;
         }
     }
-    parent = stack_top(p);
+    if (stack_top(p) != parent) {
+        /* parent closed: its own last child is another element. */
+        parent = stack_top(p);
+        item_blank = false;
+    }
+    note_spacing(p, parent, kind, item_blank);
     depth = parent + 1;
     if (p->max_depth != 0 && depth > p->max_depth) {
         return AMARK_ERROR_LIMIT_EXCEEDED;
@@ -1270,6 +1319,64 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
     return AMARK_ERROR_NONE;
 }
 
+/*
+ * Updates the blank line marks for the current line, before the third phase
+ * closes the elements that did not match. container is the innermost element
+ * matched or opened on the line (C below); line_start is the start of the
+ * line.
+ *
+ * On a blank line, the last child of C ended with a blank line: that is the
+ * element just inside C if one did not match (it closes on this line and
+ * reports the mark to C), otherwise the value C keeps for its last closed
+ * child. C itself ends with a blank line, unless it is a block quote, a
+ * fenced code block (blank lines in a fence do not count), or an item whose
+ * marker line is blank and is this line. Every element outside C, and on a
+ * line that is not blank every element matched or opened, loses its own
+ * mark; the elements that did not match keep theirs until they close.
+ *
+ * So after each line at most one open element has its own mark set (C, if
+ * the line was blank), and blank_mark keeps its index: clearing that one
+ * element clears every element up to C without walking the stack, which
+ * would cost the depth on every line. An index past C is an element that
+ * did not match, which keeps its mark until it closes, or one left from a
+ * block that closed; it is not touched.
+ */
+static void note_blank_line(block_parser_t *p, size_t container,
+                            size_t line_start)
+{
+    open_block_t *block = stack_at(p, container);
+
+    if (p->blank_mark <= container) {
+        stack_at(p, p->blank_mark)->ends_blank = false;
+    }
+    if (!p->pos.blank) {
+        return;
+    }
+    if (stack_top(p) > container) {
+        stack_at(p, container + 1)->ends_blank = true;
+    } else if (block->child_count > 0) {
+        block->last_child_blank = true;
+    }
+    switch (block->kind) {
+    case AMARK_KIND_BLOCK_QUOTE:
+        return;
+    case AMARK_KIND_CODE_BLOCK:
+        if (block->fence_length > 0) {
+            return;
+        }
+        break;
+    case AMARK_KIND_LIST_ITEM:
+        if (block->child_count == 0 && block->start >= line_start) {
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+    block->ends_blank = true;
+    p->blank_mark = container;
+}
+
 /* Processes one line in the three phases. */
 static amark_error_t process_line(block_parser_t *p, size_t line,
                                   const amark_line_bounds_t *bounds)
@@ -1327,6 +1434,7 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
      * the paragraph closes.
      */
     amark_line_pos_find_nonspace(&p->pos, p->bytes);
+    note_blank_line(p, container, bounds->start);
     if (!p->all_matched && container == matched && !p->pos.blank &&
         stack_at(p, stack_top(p))->kind == AMARK_KIND_PARAGRAPH) {
         paragraph_add_line(p, stack_top(p));
@@ -1358,6 +1466,7 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     p.all_matched = false;
     p.line_taken = false;
     p.break_kill = 0;
+    p.blank_mark = 0;
     amark_array_init(&p.stack, scratch, sizeof(open_block_t));
     amark_array_init(&p.definitions, scratch,
                      sizeof(amark_definition_entry_t));
