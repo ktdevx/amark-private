@@ -113,7 +113,7 @@ definition; nothing else needs to be set. Include the public header as
 
 int main(void)
 {
-    printf("amark %s\n", amark_version_string());
+    printf("Amark %s\n", amark_version_string());
     return 0;
 }
 ```

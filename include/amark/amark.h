@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* The entry point of amark's public API. */
+/* The entry point of Amark's public API. */
 
 #ifndef AMARK_AMARK_H
 #define AMARK_AMARK_H

@@ -1,7 +1,7 @@
 # Copyright (c) The Amark Authors
 # SPDX-License-Identifier: MIT
 
-# Common compile settings for amark's own targets.
+# Common compile settings for Amark's own targets.
 #
 # Including this module:
 #   - applies the sanitizer flags to the including directory scope when
@@ -33,7 +33,7 @@ endif()
 
 # amark_target_defaults(<target>)
 #
-# Applies the settings shared by every target amark owns (the library, the
+# Applies the settings shared by every target Amark owns (the library, the
 # testing library, test support and tests): C99 without extensions, hidden
 # symbol visibility by default, a high warning level, and warnings as errors
 # when AMARK_WARNINGS_AS_ERRORS is ON. Not applied to third-party targets.

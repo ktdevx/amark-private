@@ -1,17 +1,17 @@
 # Copyright (c) The Amark Authors
 # SPDX-License-Identifier: MIT
 
-# A small project that uses amark the way a user would. It is a standalone
-# project, not part of amark's own build.
+# A small project that uses Amark the way a user would. It is a standalone
+# project, not part of Amark's own build.
 #
 #   AMARK_CONSUMER_MODE=package (default)
-#       Finds an installed amark with find_package(Amark). Pass the install
+#       Finds an installed Amark with find_package(Amark). Pass the install
 #       prefix in CMAKE_PREFIX_PATH. The prefix must be one that holds only
-#       amark (the check for internal headers looks at every file in it).
+#       Amark (the check for internal headers looks at every file in it).
 #
 #   AMARK_CONSUMER_MODE=subdirectory
-#       Builds amark from source with add_subdirectory(). AMARK_SOURCE_DIR
-#       points to amark's source tree (default: this repository).
+#       Builds Amark from source with add_subdirectory(). AMARK_SOURCE_DIR
+#       points to Amark's source tree (default: this repository).
 #
 # Both modes link the same target, Amark::amark, and register one CTest test.
 
@@ -26,7 +26,7 @@ set_property(CACHE AMARK_CONSUMER_MODE PROPERTY STRINGS package subdirectory)
 get_filename_component(_amark_default_source_dir
     "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(AMARK_SOURCE_DIR "${_amark_default_source_dir}" CACHE PATH
-    "amark's source tree (used by the subdirectory mode and to list internal headers)")
+    "Amark's source tree (used by the subdirectory mode and to list internal headers)")
 unset(_amark_default_source_dir)
 
 if(AMARK_CONSUMER_MODE STREQUAL "package")
@@ -38,12 +38,12 @@ if(AMARK_CONSUMER_MODE STREQUAL "package")
     find_package(Amark 99.0 QUIET)
     if(Amark_FOUND)
         message(FATAL_ERROR
-            "find_package(Amark 99.0) found amark ${Amark_VERSION}; "
+            "find_package(Amark 99.0) found Amark ${Amark_VERSION}; "
             "the package version check does not reject incompatible versions")
     endif()
     set(Amark_FOUND TRUE)
 
-    # The install prefix must not contain amark's internal headers (src/*.h).
+    # The install prefix must not contain Amark's internal headers (src/*.h).
     # The prefix is the parent of the installed include directory.
     get_target_property(_amark_include_dirs Amark::amark
         INTERFACE_INCLUDE_DIRECTORIES)
@@ -58,7 +58,7 @@ if(AMARK_CONSUMER_MODE STREQUAL "package")
     if(NOT _amark_internal_headers)
         message(FATAL_ERROR
             "No internal headers found in ${AMARK_SOURCE_DIR}/src; "
-            "set AMARK_SOURCE_DIR to amark's source tree")
+            "set AMARK_SOURCE_DIR to Amark's source tree")
     endif()
 
     file(GLOB_RECURSE _amark_installed_files
@@ -94,7 +94,7 @@ elseif(AMARK_CONSUMER_MODE STREQUAL "subdirectory")
         message(FATAL_ERROR "add_subdirectory(amark) did not define Amark::amark")
     endif()
 
-    # As a subproject, amark must not build its tests (so Naos is not
+    # As a subproject, Amark must not build its tests (so Naos is not
     # fetched) and must not turn warnings into errors.
     if(AMARK_BUILD_TESTS)
         message(FATAL_ERROR "AMARK_BUILD_TESTS is ON in a subproject build")
@@ -119,7 +119,7 @@ set_target_properties(consumer PROPERTIES
 )
 target_link_libraries(consumer PRIVATE Amark::amark)
 
-# Windows has no rpath: put the amark DLL next to the executable.
+# Windows has no rpath: put the Amark DLL next to the executable.
 get_target_property(_amark_type Amark::amark TYPE)
 if(WIN32 AND _amark_type STREQUAL "SHARED_LIBRARY")
     add_custom_command(TARGET consumer POST_BUILD

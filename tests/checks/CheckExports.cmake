@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 # checks.exports: the externally visible function and data symbols of the
-# amark shared library must match exported_symbols.txt exactly.
+# Amark shared library must match exported_symbols.txt exactly.
 #
 #   cmake -DNM=<nm> -DLIBRARY=<libamark.so> -DSYMBOLS_FILE=<list> -P CheckExports.cmake
 #
@@ -18,7 +18,7 @@ foreach(var IN ITEMS NM LIBRARY SYMBOLS_FILE)
 endforeach()
 
 # Symbols the linker defines in every shared library on some toolchains; they
-# are not part of amark's interface.
+# are not part of Amark's interface.
 set(linker_symbols _init _fini _edata _end __bss_start)
 
 # The expected list: one name per line; "#" comments and blank lines ignored.

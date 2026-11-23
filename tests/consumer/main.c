@@ -26,6 +26,6 @@ int main(void)
             library_version, AMARK_VERSION_STRING);
         return 1;
     }
-    printf("amark %s\n", library_version);
+    printf("Amark %s\n", library_version);
     return 0;
 }

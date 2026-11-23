@@ -1,7 +1,7 @@
 # Copyright (c) The Amark Authors
 # SPDX-License-Identifier: MIT
 
-# amark's tests. Included only when AMARK_BUILD_TESTS is ON.
+# Amark's tests. Included only when AMARK_BUILD_TESTS is ON.
 #
 # Each test file is one executable with its own NAOS_MAIN; there is no shared
 # main.c. Register a test with one line:
