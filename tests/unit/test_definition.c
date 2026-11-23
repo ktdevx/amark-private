@@ -976,13 +976,13 @@ static void add_many(size_t count, size_t keys, amark_node_id_t *first)
 
         switch (i % 3) {
         case 0:
-            length = sprintf(text, "label %u", (unsigned)key);
+            length = snprintf(text, sizeof text, "label %u", (unsigned)key);
             break;
         case 1:
-            length = sprintf(text, "LABEL\t%u", (unsigned)key);
+            length = snprintf(text, sizeof text, "LABEL\t%u", (unsigned)key);
             break;
         default:
-            length = sprintf(text, " Label   %u ", (unsigned)key);
+            length = snprintf(text, sizeof text, " Label   %u ", (unsigned)key);
             break;
         }
         add_definition(text, (size_t)length);
