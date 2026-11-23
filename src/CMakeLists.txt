@@ -14,6 +14,7 @@ set(AMARK_SOURCES
     document.c
     entity.c
     line_index.c
+    tree.c
     unicode.c
     utf8.c
     version.c
