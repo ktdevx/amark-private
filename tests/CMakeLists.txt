@@ -97,6 +97,27 @@ function(amark_add_public_test name)
     _amark_test_target_settings("${name}")
 endfunction()
 
+# C++ is enabled here only, and only when a C++ compiler is found, to check
+# that the public headers compile as C++. The library itself stays C-only.
+include(CheckLanguage)
+check_language(CXX)
+if(CMAKE_CXX_COMPILER)
+    enable_language(CXX)
+endif()
+
 # Unit tests (tests/unit/), linked to amark_testing.
 
 # Public API tests (tests/public/), linked to Amark::amark.
+amark_add_public_test(test_version SOURCES public/test_version.c)
+
+# amark_target_defaults sets only C properties (C99 and so on); its warning
+# flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The
+# C++ standard is set here: C++11 without extensions, as Naos requires.
+if(CMAKE_CXX_COMPILER)
+    amark_add_public_test(header_cxx SOURCES public/header_cxx.cpp)
+    set_target_properties(header_cxx PROPERTIES
+        CXX_STANDARD 11
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+endif()
