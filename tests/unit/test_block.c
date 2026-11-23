@@ -847,19 +847,23 @@ NAOS_TEST(lines_that_do_not_close_a_fence)
 NAOS_TEST(unclosed_fence_closes_at_the_end_of_the_range)
 {
     /*
-     * "```\n" 0-3, "a\n" 4-5, "\n" 6: the blank line belongs to the code,
-     * so the block ends at the end of its (empty) content. A range that
-     * ends where an empty line starts reports the line before it as its end
-     * line (syntax-tree: the line of end - 1).
+     * "```\n" 0-3, "a\n" 4-5, "\n" 6: the blank line belongs to the code.
+     * It has no content, so the block ends after its line ending, 7, and its
+     * end line (syntax-tree: the line of end - 1) is that line, 3. The
+     * record of the line is unchanged.
      */
     PARSE("```\na\n\n");
     check_dump("(doc (code fenced ` 3))");
-    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 6, 1, 2);
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 7, 1, 3);
+    check_root(0, 7, 1, 3);
     check_record(3, 6, 0);
 
     amark_document_destroy(g_doc);
     g_doc = NULL;
-    /* "```\n" 0-3, "a\n" 4-5, "  " 6-7: a blank line with white space. */
+    /*
+     * "```\n" 0-3, "a\n" 4-5, "  " 6-7: a blank line with white space ends
+     * the block at the end of its content, as any other line.
+     */
     PARSE("```\na\n  ");
     check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 8, 1, 3);
     check_record(3, 6, 0);
@@ -1219,15 +1223,13 @@ NAOS_TEST(unclosed_html_block_closes_at_the_end_of_the_range)
 {
     /*
      * "<!--\n" 0-4, "a\n" 5-6, "\n" 7: the blank line belongs to the block
-     * (conditions 1 to 5 do not end on a blank line), so the block ends at
-     * the end of its (empty) content, 7, and its end line is 2. This is the
-     * design gap recorded in the 7.2 Implementation Note of tasks.md (the
-     * same as unclosed_fence_closes_at_the_end_of_the_range); the range
-     * rules are followed as written until it is decided upstream.
+     * (conditions 1 to 5 do not end on a blank line). It has no content, so
+     * the block ends after its line ending, 8, and its end line is 3 (the
+     * same as unclosed_fence_closes_at_the_end_of_the_range).
      */
     PARSE("<!--\na\n\n");
     check_dump("(doc (html))");
-    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 7, 1, 2);
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 8, 1, 3);
     check_record(3, 7, 0);
     reset_doc();
 
@@ -1241,6 +1243,60 @@ NAOS_TEST(unclosed_html_block_closes_at_the_end_of_the_range)
     PARSE("<style");
     check_dump("(doc (html))");
     check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 6, 1, 1);
+}
+
+NAOS_TEST(unclosed_fence_ending_on_an_empty_line_with_each_line_ending)
+{
+    amark_line_record_t record;
+
+    /*
+     * "```\r\n" 0-4, "a\r\n" 5-7, "\r\n" 8-9: the block ends after the LF
+     * of the empty last line.
+     */
+    PARSE("```\r\na\r\n\r\n");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 10, 1, 3);
+    check_record(3, 8, 0);
+    reset_doc();
+
+    /* "```\r" 0-3, "a\r" 4-5, "\r" 6. */
+    PARSE("```\ra\r\r");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 7, 1, 3);
+    check_record(3, 6, 0);
+    reset_doc();
+
+    /*
+     * The same CRLF content with the range [0, 9), which ends between the
+     * CR and the LF of the empty line: the CR is its line ending, and the
+     * block ends after it, at the end of the range.
+     */
+    PARSE_RANGE("```\r\na\r\n\r\n", 0, 9);
+    check_root(0, 9, 1, 3);
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 9, 1, 3);
+    check_record(3, 8, 0);
+    reset_doc();
+
+    /*
+     * "```\na\n\n" with the range [0, 6), which ends where the empty line
+     * starts: that line is not in the range, and the block ends at the end
+     * of the content of line 2.
+     */
+    PARSE_RANGE("```\na\n\n", 0, 6);
+    check_root(0, 6, 1, 2);
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 0, 5, 1, 2);
+    check_record(2, 4, 0);
+    NAOS_CHECK_FALSE(amark_line_get(g_doc, 3, &record));
+    reset_doc();
+
+    /* An HTML block (condition 2), CRLF: "<!--\r\n" 0-5, "\r\n" 6-7. */
+    PARSE("<!--\r\n\r\n");
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 8, 1, 2);
+    check_record(2, 6, 0);
+    reset_doc();
+
+    /* The same with the range [0, 7), between the CR and the LF. */
+    PARSE_RANGE("<!--\r\n\r\n", 0, 7);
+    check_node(root_child(0), AMARK_KIND_HTML_BLOCK, 0, 7, 1, 2);
+    check_record(2, 6, 0);
 }
 
 NAOS_TEST(html_block_in_a_range_starting_inside_a_line)
@@ -3695,6 +3751,82 @@ NAOS_TEST(blank_run_in_an_html_block_in_a_list_item)
     check_record(6, 18, 0);
 }
 
+NAOS_TEST(unclosed_fence_in_an_item_ending_on_an_empty_line)
+{
+    amark_node_id_t list;
+    amark_node_id_t item;
+
+    /*
+     * "- ```\n" 0-5, "  a\n" 6-9, "\n" 10, "- b" 11-13: the next item closes
+     * the code on the empty line 3, which ends after its line ending, where
+     * the next item starts. The siblings touch and do not overlap.
+     */
+    PARSE_PUBLIC("- ```\n  a\n\n- b");
+    check_dump("(doc (ul - tight (li (code fenced ` 3)) (li (p))))");
+    list = root_child(0);
+    item = nth_child(list, 0);
+    check_node(list, AMARK_KIND_LIST, 0, 14, 1, 4);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 11, 1, 3);
+    check_node(nth_child(item, 0), AMARK_KIND_CODE_BLOCK, 2, 11, 1, 3);
+    check_node(nth_child(list, 1), AMARK_KIND_LIST_ITEM, 11, 14, 4, 4);
+    check_record(2, 8, 0);
+    check_record(3, 10, 0);
+    check_record(4, 13, 0);
+    reset_doc();
+
+    /* "- ```\n" 0-5, "  a\n" 6-9, "\n" 10, "b" 11: a paragraph after it. */
+    PARSE_PUBLIC("- ```\n  a\n\nb");
+    check_dump("(doc (ul - tight (li (code fenced ` 3))) (p))");
+    list = root_child(0);
+    check_node(list, AMARK_KIND_LIST, 0, 11, 1, 3);
+    check_node(nth_child(nth_child(list, 0), 0), AMARK_KIND_CODE_BLOCK, 2,
+               11, 1, 3);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 11, 12, 4, 4);
+    check_record(3, 10, 0);
+}
+
+NAOS_TEST(blank_run_ending_unclosed_code_on_an_empty_line)
+{
+    amark_node_id_t list;
+    amark_node_id_t item;
+
+    /*
+     * "- ```\n" 0-5, "  a\n" 6-9, "\n" 10, "\n" 11, "\n" 12: lines 4 and 5
+     * take the blank line cutoff; the code ends after the line ending of
+     * the empty line 5, at the end of the range.
+     */
+    PARSE_PUBLIC("- ```\n  a\n\n\n\n");
+    check_dump("(doc (ul - tight (li (code fenced ` 3))))");
+    list = root_child(0);
+    item = nth_child(list, 0);
+    check_node(list, AMARK_KIND_LIST, 0, 13, 1, 5);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 13, 1, 5);
+    check_node(nth_child(item, 0), AMARK_KIND_CODE_BLOCK, 2, 13, 1, 5);
+    check_record(3, 10, 0);
+    check_record(4, 11, 0);
+    check_record(5, 12, 0);
+    reset_doc();
+
+    /* The same with CRLF: "- ```\r\n" 0-6, "  a\r\n" 7-11, "\r\n" x 3. */
+    PARSE_PUBLIC("- ```\r\n  a\r\n\r\n\r\n\r\n");
+    item = nth_child(root_child(0), 0);
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 18, 1, 5);
+    check_node(nth_child(item, 0), AMARK_KIND_CODE_BLOCK, 2, 18, 1, 5);
+    check_record(5, 16, 0);
+    reset_doc();
+
+    /* An HTML block: "- <!--\n" 0-6, "\n" 7, "\n" 8, "\n" 9. */
+    PARSE_PUBLIC("- <!--\n\n\n\n");
+    check_dump("(doc (ul - tight (li (html))))");
+    item = nth_child(root_child(0), 0);
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 10, 1, 4);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 10, 1, 4);
+    check_node(nth_child(item, 0), AMARK_KIND_HTML_BLOCK, 2, 10, 1, 4);
+    check_record(2, 7, 0);
+    check_record(3, 8, 0);
+    check_record(4, 9, 0);
+}
+
 NAOS_TEST(blank_run_in_fenced_code_in_nested_items_and_a_quote)
 {
     amark_node_id_t node;
@@ -4448,6 +4580,7 @@ NAOS_SUITE(block_leaves,
     NAOS_ADD_TEST(html_block_indentation),
     NAOS_ADD_TEST(html_block_with_each_line_ending),
     NAOS_ADD_TEST(unclosed_html_block_closes_at_the_end_of_the_range),
+    NAOS_ADD_TEST(unclosed_fence_ending_on_an_empty_line_with_each_line_ending),
     NAOS_ADD_TEST(html_block_in_a_range_starting_inside_a_line),
     NAOS_ADD_TEST(node_count_limit_counts_html_blocks)
 )
@@ -4541,6 +4674,8 @@ NAOS_SUITE(block_blank_runs,
     NAOS_ADD_TEST(blank_run_in_fenced_code_in_a_list_item),
     NAOS_ADD_TEST(blank_run_in_indented_code_in_a_list_item),
     NAOS_ADD_TEST(blank_run_in_an_html_block_in_a_list_item),
+    NAOS_ADD_TEST(unclosed_fence_in_an_item_ending_on_an_empty_line),
+    NAOS_ADD_TEST(blank_run_ending_unclosed_code_on_an_empty_line),
     NAOS_ADD_TEST(blank_run_in_fenced_code_in_nested_items_and_a_quote),
     NAOS_ADD_TEST(blank_run_with_an_empty_item_continued_by_white_space),
     NAOS_ADD_TEST(blank_run_after_a_deeply_nested_list),

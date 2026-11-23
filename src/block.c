@@ -1277,11 +1277,29 @@ static void paragraph_add_line(block_parser_t *p, size_t index)
 }
 
 /*
+ * The end of a code or HTML block whose last line is the current line: the
+ * end of the line's content, or, when the line has no content at all (its
+ * content ends where it starts), the end of its line ending, which is never
+ * past the end of the range. The end line of a node is the line of its
+ * end - 1, so an empty last line stays the block's end line.
+ */
+static size_t leaf_line_end(const block_parser_t *p)
+{
+    amark_line_bounds_t bounds;
+
+    if (amark_line_bounds(p->doc, p->pos.line, &bounds) &&
+        bounds.content_end == bounds.start) {
+        return bounds.end;
+    }
+    return p->pos.content_end;
+}
+
+/*
  * Adds the rest of the current line to the code block at index: the record
  * is the position the prefixes and the code indentation were consumed to,
  * with the columns left of a tab as pad, and the block ends at the end of
- * the line's content. An indented code block also keeps the end of its last
- * line that is not blank.
+ * the line (leaf_line_end). An indented code block also keeps the end of
+ * its last line that is not blank, where it ends when it closes.
  */
 static void code_add_line(block_parser_t *p, size_t index)
 {
@@ -1289,7 +1307,7 @@ static void code_add_line(block_parser_t *p, size_t index)
     open_block_t *block = stack_at(p, index);
 
     amark_line_set(p->doc, pos->line, pos->offset, pos->pad);
-    block->end = pos->content_end;
+    block->end = leaf_line_end(p);
     if (!pos->blank) {
         block->last_nonblank_end = pos->content_end;
     }
@@ -1299,8 +1317,9 @@ static void code_add_line(block_parser_t *p, size_t index)
  * Adds the rest of the current line to the HTML block at index: the record
  * is the position after the prefix, the line's indentation included, with
  * the columns left of a tab as pad, and the block ends at the end of the
- * line's content. Conditions 1 to 5 close the block on the line that meets
- * their end condition, its first line included.
+ * line (leaf_line_end). Conditions 1 to 5 close the block on the line that
+ * meets their end condition, its first line included; that line is never
+ * empty.
  */
 static amark_error_t html_add_line(block_parser_t *p, size_t index)
 {
@@ -1308,7 +1327,7 @@ static amark_error_t html_add_line(block_parser_t *p, size_t index)
     open_block_t *block = stack_at(p, index);
 
     amark_line_set(p->doc, pos->line, pos->offset, pos->pad);
-    block->end = pos->content_end;
+    block->end = leaf_line_end(p);
     if (block->html_type <= 5 &&
         amark_scan_html_end(p->bytes + pos->offset,
                             pos->content_end - pos->offset,

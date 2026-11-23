@@ -731,7 +731,8 @@ static void check_span(amark_node_id_t node, amark_kind_t kind, size_t start,
  * Blocks that never close and take every line to the end of the input: a
  * careless parser that looks back over the lines of an open block (for its
  * closing line, or its end condition) takes time quadratic in their number.
- * Each block ends at the end of the content of its last line.
+ * Each block ends at the end of the content of its last line, or after the
+ * line ending of an empty last line.
  */
 NAOS_TEST(unclosed_blocks_of_many_lines)
 {
@@ -765,9 +766,12 @@ NAOS_TEST(unclosed_blocks_of_many_lines)
     REPEAT("a < b\n\n", PATH_LINES / 2);
     parse_ok(0, 0, 2);
     check_dump("(doc (html))");
-    /* The last line is blank: the block ends where its content does. */
-    check_span(root_child(0), AMARK_KIND_HTML_BLOCK, 0, g_length - 1, 1,
-               PATH_LINES);
+    /*
+     * The last line is empty: the block ends after its line ending, at the
+     * end of the input, and that line is its end line.
+     */
+    check_span(root_child(0), AMARK_KIND_HTML_BLOCK, 0, g_length, 1,
+               PATH_LINES + 1);
     reset_doc();
 
     input_begin(5 + 5 * PATH_LINES);
