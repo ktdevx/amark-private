@@ -133,7 +133,6 @@ void amark_line_pos_advance(amark_line_pos_t *pos, const unsigned char *bytes,
  */
 typedef struct open_block {
     amark_kind_t kind;
-    bool is_container;
     amark_node_id_t node; /* containers: made when opened; leaves:
                              AMARK_NODE_NONE until closed */
     size_t start;
@@ -561,7 +560,6 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
 
     memset(&block, 0, sizeof(block));
     block.kind = kind;
-    block.is_container = is_container;
     block.node = AMARK_NODE_NONE;
     block.start = start;
     block.end = start;
@@ -1574,7 +1572,6 @@ amark_error_t amark_block_parse(amark_document_t *doc,
      */
     memset(&root, 0, sizeof(root));
     root.kind = AMARK_KIND_DOCUMENT;
-    root.is_container = true;
     root.node = amark_document_root(doc);
     (void)amark_node_range(doc, root.node, &range);
     root.start = range.start;

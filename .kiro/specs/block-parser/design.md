@@ -50,6 +50,7 @@
 - 上流への変更は、次の 2 つに限る。どちらも追加だけで、既存の関数の契約は変えない。
   - `src/document.h`・`src/document.c`：`parse_data` の項目と、3 つの関数
   - `src/utf8.h`・`src/utf8.c`：`amark_utf8_decode_lossy`
+- 例外：`line.c` は、行の開始位置を O(1) で得るため、`amark_line_index_t` の項目 `line_starts` と `length` を直接読む。行の索引には、行の開始位置を O(1) で返す取得関数がないためである。project-foundation に取得関数が足されるまでの暫定の扱いで、足されたらそれに置き換える（上流への変更として未決）。
 
 ### Revalidation Triggers
 次の変更は、下流の spec（inline-parser、source-text、dialect-extension、spec-conformance）の見直しを要する。
@@ -183,6 +184,7 @@ tests/
 │   ├── test_block.c        # 種類ごとの範囲と属性、行の記録、インラインに渡す内容
 │   ├── test_block_limits.c # 上限、深い入れ子、空行の続く入力、確保の失敗の注入
 │   ├── test_parse.c        # 設定の適用、失敗の順、UTF-8 の 2 つの設定
+│   ├── test_tree_dump.c    # TreeDump：書式、深い木、足りないバッファ
 │   ├── test_spec_leaf.c    # spec.txt の例：Tabs から Blank lines までの 9 つの節
 │   ├── test_spec_container.c # spec.txt の例：Block quotes、List items、Lists
 │   └── test_spec_refdef.c  # spec.txt の例：Link reference definitions
@@ -201,6 +203,8 @@ tests/
 - `tests/CMakeLists.txt` — 上の単体テストと公開 API のテストを登録する。`amark_test_support` に `support/tree_dump.c` を足す。
 - `tests/unit/test_document.c`、`tests/unit/test_utf8.c` — 足した関数のテストを足す。
 - `tests/public/header_cxx.cpp` — `amark_parse` を呼ぶ行を足す。
+- `tests/support/test_alloc.h`、`tests/support/test_alloc.c` — 数える確保関数に、生きているブロックの要求したバイト数の合計（`live_bytes`）と、その最大値（`peak_bytes`）を足す。メモリが内容の長さに比例することのテスト（`test_block_limits.c`）に使う。既存の項目と関数の契約は変えない。
+- `tests/public/test_config.c` — コメントだけを直す（公開 API で文書を作れるようになったため、古い説明を改める）。
 - `tests/checks/exported_symbols.txt` — `amark_parse` を足す。
 - `.kiro/specs/syntax-tree/design.md` — 文書の項目と関数の追加を反映する（「内部：文書」と「Physical Data Model」）。
 - `.kiro/specs/project-foundation/design.md` — `amark_utf8_decode_lossy` を反映する（Utf8 の節）。
@@ -722,6 +726,38 @@ amark_error_t amark_block_parse(amark_document_t *doc,
 - Postconditions（失敗）: `NOMEM` か `LIMIT_EXCEEDED` を返す。文書は、`amark_document_destroy` で解放できる状態である（木は途中のままでよい）。
 - `config` から読むのは、`max_nesting_depth` と `max_node_count` だけである。
 
+`block.h` は、次の行の位置の補助も宣言する。これらは内部の関数で、単体テスト（`test_block.c` の行の位置のテスト）から呼べるように公開しているだけである。ライブラリの外には出さず、`amark_block_parse` のほかの呼び出し元は持たない。
+
+```c
+/* src/block.h（内部。単体テストのために宣言する） */
+typedef struct amark_line_pos {
+    size_t line;
+    size_t content_end;
+    size_t offset;
+    size_t column;
+    unsigned pad;                  /* 0 から 3 */
+    size_t first_nonspace;
+    size_t first_nonspace_column;
+    size_t indent;
+    bool blank;
+} amark_line_pos_t;
+
+typedef enum amark_advance_unit {
+    AMARK_ADVANCE_BYTES,
+    AMARK_ADVANCE_COLUMNS
+} amark_advance_unit_t;
+
+void amark_line_pos_init(amark_line_pos_t *pos, size_t line,
+                         const amark_line_bounds_t *bounds);
+void amark_line_pos_find_nonspace(amark_line_pos_t *pos,
+                                  const unsigned char *bytes);
+void amark_line_pos_advance(amark_line_pos_t *pos, const unsigned char *bytes,
+                            size_t count, amark_advance_unit_t unit);
+```
+- `amark_line_pos_init`：行の先頭（範囲の最初の行では範囲の開始）を桁 0 として、位置を置く。
+- `amark_line_pos_find_nonspace`：いまの位置から、次の空白でないバイトと、そこまでの桁を求める。スペースとタブだけを空白とする。前の結果が使えるとき（`first_nonspace` がいまの位置より後）は走査し直さないので、1 行のすべての要素の呼び出しを合わせても、各バイトを 1 回しか見ない。
+- `amark_line_pos_advance`：バイト数か桁数で進める（下の「行の位置」の 2 つの進め方）。
+
 ##### State Management
 
 **行の位置**：1 行を処理する間、次の値を持つ。
@@ -740,21 +776,35 @@ amark_error_t amark_block_parse(amark_document_t *doc,
 
 | 項目 | 持つ種類 | 意味 |
 |------|----------|------|
-| `kind`、`is_container` | すべて | 種類と、コンテナかリーフか |
+| `kind` | すべて | 種類（コンテナかリーフかは種類で決まり、要素には持たない） |
 | `node` | コンテナ | 開くときに作ったノードの ID。リーフでは、閉じるまで「なし」 |
 | `start`、`end` | すべて | 範囲。`end` は、行を足すたび、または子が閉じるたびに延びる |
-| `marker_offset`、`padding`、`type`、`marker`、`start_number` | リストとリスト項目 | 印の位置と、内容の字下げの桁 |
+| `marker_offset`、`padding`、`list_type`、`marker`、`start_number` | リストとリスト項目 | 印の位置と、内容の字下げの桁 |
 | `fence_char`、`fence_length`、`fence_offset`、`info` | フェンスのコードブロック | 開始のフェンスの情報 |
 | `html_type` | HTML ブロック | 開始条件の番号 |
-| `level`、`content_start`、`content_end` | 見出しと段落 | レベルと、インラインに渡す内容の範囲 |
+| `level`、`heading_style`、`content_start`、`content_end` | 見出しと段落 | レベル、見出しの書き方（ATX か Setext か）、インラインに渡す内容の範囲 |
+| `emptied` | 段落 | 先頭のリンク参照定義が、（Setext の下線の前に）すべての行を取った。段落として開いたまま残り、段落の中断の規則に使う。次に足す行が最初の行になり、行がないまま閉じればノードを作らない |
 | `last_nonblank_end` | インデントされたコードブロック | 最後の空行でない行の終わり |
+| `content_indent` | すべて | 根からこの要素までのリスト項目の内容の字下げの桁の合計（下の「空行の打ち切り」） |
 | `child_count` | コンテナ | この要素の内側で開いたブロックの数。まだ開いているリーフと、定義だけになってノードを作らなかった段落も数える |
-| 空行の印 | リスト、リスト項目 | タイトとルーズの判定と、空行の打ち切りに使う（下の節） |
+| 空行の印（`ends_blank`、`last_child_blank`、`blank_run`、`loose`） | リスト、リスト項目（`ends_blank` と `last_child_blank` はすべて） | タイトとルーズの判定と、空行の打ち切りに使う（下の節） |
+
+**解析の全体の状態**：スタックのほかに、解析は次の値を持つ。
+
+| 値 | 意味 |
+|----|------|
+| `pos` | いま処理している行の位置（上の「行の位置」） |
+| `all_matched` | この行で、開いている要素がすべて一致した。Setext 見出しの下線と、遅延継続行の判定に使う |
+| `line_taken` | この行で開いたリーフが、行の残りをすべて取った |
+| `break_kill` | この行で、この位置より前からはテーマの区切りが始まらない。cmark の `thematic_break_kill_pos` と同じもので、テーマの区切りの判定が失敗したとき、走査が止まった位置を入れる。その範囲の中から始まる判定は、同じ文字を同じ位置まで読んで失敗するので、調べ直さない。これにより、`- - - … - a` のような行の処理が、行の長さに比例する |
+| `blank_mark` | 自身の「空行で終わった」が立ちうる、ただ 1 つの要素の添字。各行の後で、その印が立っている要素は高々 1 つ（空行のときの C）なので、その 1 つを消せば、C までのすべての要素を消したことになる。スタックをたどらずに O(1) で消せる |
 
 - 入れ子の深さは、スタックの添字である。要素を積む前に、`max_nesting_depth` が 0 でなく、新しい添字がそれを超えるなら `LIMIT_EXCEEDED` を返す（リーフも、ノードを作る前のこの時点で検査する）。
 - ノードを作るたびに、`max_node_count` が 0 でなく、`amark_document_node_count` がそれを超えるなら `LIMIT_EXCEEDED` を返す。ノードを取り除かないので、この数は、返す木のノードの数と等しい。
 
 **3 つの関数**（方言の規則を足す箇所）：種類ごとの処理は、次の 3 つの `static` の関数の中の `switch` にまとめる。方言の種類は、`default` の枝に入る。この spec では、`default` の枝は「継続しない」「開始しない」「何もせずに閉じる」である。dialect-extension は、この 3 つの `default` の枝に、規則の呼び出しを足す。
+
+- 空行の打ち切り（下の節。`blank_run_continues` と `add_blank_run_line`）は、継続の判定を通らずに、リストより内側の要素をすべて一致とみなす 2 つ目の箇所である。いまの打ち切りは、内側に残るリーフが空行で必ず続くこと（前の空行で、続かないものは閉じてある）を前提にしている。方言のリーフを足すときは、ここにも呼び出しを足す必要がある。空行をまたいで続く方言のリーフ（コードブロックや 1 から 5 番の HTML ブロックのように、空行で閉じないもの）は、`add_blank_run_line` で、いまのコードブロックと HTML ブロックと同じく `end` を延ばし、行の記録を書く。空行で閉じる方言のリーフは、前の空行で閉じているので、打ち切りに来ることはない。
 
 | 関数 | 役割 | 呼ぶ場所 |
 |------|------|----------|

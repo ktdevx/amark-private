@@ -10,7 +10,8 @@
  * lines, thematic breaks and ATX headings, code blocks, HTML blocks, link
  * reference definitions and setext headings, block quotes and lazy
  * continuation lines, lists and their spacing, runs of blank lines (the
- * blank line cutoff), the ranges and lines of their nodes, their
+ * blank line cutoff), U+0000, ill-formed bytes and Unicode spaces (which
+ * are not white space), the ranges and lines of their nodes, their
  * attributes, the definition table, their inline contents, the line
  * records, ranges that start past offset 0, the line position (the cached search for the
  * first non-space byte and the two advances), the node count and nesting
@@ -4279,6 +4280,109 @@ NAOS_TEST(advance_stops_at_the_end_of_the_content)
     NAOS_CHECK_UINT_EQ(pos.column, 2);
 }
 
+/* ---------------------------------------------------------------------- */
+/* U+0000, ill-formed bytes and Unicode spaces are not white space        */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Parses length bytes at bytes through amark_parse with AMARK_UTF8_REPLACE,
+ * requires success and a tree that passes the tree check.
+ */
+static void parse_replace_ok(const char *bytes, size_t length)
+{
+    amark_config_t config;
+    amark_tree_check_result_t check;
+
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    config.utf8_mode = AMARK_UTF8_REPLACE;
+    NAOS_REQUIRE_INT_EQ(amark_parse(bytes, length, &config, &g_doc),
+                        AMARK_ERROR_NONE);
+    check = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(check.node, AMARK_NODE_NONE);
+}
+
+#define PARSE_REPLACE(s) parse_replace_ok((s), sizeof(s) - 1)
+
+NAOS_TEST(nul_line_is_not_blank)
+{
+    /*
+     * "a\n" 0-1, "\0\n" 2-3, "b" 4. The line holding U+0000 is not blank,
+     * so it does not close the paragraph: one paragraph of three lines.
+     */
+    PARSE("a\n\0\nb");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 5, 1, 3);
+    NAOS_CHECK_UINT_EQ(amark_inline_content_count(g_doc), 1);
+    check_content(0, root_child(0), 0, 5);
+    check_record(2, 2, 0);
+}
+
+NAOS_TEST(nul_after_four_spaces_is_indented_code)
+{
+    /* U+0000 is the first non-space character, at column 4: code. */
+    PARSE("    \0");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 4, 5, 1, 1);
+    check_record(1, 4, 0);
+}
+
+NAOS_TEST(nul_before_a_marker_is_not_indentation)
+{
+    /*
+     * U+0000 is not white space: "\0# a" is no ATX heading and "\0    b"
+     * no indented code; both are paragraph text. A line of U+0000 can be
+     * the text of a setext heading.
+     */
+    PARSE("\0# a\n\n\0    b\n\n\0\n===");
+    check_dump("(doc (p) (p) (h 1 setext))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 4, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 6, 12, 3, 3);
+    check_node(root_child(2), AMARK_KIND_HEADING, 14, 19, 5, 6);
+    check_content(2, root_child(2), 14, 15);
+}
+
+NAOS_TEST(ill_formed_bytes_are_not_white_space)
+{
+    /*
+     * With AMARK_UTF8_REPLACE an ill-formed byte reads as U+FFFD, which is
+     * not white space: "\xff\n" is the text of a setext heading, a line of
+     * "\xff" does not close a paragraph, and "    \xff" is indented code.
+     */
+    PARSE_REPLACE("\xff\n===");
+    check_dump("(doc (h 1 setext))");
+    check_node(root_child(0), AMARK_KIND_HEADING, 0, 5, 1, 2);
+    check_content(0, root_child(0), 0, 1);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE_REPLACE("a\n\xff\nb");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 5, 1, 3);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE_REPLACE("    \xff\xfe");
+    check_dump("(doc (code indented))");
+    check_node(root_child(0), AMARK_KIND_CODE_BLOCK, 4, 6, 1, 1);
+}
+
+NAOS_TEST(unicode_space_is_not_indentation)
+{
+    /*
+     * "\xC2\xA0# a\n" 0-5: U+00A0 before "#" is not indentation, so the
+     * line is a paragraph, not an ATX heading. "\n" 6. "\xE3\x80\x80    b"
+     * 7-14: U+3000 and four spaces are no indented code but a paragraph.
+     */
+    PARSE("\xC2\xA0# a\n\n\xE3\x80\x80    b");
+    check_dump("(doc (p) (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 5, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 7, 15, 3, 3);
+    check_record(1, 0, 0);
+    check_record(3, 7, 0);
+}
+
 NAOS_SUITE(block_paragraphs,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -4292,6 +4396,11 @@ NAOS_SUITE(block_paragraphs,
     NAOS_ADD_TEST(line_with_spaces_and_tabs_only_closes_the_paragraph),
     NAOS_ADD_TEST(continuation_line_indented_with_a_tab),
     NAOS_ADD_TEST(unicode_space_is_not_a_space),
+    NAOS_ADD_TEST(nul_line_is_not_blank),
+    NAOS_ADD_TEST(nul_after_four_spaces_is_indented_code),
+    NAOS_ADD_TEST(nul_before_a_marker_is_not_indentation),
+    NAOS_ADD_TEST(ill_formed_bytes_are_not_white_space),
+    NAOS_ADD_TEST(unicode_space_is_not_indentation),
     NAOS_ADD_TEST(content_ending_with_a_line_ending)
 )
 

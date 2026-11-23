@@ -10,11 +10,15 @@
 
 /*
  * The hidden header in front of each block. It records the state the block
- * was allocated from. The union makes its size a multiple of the strictest
- * C99 alignment, so the block that follows keeps malloc's alignment.
+ * was allocated from and the size requested. The union makes its size a
+ * multiple of the strictest C99 alignment, so the block that follows keeps
+ * malloc's alignment.
  */
 typedef union test_alloc_header {
-    amark_test_alloc_t *owner;
+    struct {
+        amark_test_alloc_t *owner;
+        size_t size;
+    } info;
     long double ld;
     long long ll;
     double d;
@@ -38,15 +42,20 @@ static void *test_alloc_malloc(void *ctx, size_t size)
     if (header == NULL) {
         return NULL;
     }
-    header->owner = state;
+    header->info.owner = state;
+    header->info.size = size;
     state->live++;
+    state->live_bytes += size;
+    if (state->live_bytes > state->peak_bytes) {
+        state->peak_bytes = state->live_bytes;
+    }
     return header + 1;
 }
 
 static void test_alloc_free(void *ctx, void *ptr)
 {
     test_alloc_header_t *header = (test_alloc_header_t *)ptr - 1;
-    amark_test_alloc_t *owner = header->owner;
+    amark_test_alloc_t *owner = header->info.owner;
 
     /*
      * Count on the owner, the state the block came from: ctx may point to
@@ -57,6 +66,7 @@ static void test_alloc_free(void *ctx, void *ptr)
     }
     owner->free_calls++;
     owner->live--;
+    owner->live_bytes -= header->info.size;
     free(header);
 }
 
@@ -67,6 +77,8 @@ void amark_test_alloc_init(amark_test_alloc_t *state)
     state->live = 0;
     state->fail_at = 0;
     state->ctx_mismatch = 0;
+    state->live_bytes = 0;
+    state->peak_bytes = 0;
 }
 
 amark_allocator_t amark_test_allocator(amark_test_alloc_t *state)

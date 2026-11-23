@@ -9,7 +9,8 @@
  * allocate nothing, empty ranges and NULL content, the input size limit, the
  * two UTF-8 modes, ranges that do not start at 0, the file name, the
  * allocator, the release of everything on failure and of the scratch arena on
- * success, and that the same input gives the same tree. Every parsed document
+ * success, that the same input gives the same tree, and that a dialect
+ * changes nothing. Every parsed document
  * goes through amark_tree_check.
  */
 
@@ -17,6 +18,7 @@
 #include "block.h"
 #include "config_internal.h"
 #include "document.h"
+#include "line.h"
 #include "parse_data.h"
 #include "test_alloc.h"
 #include "tree_check.h"
@@ -435,6 +437,7 @@ NAOS_TEST(file_name_reaches_the_diagnostics)
     g_config.filename = filename;
     NAOS_REQUIRE_INT_EQ(amark_parse(S("a"), &g_config, &g_doc),
                         AMARK_ERROR_NONE);
+    check_tree(g_doc);
     /* The block parser adds no diagnostics; add one to read the name. */
     NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), 0);
     NAOS_REQUIRE_INT_EQ(amark_document_add_diagnostic(
@@ -453,6 +456,7 @@ NAOS_TEST(no_file_name_by_default)
 
     NAOS_REQUIRE_INT_EQ(amark_parse(S("a"), &g_config, &g_doc),
                         AMARK_ERROR_NONE);
+    check_tree(g_doc);
     NAOS_REQUIRE_INT_EQ(amark_document_add_diagnostic(
                             g_doc, 0, AMARK_SEVERITY_WARNING, "m"),
                         AMARK_ERROR_NONE);
@@ -501,6 +505,7 @@ NAOS_TEST(scratch_arena_is_released_on_success)
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_other), AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_block_parse(g_other, &resolved, &g_scratch),
                         AMARK_ERROR_NONE);
+    check_tree(g_other);
     NAOS_REQUIRE_NOT_NULL(g_scratch.current);
     amark_arena_deinit(&g_scratch);
     document_live = direct.live;
@@ -513,6 +518,7 @@ NAOS_TEST(scratch_arena_is_released_on_success)
     amark_arena_init(&g_scratch, &g_config.allocator);
     NAOS_REQUIRE_INT_EQ(amark_parse(S(content), &g_config, &g_doc),
                         AMARK_ERROR_NONE);
+    check_tree(g_doc);
     NAOS_CHECK_UINT_EQ(g_state.live, document_live);
 }
 
@@ -553,6 +559,91 @@ NAOS_TEST(same_input_gives_the_same_tree)
                            amark_node_start_line(g_doc, node));
         NAOS_CHECK_UINT_EQ(amark_node_end_line(g_other, node),
                            amark_node_end_line(g_doc, node));
+    }
+}
+
+/* Only its address is used, as an opaque dialect pointer. */
+static const int g_dialect_object = 1;
+
+NAOS_TEST(dialect_does_not_change_the_result)
+{
+    /*
+     * In this spec the dialect member is passed through and never read
+     * (Requirement 17.4): a non-NULL dialect gives the same tree, line
+     * records and inline contents as NULL.
+     */
+    static const char content[] =
+        "# Title\n\n> quote\nlazy\n\n- a\n\n  b\n-\tc\n\n"
+        "```js\ncode\n```\n\n    indented\n\n[x]: /u\nSetext\n---\n"
+        "<div>\nhtml\n</div>\n";
+    amark_line_bounds_t bounds;
+    size_t count;
+    size_t line;
+    size_t index;
+    amark_node_id_t node;
+
+    NAOS_REQUIRE_INT_EQ(amark_parse(S(content), &g_config, &g_doc),
+                        AMARK_ERROR_NONE);
+    g_config.dialect = (const amark_dialect_t *)(const void *)&g_dialect_object;
+    NAOS_REQUIRE_INT_EQ(amark_parse(S(content), &g_config, &g_other),
+                        AMARK_ERROR_NONE);
+    check_tree(g_doc);
+    check_tree(g_other);
+    dump(g_doc, g_dump);
+    dump(g_other, g_other_dump);
+    NAOS_CHECK_STR_EQ(g_dump,
+                      "(doc (h 1 atx) (bq (p)) (ul - loose (li (p) (p))"
+                      " (li (p))) (code fenced ` 3 info) (code indented)"
+                      " (def) (h 2 setext) (html))");
+    NAOS_CHECK_STR_EQ(g_other_dump, g_dump);
+
+    count = amark_document_node_count(g_doc);
+    NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_other), count);
+    for (node = 1; node < count; node++) {
+        amark_range_t a;
+        amark_range_t b;
+
+        NAOS_CHECK_UINT_EQ(amark_node_kind(g_other, node),
+                           amark_node_kind(g_doc, node));
+        NAOS_CHECK_UINT_EQ(amark_node_parent(g_other, node),
+                           amark_node_parent(g_doc, node));
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &a));
+        NAOS_REQUIRE_TRUE(amark_node_range(g_other, node, &b));
+        NAOS_CHECK_UINT_EQ(b.start, a.start);
+        NAOS_CHECK_UINT_EQ(b.end, a.end);
+        NAOS_CHECK_UINT_EQ(amark_node_start_line(g_other, node),
+                           amark_node_start_line(g_doc, node));
+        NAOS_CHECK_UINT_EQ(amark_node_end_line(g_other, node),
+                           amark_node_end_line(g_doc, node));
+    }
+
+    for (line = 1; amark_line_bounds(g_doc, line, &bounds); line++) {
+        amark_line_record_t a;
+        amark_line_record_t b;
+
+        NAOS_REQUIRE_TRUE(amark_line_get(g_doc, line, &a));
+        NAOS_REQUIRE_TRUE(amark_line_get(g_other, line, &b));
+        NAOS_CHECK_UINT_EQ(b.content_start, a.content_start);
+        NAOS_CHECK_UINT_EQ(b.pad, a.pad);
+    }
+    /* 22 lines, the last ending with a line ending. */
+    NAOS_CHECK_UINT_EQ(line, 23);
+    NAOS_CHECK_FALSE(amark_line_bounds(g_other, line, &bounds));
+
+    count = amark_inline_content_count(g_doc);
+    /* The heading, the quote's paragraph, three in the list, the setext
+     * heading. */
+    NAOS_CHECK_UINT_EQ(count, 6);
+    NAOS_REQUIRE_UINT_EQ(amark_inline_content_count(g_other), count);
+    for (index = 0; index < count; index++) {
+        amark_inline_content_t a;
+        amark_inline_content_t b;
+
+        NAOS_REQUIRE_TRUE(amark_inline_content_at(g_doc, index, &a));
+        NAOS_REQUIRE_TRUE(amark_inline_content_at(g_other, index, &b));
+        NAOS_CHECK_UINT_EQ(b.node, a.node);
+        NAOS_CHECK_UINT_EQ(b.start, a.start);
+        NAOS_CHECK_UINT_EQ(b.end, a.end);
     }
 }
 
@@ -603,7 +694,8 @@ NAOS_SUITE(parse_document,
     NAOS_ADD_TEST(no_file_name_by_default),
     NAOS_ADD_TEST(only_the_configured_allocator_is_used),
     NAOS_ADD_TEST(scratch_arena_is_released_on_success),
-    NAOS_ADD_TEST(same_input_gives_the_same_tree)
+    NAOS_ADD_TEST(same_input_gives_the_same_tree),
+    NAOS_ADD_TEST(dialect_does_not_change_the_result)
 )
 
 NAOS_MAIN(

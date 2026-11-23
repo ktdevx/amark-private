@@ -11,10 +11,13 @@
  * and inputs that make a careless parser take time quadratic in their length
  * (runs of blank lines and of ">" lines after deep lists, many definitions,
  * many lazy continuation lines, "- - - ... a", the continuation lines of a
- * deep list, and runs of "["). Time is not measured: these inputs end well
- * within the time limit of CI only if the parse is close to linear. Also:
- * runs of blank lines give the tree of one, and a failure injected at each
- * allocation of a parse of every kind of block leaves nothing behind.
+ * deep list, runs of "[", fences and HTML blocks that never close, and one
+ * line of several megabytes). Time is not measured: these inputs end well
+ * within the time limit of CI only if the parse is close to linear. The
+ * peak of the bytes a parse holds is compared at two sizes of an input, to
+ * check that memory grows in proportion to it. Also: runs of blank lines
+ * give the tree of one, and a failure injected at each allocation of a
+ * parse of every kind of block leaves nothing behind.
  *
  * The inputs are built in memory with the counting allocator, every parsed
  * document goes through amark_tree_check, and teardown checks that no block
@@ -710,6 +713,121 @@ NAOS_TEST(runs_of_open_brackets)
     parse_ok(0, 0, PATH_LINES / 100 + 1);
 }
 
+/* Checks the kind, the range and the line span of node. */
+static void check_span(amark_node_id_t node, amark_kind_t kind, size_t start,
+                       size_t end, size_t start_line, size_t end_line)
+{
+    amark_range_t range;
+
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, node), kind);
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+    NAOS_CHECK_UINT_EQ(range.start, start);
+    NAOS_CHECK_UINT_EQ(range.end, end);
+    NAOS_CHECK_UINT_EQ(amark_node_start_line(g_doc, node), start_line);
+    NAOS_CHECK_UINT_EQ(amark_node_end_line(g_doc, node), end_line);
+}
+
+/*
+ * Blocks that never close and take every line to the end of the input: a
+ * careless parser that looks back over the lines of an open block (for its
+ * closing line, or its end condition) takes time quadratic in their number.
+ * Each block ends at the end of the content of its last line.
+ */
+NAOS_TEST(unclosed_blocks_of_many_lines)
+{
+    /* A fence that is never closed, PATH_LINES lines of code. */
+    input_begin(4 + 4 * PATH_LINES);
+    APPEND("```\n");
+    REPEAT("x y\n", PATH_LINES);
+    parse_ok(0, 0, 2);
+    check_dump("(doc (code fenced ` 3))");
+    check_span(root_child(0), AMARK_KIND_CODE_BLOCK, 0, g_length - 1, 1,
+               PATH_LINES + 1);
+    reset_doc();
+
+    /* The same in a list item: each line is continued by its indentation. */
+    input_begin(6 + 6 * PATH_LINES);
+    APPEND("- ```\n");
+    REPEAT("  x y\n", PATH_LINES);
+    parse_ok(0, 0, 4);
+    check_dump("(doc (ul - tight (li (code fenced ` 3))))");
+    check_span(root_child(0), AMARK_KIND_LIST, 0, g_length - 1, 1,
+               PATH_LINES + 1);
+    reset_doc();
+
+    /*
+     * A "<script>" block (condition 1) and a "<!--" block (condition 2) whose
+     * end condition never comes, over PATH_LINES lines that hold none of it,
+     * blank lines included.
+     */
+    input_begin(9 + 6 * PATH_LINES);
+    APPEND("<script>\n");
+    REPEAT("a < b\n\n", PATH_LINES / 2);
+    parse_ok(0, 0, 2);
+    check_dump("(doc (html))");
+    /* The last line is blank: the block ends where its content does. */
+    check_span(root_child(0), AMARK_KIND_HTML_BLOCK, 0, g_length - 1, 1,
+               PATH_LINES);
+    reset_doc();
+
+    input_begin(5 + 5 * PATH_LINES);
+    APPEND("<!--\n");
+    REPEAT("- -\n", PATH_LINES);
+    parse_ok(0, 0, 2);
+    check_dump("(doc (html))");
+    check_span(root_child(0), AMARK_KIND_HTML_BLOCK, 0, g_length - 1, 1,
+               PATH_LINES + 1);
+}
+
+/* One line of LONG_LINE bytes. */
+#define LONG_LINE ((size_t)4 * 1024 * 1024)
+
+/*
+ * One very long line: the line is scanned for its first non-space byte and
+ * its kind a fixed number of times, never once per byte.
+ */
+NAOS_TEST(one_very_long_line)
+{
+    /* A paragraph of one line. */
+    input_begin(LONG_LINE);
+    REPEAT("ab c", LONG_LINE / 4);
+    parse_ok(0, 0, 2);
+    check_dump("(doc (p))");
+    check_span(root_child(0), AMARK_KIND_PARAGRAPH, 0, LONG_LINE, 1, 1);
+    reset_doc();
+
+    /* The same line indented by three spaces, after a paragraph line. */
+    input_begin(5 + LONG_LINE);
+    APPEND("a\n   ");
+    REPEAT("ab c", LONG_LINE / 4);
+    parse_ok(0, 0, 2);
+    check_span(root_child(0), AMARK_KIND_PARAGRAPH, 0, g_length, 1, 2);
+    reset_doc();
+
+    /* The content of a fenced code block, closed after it. */
+    input_begin(4 + LONG_LINE + 5);
+    APPEND("```\n");
+    REPEAT("`a~ ", LONG_LINE / 4);
+    APPEND("\n```\n");
+    parse_ok(0, 0, 2);
+    check_dump("(doc (code fenced ` 3))");
+    check_span(root_child(0), AMARK_KIND_CODE_BLOCK, 0, g_length - 1, 1, 3);
+    reset_doc();
+
+    /* A run of "-" that is one thematic break, and of "#" that is none. */
+    input_begin(LONG_LINE);
+    REPEAT("- ", LONG_LINE / 2);
+    parse_ok(0, 0, 2);
+    check_dump("(doc (hr))");
+    check_span(root_child(0), AMARK_KIND_THEMATIC_BREAK, 0, LONG_LINE, 1, 1);
+    reset_doc();
+
+    input_begin(LONG_LINE);
+    REPEAT("#", LONG_LINE);
+    parse_ok(0, 0, 2);
+    check_dump("(doc (p))");
+}
+
 /* ---------------------------------------------------------------------- */
 /* The blank line cutoff leaves the tree as it is                         */
 /* ---------------------------------------------------------------------- */
@@ -1068,6 +1186,83 @@ NAOS_TEST(allocation_failure_at_every_call_with_every_block_kind)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Memory in proportion to the input                                      */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Parses the input with no limits and returns the peak of the bytes the
+ * parse held at once (the document and its scratch arena), the input left
+ * out. Allocation is deterministic, so the value is the same on every run.
+ */
+static size_t parse_peak_bytes(void)
+{
+    amark_tree_check_result_t check;
+    size_t before;
+
+    reset_doc();
+    before = g_state.live_bytes;
+    g_state.peak_bytes = before;
+    NAOS_REQUIRE_INT_EQ(parse_input(0, 0), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_TRUE(g_doc != NULL && g_doc != k_sentinel);
+    check = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(check.node, AMARK_NODE_NONE);
+    return g_state.peak_bytes - before;
+}
+
+/*
+ * Requires the peak of an input four times as large to stay within a
+ * linear bound of the peak of the small one: at most 1.5 times four times
+ * it, plus a constant for the fixed blocks of a document. A parse whose
+ * memory is quadratic in the input reaches sixteen times it. Allocation is
+ * deterministic, so the check gives the same result on every run.
+ */
+static void check_linear_peak(size_t small, size_t large)
+{
+    NAOS_CHECK_UINT_GT(small, 0);
+    NAOS_CHECK_UINT_GE(large, small);
+    NAOS_CHECK_UINT_LE(large, 6 * small + 4096);
+}
+
+/* The size of the small input of each shape below; the large one is 4x. */
+#define MEMORY_UNITS 2500
+
+NAOS_TEST(memory_grows_in_proportion_to_the_input)
+{
+    size_t small;
+    size_t large;
+
+    /* Paragraphs of two lines. */
+    input_begin(20 * MEMORY_UNITS);
+    REPEAT("para one\nline two\n\n", MEMORY_UNITS);
+    small = parse_peak_bytes();
+    input_begin(20 * 4 * MEMORY_UNITS);
+    REPEAT("para one\nline two\n\n", 4 * MEMORY_UNITS);
+    large = parse_peak_bytes();
+    check_linear_peak(small, large);
+
+    /* Every kind of block, in copies of k_every_block. */
+    input_begin((sizeof(k_every_block) - 1) * (MEMORY_UNITS / 100));
+    REPEAT(k_every_block, MEMORY_UNITS / 100);
+    small = parse_peak_bytes();
+    input_begin((sizeof(k_every_block) - 1) * (MEMORY_UNITS / 100) * 4);
+    REPEAT(k_every_block, (MEMORY_UNITS / 100) * 4);
+    large = parse_peak_bytes();
+    check_linear_peak(small, large);
+
+    /* Block quotes nested deep: the stack of open blocks grows too. */
+    input_begin(MEMORY_UNITS + 1);
+    REPEAT(">", MEMORY_UNITS);
+    APPEND("a");
+    small = parse_peak_bytes();
+    input_begin(4 * MEMORY_UNITS + 1);
+    REPEAT(">", 4 * MEMORY_UNITS);
+    APPEND("a");
+    large = parse_peak_bytes();
+    check_linear_peak(small, large);
+}
+
+/* ---------------------------------------------------------------------- */
 
 NAOS_SUITE(limits,
     NAOS_SET_SETUP(counting),
@@ -1100,7 +1295,10 @@ NAOS_SUITE(large_inputs,
     NAOS_ADD_TEST(many_lazy_continuation_lines),
     NAOS_ADD_TEST(markers_that_almost_make_a_thematic_break),
     NAOS_ADD_TEST(continuation_lines_of_a_deep_list),
-    NAOS_ADD_TEST(runs_of_open_brackets)
+    NAOS_ADD_TEST(runs_of_open_brackets),
+    NAOS_ADD_TEST(unclosed_blocks_of_many_lines),
+    NAOS_ADD_TEST(one_very_long_line),
+    NAOS_ADD_TEST(memory_grows_in_proportion_to_the_input)
 )
 
 NAOS_SUITE(blank_line_cutoff,
