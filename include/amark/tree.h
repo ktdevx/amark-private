@@ -237,6 +237,97 @@ AMARK_API size_t amark_node_end_line(const amark_document_t *doc,
                                      amark_node_id_t node);
 
 /*
+ * The attributes of each kind.
+ *
+ * Each reader below answers only for a node of the kind (and style or form)
+ * it names, with its attributes set; otherwise it returns the fixed value as
+ * above: 0 for an enumeration (its *_NONE), a number or a character, and
+ * false for bool, leaving *out unchanged. A reader of a range returns false
+ * when the part is not written, and true with start == end when it is
+ * written but empty. Ranges count bytes from the start of the content.
+ */
+
+/* The level (1 to 6) and the style of a heading. */
+AMARK_API unsigned amark_heading_level(const amark_document_t *doc,
+                                       amark_node_id_t node);
+AMARK_API amark_heading_style_t amark_heading_style(
+    const amark_document_t *doc, amark_node_id_t node);
+
+/*
+ * The type and the spacing of a list. amark_list_bullet_char answers for a
+ * bullet list only ('-', '+' or '*'); amark_list_delimiter ('.' or ')') and
+ * amark_list_start (the start number, stored in *out) answer for an ordered
+ * list only. amark_list_start returns false if out is NULL.
+ */
+AMARK_API amark_list_type_t amark_list_type(const amark_document_t *doc,
+                                            amark_node_id_t node);
+AMARK_API amark_list_spacing_t amark_list_spacing(const amark_document_t *doc,
+                                                  amark_node_id_t node);
+AMARK_API char amark_list_bullet_char(const amark_document_t *doc,
+                                      amark_node_id_t node);
+AMARK_API char amark_list_delimiter(const amark_document_t *doc,
+                                    amark_node_id_t node);
+AMARK_API bool amark_list_start(const amark_document_t *doc,
+                                amark_node_id_t node, uint32_t *out);
+
+/*
+ * The style of a code block. The fence character ('`' or '~'), the length
+ * of the opening fence and the range of the info string answer for a fenced
+ * code block only. amark_code_block_info returns false if the info string is
+ * not written or out is NULL.
+ */
+AMARK_API amark_code_block_style_t amark_code_block_style(
+    const amark_document_t *doc, amark_node_id_t node);
+AMARK_API char amark_code_block_fence_char(const amark_document_t *doc,
+                                           amark_node_id_t node);
+AMARK_API size_t amark_code_block_fence_length(const amark_document_t *doc,
+                                               amark_node_id_t node);
+AMARK_API bool amark_code_block_info(const amark_document_t *doc,
+                                     amark_node_id_t node, amark_range_t *out);
+
+/*
+ * The attributes of a link or an image. The destination and the title
+ * answer for the inline form only, when that part is written.
+ * amark_link_definition answers for the reference forms (full, collapsed,
+ * shortcut) only: it returns the link reference definition the link refers
+ * to, whose destination and title are read with amark_definition_*.
+ */
+AMARK_API amark_link_form_t amark_link_form(const amark_document_t *doc,
+                                            amark_node_id_t node);
+AMARK_API bool amark_link_destination(const amark_document_t *doc,
+                                      amark_node_id_t node,
+                                      amark_range_t *out);
+AMARK_API bool amark_link_title(const amark_document_t *doc,
+                                amark_node_id_t node, amark_range_t *out);
+AMARK_API amark_node_id_t amark_link_definition(const amark_document_t *doc,
+                                                amark_node_id_t node);
+
+/* The label, the destination and the title of a link reference definition. */
+AMARK_API bool amark_definition_label(const amark_document_t *doc,
+                                      amark_node_id_t node,
+                                      amark_range_t *out);
+AMARK_API bool amark_definition_destination(const amark_document_t *doc,
+                                            amark_node_id_t node,
+                                            amark_range_t *out);
+AMARK_API bool amark_definition_title(const amark_document_t *doc,
+                                      amark_node_id_t node,
+                                      amark_range_t *out);
+
+/* Whether an autolink is a URI or an email address. */
+AMARK_API amark_autolink_type_t amark_autolink_type(
+    const amark_document_t *doc, amark_node_id_t node);
+
+/*
+ * Returns the attribute bytes a dialect put on node, a node of a dialect
+ * kind, and stores their number in *size if size is not NULL. Returns NULL
+ * and stores 0 if there are none. The bytes are valid until the document is
+ * destroyed and aligned for any type.
+ */
+AMARK_API const void *amark_node_dialect_data(const amark_document_t *doc,
+                                              amark_node_id_t node,
+                                              size_t *size);
+
+/*
  * Releases doc and everything it holds (nodes, attributes, diagnostics)
  * through the allocator it was created with. The content is neither changed
  * nor released. Does nothing if doc is NULL.
