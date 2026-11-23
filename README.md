@@ -1,6 +1,6 @@
-# amark
+# Amark
 
-amark is a C99 library that parses Markdown into a syntax tree that stays
+Amark is a C99 library that parses Markdown into a syntax tree that stays
 faithful to the source text. It targets full conformance with
 [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/), and every node
 refers back to the input by byte range and line number instead of copying it,
@@ -22,7 +22,7 @@ Design goals:
 
 ## Status
 
-amark is under early development (version 0.1.0) and is not usable for
+Amark is under early development (version 0.1.0) and is not usable for
 parsing yet. The repository currently provides the foundation: the build,
 install and package configuration, the test setup, CI, and the internal
 building blocks (allocator abstraction, arena, growable array, line index,
@@ -73,9 +73,9 @@ CI runs the same commands with `-DAMARK_WARNINGS_AS_ERRORS=ON` added to the
 first one, for both values of `BUILD_SHARED_LIBS`.
 
 To check the installed package, build and run the small consumer project in
-`tests/consumer/` against it. It finds amark with `find_package(Amark)`,
+`tests/consumer/` against it. It finds Amark with `find_package(Amark)`,
 checks that the install prefix holds no internal headers, and runs one test.
-The prefix you pass must hold only amark.
+The prefix you pass must hold only Amark.
 
 ```sh
 cmake -S tests/consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$PWD/build/install"
@@ -84,12 +84,12 @@ ctest --test-dir build-consumer -C Release --output-on-failure
 ```
 
 Add `-DAMARK_CONSUMER_MODE=subdirectory` (and leave out
-`CMAKE_PREFIX_PATH`) to build the same project with amark pulled in by
+`CMAKE_PREFIX_PATH`) to build the same project with Amark pulled in by
 `add_subdirectory()` instead.
 
 ### Sanitizers
 
-With GCC or Clang, `-DAMARK_SANITIZE=ON` builds amark, the tests and Naos
+With GCC or Clang, `-DAMARK_SANITIZE=ON` builds Amark, the tests and Naos
 with AddressSanitizer and UndefinedBehaviorSanitizer. Use C and C++
 compilers from the same toolchain, since the C++ header test links the same
 sanitizer runtime:
@@ -100,7 +100,7 @@ cmake --build build-asan --config Debug
 ctest --test-dir build-asan -C Debug --output-on-failure
 ```
 
-## Using amark from CMake
+## Using Amark from CMake
 
 Both ways below give you the same target, `Amark::amark`. Linking it adds the
 include directory and, for a static library, the `AMARK_STATIC_DEFINE`
@@ -148,7 +148,7 @@ add_executable(app main.c)
 target_link_libraries(app PRIVATE Amark::amark)
 ```
 
-As a subproject, amark does not build its tests (so Naos is not fetched),
+As a subproject, Amark does not build its tests (so Naos is not fetched),
 defines no install rules, and leaves warnings as warnings, unless you set the
 options below before `add_subdirectory()`. `BUILD_SHARED_LIBS` of the parent
 project selects a static or shared library.
@@ -158,12 +158,12 @@ project selects a static or shared library.
 | Option | Default | Meaning |
 |---|---|---|
 | `BUILD_SHARED_LIBS` | `OFF` (CMake's standard variable) | `ON` builds a shared library, `OFF` a static one. |
-| `AMARK_BUILD_TESTS` | `ON` when amark is the top-level project, else `OFF` | Build the tests and register them with CTest. Only then is Naos fetched. |
-| `AMARK_WARNINGS_AS_ERRORS` | `OFF` | Treat compiler warnings as errors in amark's own targets (`-Werror`, `/WX`). CI turns it on. |
+| `AMARK_BUILD_TESTS` | `ON` when Amark is the top-level project, else `OFF` | Build the tests and register them with CTest. Only then is Naos fetched. |
+| `AMARK_WARNINGS_AS_ERRORS` | `OFF` | Treat compiler warnings as errors in Amark's own targets (`-Werror`, `/WX`). CI turns it on. |
 | `AMARK_SANITIZE` | `OFF` | Build with AddressSanitizer and UndefinedBehaviorSanitizer. GCC and Clang only; configuring fails with other compilers. |
-| `AMARK_INSTALL` | `ON` when amark is the top-level project, else `OFF` | Define the install rules (library, public headers, CMake package files, `LICENSE`). |
+| `AMARK_INSTALL` | `ON` when Amark is the top-level project, else `OFF` | Define the install rules (library, public headers, CMake package files, `LICENSE`). |
 
-amark's own targets are always compiled as C99 without compiler extensions,
+Amark's own targets are always compiled as C99 without compiler extensions,
 with `-Wall -Wextra -Wpedantic` (GCC, Clang) or `/W4` (MSVC), and with
 symbols hidden except those marked `AMARK_API`.
 
@@ -175,5 +175,5 @@ code follows.
 
 ## License
 
-amark is released under the MIT License; see [LICENSE](LICENSE).
+Amark is released under the MIT License; see [LICENSE](LICENSE).
 Copyright (c) 2026 The Amark Authors.

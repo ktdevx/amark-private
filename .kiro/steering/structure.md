@@ -39,7 +39,7 @@
 - `tests/public/`：公開 API だけを使うテスト。`Amark::amark` にリンクする。公開ヘッダを C++ として取り込む検査（`header_cxx.cpp`）もここに置く。
 - `tests/support/`：テストの支援のコード（数えて、指定した回で失敗する確保関数 `test_alloc.h`）。テスト専用の静的ライブラリ `amark_test_support` にし、インストールしない。
 - `tests/checks/`：リポジトリの検査の `cmake -P` スクリプト（動的ライブラリの公開シンボルが一覧と一致すること、可変の静的データと禁止した関数の参照がないこと、各ファイルの著作権表示）と、公開シンボルの一覧（`exported_symbols.txt`）。
-- `tests/consumer/`：利用側のプロジェクト。`find_package(Amark)` と `add_subdirectory()` の両方の方式で `Amark::amark` を使う。amark のビルドには含めない独立したプロジェクトである。
+- `tests/consumer/`：利用側のプロジェクト。`find_package(Amark)` と `add_subdirectory()` の両方の方式で `Amark::amark` を使う。Amark のビルドには含めない独立したプロジェクトである。
 
 **Example**: `amark_add_unit_test(test_arena SOURCES unit/test_arena.c)`、`amark_add_public_test(test_version SOURCES public/test_version.c)` で、Naos を通して CTest に登録する。
 

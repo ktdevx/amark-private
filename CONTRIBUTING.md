@@ -1,4 +1,4 @@
-# Contributing to amark
+# Contributing to Amark
 
 This document gives the rules for code in this repository: the header every
 source file starts with, naming, how to add a module and its tests, and what
@@ -65,7 +65,7 @@ its root and requires both lines within the first 5 lines of every
   `.c` file and an internal header of the same name in `src/`.
 - CMake: the project and package are `Amark` (`find_package(Amark)`,
   `AmarkConfig.cmake`), the library target and file are `amark`, and users
-  link `Amark::amark`. Options and CMake functions of amark start with
+  link `Amark::amark`. Options and CMake functions of Amark start with
   `AMARK_` and `amark_`.
 - Include public headers with angle brackets (`#include <amark/amark.h>`) and
   internal headers with quotes (`#include "arena.h"`).
