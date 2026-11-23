@@ -2247,6 +2247,684 @@ NAOS_TEST(allocation_failure_with_block_quotes)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Lists and list items                                                   */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Checks the attributes of the list node: a bullet list with its bullet
+ * character, or an ordered list with its delimiter and start number. Until
+ * the spacing is decided, a list is tight.
+ */
+static void check_list(amark_node_id_t node, amark_list_type_t type,
+                       char marker, uint32_t start_number)
+{
+    uint32_t start = 0;
+
+    NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node), AMARK_KIND_LIST);
+    NAOS_CHECK_INT_EQ(amark_list_type(g_doc, node), type);
+    NAOS_CHECK_INT_EQ(amark_list_spacing(g_doc, node), AMARK_LIST_TIGHT);
+    if (type == AMARK_LIST_BULLET) {
+        NAOS_CHECK_INT_EQ(amark_list_bullet_char(g_doc, node), marker);
+        NAOS_CHECK_FALSE(amark_list_start(g_doc, node, &start));
+    } else {
+        NAOS_CHECK_INT_EQ(amark_list_delimiter(g_doc, node), marker);
+        NAOS_REQUIRE_TRUE(amark_list_start(g_doc, node, &start));
+        NAOS_CHECK_UINT_EQ(start, start_number);
+    }
+}
+
+/* The number of children of node. */
+static size_t child_count(amark_node_id_t node)
+{
+    amark_node_id_t child = amark_node_first_child(g_doc, node);
+    size_t count = 0;
+
+    while (child != AMARK_NODE_NONE) {
+        count++;
+        child = amark_node_next_sibling(g_doc, child);
+    }
+    return count;
+}
+
+NAOS_TEST(list_item_of_one_line_and_its_attributes)
+{
+    amark_node_id_t list;
+    amark_node_id_t item;
+
+    /* "- a": the list and the item start at '-', the paragraph after "- ". */
+    PARSE_PUBLIC("- a");
+    check_dump("(doc (ul - tight (li (p))))");
+    list = root_child(0);
+    item = nth_child(list, 0);
+    check_list(list, AMARK_LIST_BULLET, '-', 0);
+    check_node(list, AMARK_KIND_LIST, 0, 3, 1, 1);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 3, 1, 1);
+    check_node(nth_child(item, 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
+    check_content(0, nth_child(item, 0), 2, 3);
+    check_record(1, 2, 0);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
+    reset_doc();
+
+    PARSE_PUBLIC("+ a");
+    check_dump("(doc (ul + tight (li (p))))");
+    check_list(root_child(0), AMARK_LIST_BULLET, '+', 0);
+    reset_doc();
+
+    PARSE_PUBLIC("* a");
+    check_dump("(doc (ul * tight (li (p))))");
+    check_list(root_child(0), AMARK_LIST_BULLET, '*', 0);
+    reset_doc();
+
+    /* "1. a": the marker is 2 bytes wide. */
+    PARSE_PUBLIC("1. a");
+    check_dump("(doc (ol 1 . tight (li (p))))");
+    check_list(root_child(0), AMARK_LIST_ORDERED, '.', 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 4, 1, 1);
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_PARAGRAPH, 3, 4, 1, 1);
+    check_record(1, 3, 0);
+    reset_doc();
+
+    PARSE_PUBLIC("12) a");
+    check_dump("(doc (ol 12 ) tight (li (p))))");
+    check_list(root_child(0), AMARK_LIST_ORDERED, ')', 12);
+    check_record(1, 4, 0);
+    reset_doc();
+
+    /* 9 digits at most; leading zeros are kept out of the number. */
+    PARSE_PUBLIC("123456789. a");
+    check_list(root_child(0), AMARK_LIST_ORDERED, '.', 123456789);
+    reset_doc();
+    PARSE_PUBLIC("007. a");
+    check_list(root_child(0), AMARK_LIST_ORDERED, '.', 7);
+    reset_doc();
+    PARSE_PUBLIC("1234567890. a");
+    check_dump("(doc (p))");
+    reset_doc();
+
+    /* 3 columns of indentation: the list and the item start at '-'. */
+    PARSE_PUBLIC("   - a");
+    check_dump("(doc (ul - tight (li (p))))");
+    check_node(root_child(0), AMARK_KIND_LIST, 3, 6, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 3, 6, 1,
+               1);
+    check_record(1, 5, 0);
+    reset_doc();
+
+    /* 4 columns: indented code. No space after the marker: text. */
+    PARSE_PUBLIC("    - a");
+    check_dump("(doc (code indented))");
+    reset_doc();
+    PARSE_PUBLIC("-a\n1.a\n1 a");
+    check_dump("(doc (p))");
+}
+
+NAOS_TEST(list_items_over_several_lines)
+{
+    amark_node_id_t list;
+    amark_node_id_t item;
+
+    /* "- a\n" 0-3, "  b\n" 4-7, "- c\n" 8-11. */
+    PARSE_PUBLIC("- a\n  b\n- c\n");
+    check_dump("(doc (ul - tight (li (p)) (li (p))))");
+    list = root_child(0);
+    check_node(list, AMARK_KIND_LIST, 0, 11, 1, 3);
+    item = nth_child(list, 0);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 7, 1, 2);
+    check_node(nth_child(item, 0), AMARK_KIND_PARAGRAPH, 2, 7, 1, 2);
+    check_content(0, nth_child(item, 0), 2, 7);
+    item = nth_child(list, 1);
+    check_node(item, AMARK_KIND_LIST_ITEM, 8, 11, 3, 3);
+    check_node(nth_child(item, 0), AMARK_KIND_PARAGRAPH, 10, 11, 3, 3);
+    check_record(1, 2, 0);
+    check_record(2, 6, 0);
+    check_record(3, 10, 0);
+    reset_doc();
+
+    /* A lazy line: "- a\n" 0-3, "b" 4. */
+    PARSE_PUBLIC("- a\nb");
+    check_dump("(doc (ul - tight (li (p))))");
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 5, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 5, 1, 2);
+    check_record(2, 4, 0);
+    reset_doc();
+
+    /* The item does not take the blank line after it. */
+    PARSE_PUBLIC("- a\n\n");
+    check_dump("(doc (ul - tight (li (p))))");
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 3, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 3, 1, 1);
+    check_record(2, 4, 0);
+    reset_doc();
+
+    /* With trailing white space: the item ends at the end of the content. */
+    PARSE_PUBLIC("- a  \nb");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 7, 1, 2);
+    check_content(0, nth_child(nth_child(root_child(0), 0), 0), 2, 7);
+}
+
+NAOS_TEST(a_different_marker_starts_a_new_list)
+{
+    /* "- a\n" 0-3, "+ b\n" 4-7, "1. c\n" 8-12, "2) d\n" 13-17, "3) e" 18-21. */
+    PARSE_PUBLIC("- a\n+ b\n1. c\n2) d\n3) e");
+    check_dump("(doc (ul - tight (li (p))) (ul + tight (li (p))) "
+               "(ol 1 . tight (li (p))) (ol 2 ) tight (li (p)) (li (p))))");
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 3, 1, 1);
+    check_node(root_child(1), AMARK_KIND_LIST, 4, 7, 2, 2);
+    check_node(root_child(2), AMARK_KIND_LIST, 8, 12, 3, 3);
+    check_node(root_child(3), AMARK_KIND_LIST, 13, 22, 4, 5);
+    check_list(root_child(3), AMARK_LIST_ORDERED, ')', 2);
+    check_node(nth_child(root_child(3), 1), AMARK_KIND_LIST_ITEM, 18, 22, 5,
+               5);
+    reset_doc();
+
+    /* The number of a later item does not matter. */
+    PARSE_PUBLIC("3. a\n1. b\n7. c");
+    check_dump("(doc (ol 3 . tight (li (p)) (li (p)) (li (p))))");
+}
+
+NAOS_TEST(content_indent_of_list_items)
+{
+    amark_node_id_t item;
+
+    /*
+     * 1 to 4 spaces after the marker: the content indent is the marker and
+     * the spaces. "-   a\n" 0-5, "\n" 6, "    b" 7-11: b is the item's.
+     */
+    PARSE_PUBLIC("-   a\n\n    b");
+    NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
+    item = nth_child(root_child(0), 0);
+    NAOS_CHECK_UINT_EQ(child_count(item), 2);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 12, 1, 3);
+    check_node(nth_child(item, 0), AMARK_KIND_PARAGRAPH, 4, 5, 1, 1);
+    check_node(nth_child(item, 1), AMARK_KIND_PARAGRAPH, 11, 12, 3, 3);
+    check_record(1, 4, 0);
+    check_record(3, 11, 0);
+    reset_doc();
+
+    /* One column less: b is not the item's. */
+    PARSE_PUBLIC("-   a\n\n   b");
+    check_dump("(doc (ul - tight (li (p))) (p))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 5, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 10, 11, 3, 3);
+    reset_doc();
+
+    /*
+     * 5 spaces or more: the content indent is the marker and 1 space, so
+     * the content is indented code. "-     a": the code starts at a.
+     */
+    PARSE_PUBLIC("-     a");
+    check_dump("(doc (ul - tight (li (code indented))))");
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_CODE_BLOCK, 6, 7, 1, 1);
+    check_record(1, 6, 0);
+    reset_doc();
+    PARSE_PUBLIC("10.     a");
+    check_dump("(doc (ol 10 . tight (li (code indented))))");
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_CODE_BLOCK, 8, 9, 1, 1);
+    reset_doc();
+
+    /*
+     * Example 7, "-\t\tfoo": after '-' the tabs reach column 8, 7 columns;
+     * the content indent is 2, and the 4 columns of the code end inside the
+     * second tab, at offset 2 with 2 columns left.
+     */
+    PARSE_PUBLIC("-\t\tfoo");
+    check_dump("(doc (ul - tight (li (code indented))))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 6, 1, 1);
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_CODE_BLOCK, 2, 6, 1, 1);
+    check_record(1, 2, 2);
+    reset_doc();
+
+    /* A tab of 3 columns after the marker: "-\ta\n" 0-3, "    b" 4-8. */
+    PARSE_PUBLIC("-\ta\n    b");
+    check_dump("(doc (ul - tight (li (p))))");
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_PARAGRAPH, 2, 9, 1, 2);
+    check_record(1, 2, 0);
+    check_record(2, 8, 0);
+}
+
+NAOS_TEST(items_that_start_with_a_blank_line)
+{
+    amark_node_id_t item;
+
+    /* "-\n" 0-1, "  a" 2-4: the content indent is 2. */
+    PARSE_PUBLIC("-\n  a");
+    check_dump("(doc (ul - tight (li (p))))");
+    item = nth_child(root_child(0), 0);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 5, 1, 2);
+    check_node(nth_child(item, 0), AMARK_KIND_PARAGRAPH, 4, 5, 2, 2);
+    check_record(1, 1, 0);
+    check_record(2, 4, 0);
+    reset_doc();
+
+    /* With spaces after the marker: "- \n" 0-2, "  a" 3-5. */
+    PARSE_PUBLIC("- \n  a");
+    check_dump("(doc (ul - tight (li (p))))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 6, 1, 2);
+    check_record(1, 2, 0);
+    reset_doc();
+
+    /* Example 280: one blank line at most. "-\n" 0-1, "\n" 2, "  a" 3-5. */
+    PARSE_PUBLIC("-\n\n  a");
+    check_dump("(doc (ul - tight (li)) (p))");
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 1, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_PARAGRAPH, 5, 6, 3, 3);
+    check_record(2, 2, 0);
+    reset_doc();
+
+    /* Empty items in a list: "- a\n" 0-3, "-\n" 4-5, "- c" 6-8. */
+    PARSE_PUBLIC("- a\n-\n- c");
+    check_dump("(doc (ul - tight (li (p)) (li) (li (p))))");
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_LIST_ITEM, 4, 5, 2, 2);
+    check_record(2, 5, 0);
+    reset_doc();
+
+    /* An empty ordered item with spaces: "1.  " 0-3. */
+    PARSE_PUBLIC("1.  ");
+    check_dump("(doc (ol 1 . tight (li)))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 4, 1, 1);
+    check_record(1, 4, 0);
+}
+
+NAOS_TEST(blank_lines_inside_list_items)
+{
+    amark_node_id_t item;
+    amark_node_id_t def;
+
+    /* "- a\n" 0-3, "\n" 4, "  b" 5-7: the item goes on after the blank. */
+    PARSE_PUBLIC("- a\n\n  b");
+    NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
+    NAOS_CHECK_UINT_EQ(child_count(root_child(0)), 1);
+    item = nth_child(root_child(0), 0);
+    NAOS_CHECK_UINT_EQ(child_count(item), 2);
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 8, 1, 3);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 8, 1, 3);
+    check_node(nth_child(item, 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
+    check_node(nth_child(item, 1), AMARK_KIND_PARAGRAPH, 7, 8, 3, 3);
+    check_record(2, 4, 0);
+    check_record(3, 7, 0);
+    reset_doc();
+
+    /* Two blank lines: "- a\n" 0-3, "\n" 4, "\n" 5, "  b" 6-8. */
+    PARSE_PUBLIC("- a\n\n\n  b");
+    NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
+    item = nth_child(root_child(0), 0);
+    NAOS_CHECK_UINT_EQ(child_count(item), 2);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 9, 1, 4);
+    reset_doc();
+
+    /* Less indented after the blank: the item ends; "- a\n\n b". */
+    PARSE_PUBLIC("- a\n\n b");
+    check_dump("(doc (ul - tight (li (p))) (p))");
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 3, 1, 1);
+    reset_doc();
+
+    /*
+     * A paragraph of a definition only counts as a child: the item goes on
+     * after the blank. "- [a]: /u\n" 0-9, "\n" 10, "  b" 11-13.
+     */
+    PARSE_PUBLIC("- [a]: /u\n\n  b");
+    NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 1);
+    item = nth_child(root_child(0), 0);
+    NAOS_CHECK_UINT_EQ(child_count(item), 2);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 14, 1, 3);
+    def = nth_child(item, 0);
+    check_node(def, AMARK_KIND_LINK_REFERENCE_DEFINITION, 2, 9, 1, 1);
+    check_definition(def, 3, 4, 7, 9, false, 0, 0);
+    check_node(nth_child(item, 1), AMARK_KIND_PARAGRAPH, 13, 14, 3, 3);
+    NAOS_CHECK_UINT_EQ(definition_count(), 1);
+    NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 3, 4), def);
+    reset_doc();
+
+    /*
+     * Example 5, "- foo\n\n\t\tbar": the item takes 2 columns of the first
+     * tab, the code the other 2 and 2 of the second, which has 2 left.
+     * "- foo\n" 0-5, "\n" 6, "\t\tbar" 7-11.
+     */
+    PARSE_PUBLIC("- foo\n\n\t\tbar");
+    item = nth_child(root_child(0), 0);
+    NAOS_CHECK_UINT_EQ(child_count(item), 2);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 12, 1, 3);
+    check_node(nth_child(item, 1), AMARK_KIND_CODE_BLOCK, 8, 12, 3, 3);
+    check_record(3, 8, 2);
+    reset_doc();
+
+    /*
+     * An HTML line whose prefix ends inside a tab: "- a\n" 0-3, "\n" 4,
+     * "\t <div>" 5-11. The item takes 2 columns of the tab; the block starts
+     * on the tab with 2 columns left.
+     */
+    PARSE_PUBLIC("- a\n\n\t <div>");
+    item = nth_child(root_child(0), 0);
+    NAOS_CHECK_UINT_EQ(child_count(item), 2);
+    check_node(nth_child(item, 1), AMARK_KIND_HTML_BLOCK, 5, 12, 3, 3);
+    check_record(3, 5, 2);
+}
+
+NAOS_TEST(nested_lists)
+{
+    amark_node_id_t outer;
+    amark_node_id_t inner;
+
+    /*
+     * Example 9, " - foo\n   - bar\n\t - baz": " - foo\n" 0-6,
+     * "   - bar\n" 7-15, "\t - baz" 16-22. The outer item takes 3 columns of
+     * the tab, the middle one the 4th and the space.
+     */
+    PARSE_PUBLIC(" - foo\n   - bar\n\t - baz");
+    check_dump("(doc (ul - tight (li (p) (ul - tight (li (p) "
+               "(ul - tight (li (p))))))))");
+    outer = nth_child(root_child(0), 0);
+    check_node(root_child(0), AMARK_KIND_LIST, 1, 23, 1, 3);
+    check_node(outer, AMARK_KIND_LIST_ITEM, 1, 23, 1, 3);
+    check_node(nth_child(outer, 0), AMARK_KIND_PARAGRAPH, 3, 6, 1, 1);
+    inner = nth_child(outer, 1);
+    check_node(inner, AMARK_KIND_LIST, 10, 23, 2, 3);
+    inner = nth_child(inner, 0);
+    check_node(inner, AMARK_KIND_LIST_ITEM, 10, 23, 2, 3);
+    check_node(nth_child(inner, 0), AMARK_KIND_PARAGRAPH, 12, 15, 2, 2);
+    inner = nth_child(inner, 1);
+    check_node(inner, AMARK_KIND_LIST, 18, 23, 3, 3);
+    check_node(nth_child(inner, 0), AMARK_KIND_LIST_ITEM, 18, 23, 3, 3);
+    check_node(nth_child(nth_child(inner, 0), 0), AMARK_KIND_PARAGRAPH, 20,
+               23, 3, 3);
+    check_record(1, 3, 0);
+    check_record(2, 12, 0);
+    check_record(3, 20, 0);
+    reset_doc();
+
+    /* Two markers on one line: "- 1. a". */
+    PARSE_PUBLIC("- 1. a");
+    check_dump("(doc (ul - tight (li (ol 1 . tight (li (p))))))");
+    check_node(nth_child(nth_child(root_child(0), 0), 0), AMARK_KIND_LIST, 2,
+               6, 1, 1);
+    check_record(1, 5, 0);
+    reset_doc();
+
+    /* Back to the outer list: "- a\n" 0-3, "  - b\n" 4-9, "- c" 10-12. */
+    PARSE_PUBLIC("- a\n  - b\n- c");
+    check_dump("(doc (ul - tight (li (p) (ul - tight (li (p)))) (li (p))))");
+    outer = nth_child(root_child(0), 0);
+    check_node(outer, AMARK_KIND_LIST_ITEM, 0, 9, 1, 2);
+    check_node(nth_child(outer, 1), AMARK_KIND_LIST, 6, 9, 2, 2);
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_LIST_ITEM, 10, 13, 3,
+               3);
+    reset_doc();
+
+    /*
+     * Example 312: a marker indented 4 columns from the list's content is
+     * not an item, even while the list is open; the line is lazy.
+     */
+    PARSE_PUBLIC("- a\n - b\n  - c\n   - d\n    - e");
+    check_dump("(doc (ul - tight (li (p)) (li (p)) (li (p)) (li (p))))");
+    check_node(nth_child(root_child(0), 3), AMARK_KIND_LIST_ITEM, 18, 29, 4,
+               5);
+}
+
+NAOS_TEST(list_items_and_paragraphs)
+{
+    /* A bullet item interrupts a paragraph: "a\n" 0-1, "- b" 2-4. */
+    PARSE_PUBLIC("a\n- b");
+    check_dump("(doc (p) (ul - tight (li (p))))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 1, 1, 1);
+    check_node(root_child(1), AMARK_KIND_LIST, 2, 5, 2, 2);
+    reset_doc();
+
+    /* An ordered item, only when it starts with 1. */
+    PARSE_PUBLIC("a\n1) b");
+    check_dump("(doc (p) (ol 1 ) tight (li (p))))");
+    reset_doc();
+    PARSE_PUBLIC("a\n2. b");
+    check_dump("(doc (p))");
+    check_node(root_child(0), AMARK_KIND_PARAGRAPH, 0, 6, 1, 2);
+    reset_doc();
+
+    /* An empty item does not interrupt one. */
+    PARSE_PUBLIC("a\n*");
+    check_dump("(doc (p))");
+    reset_doc();
+    PARSE_PUBLIC("a\n1.  ");
+    check_dump("(doc (p))");
+    reset_doc();
+
+    /* Inside an item, the same: "- a\n  2. b" is one paragraph. */
+    PARSE_PUBLIC("- a\n  2. b");
+    check_dump("(doc (ul - tight (li (p))))");
+    reset_doc();
+    PARSE_PUBLIC("- a\n  1. b");
+    check_dump("(doc (ul - tight (li (p) (ol 1 . tight (li (p))))))");
+    reset_doc();
+
+    /*
+     * A line that does not match the open block quote is not lazy if it
+     * starts an item: "> a\n2. b".
+     */
+    PARSE_PUBLIC("> a\n2. b");
+    check_dump("(doc (bq (p)) (ol 2 . tight (li (p))))");
+    reset_doc();
+
+    /* A lazy line starting an HTML block of condition 7 in an item. */
+    PARSE_PUBLIC("- a\n<span>");
+    check_dump("(doc (ul - tight (li (p))))");
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 0, 10, 1,
+               2);
+}
+
+NAOS_TEST(list_items_and_thematic_breaks_and_setext_headings)
+{
+    amark_node_id_t item;
+
+    /* A thematic break is tried first. */
+    PARSE_PUBLIC("* * *");
+    check_dump("(doc (hr))");
+    reset_doc();
+    PARSE_PUBLIC("- foo\n***");
+    check_dump("(doc (ul - tight (li (p))) (hr))");
+    check_node(root_child(0), AMARK_KIND_LIST, 0, 5, 1, 1);
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 6, 9, 2, 2);
+    reset_doc();
+
+    /*
+     * A failed try skips the later tries inside the same run of the
+     * character only: "* - - -" is an item holding a break, "- - - a" three
+     * nested items.
+     */
+    PARSE_PUBLIC("* - - -");
+    check_dump("(doc (ul * tight (li (hr))))");
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_THEMATIC_BREAK, 2, 7, 1, 1);
+    reset_doc();
+    PARSE_PUBLIC("- - - a");
+    check_dump("(doc (ul - tight (li (ul - tight (li (ul - tight "
+               "(li (p))))))))");
+    check_record(1, 6, 0);
+    reset_doc();
+    PARSE_PUBLIC("- - -\n- - - -");
+    check_dump("(doc (hr) (hr))");
+    reset_doc();
+
+    /* Example 61: "- Foo\n" 0-5, "- * * *" 6-12. */
+    PARSE_PUBLIC("- Foo\n- * * *");
+    check_dump("(doc (ul - tight (li (p)) (li (hr))))");
+    item = nth_child(root_child(0), 1);
+    check_node(item, AMARK_KIND_LIST_ITEM, 6, 13, 2, 2);
+    check_node(nth_child(item, 0), AMARK_KIND_THEMATIC_BREAK, 8, 13, 2, 2);
+    check_record(2, 8, 0);
+    reset_doc();
+
+    /* Examples 94 and 99: an underline outside the item is a break. */
+    PARSE_PUBLIC("- Foo\n---");
+    check_dump("(doc (ul - tight (li (p))) (hr))");
+    check_node(root_child(1), AMARK_KIND_THEMATIC_BREAK, 6, 9, 2, 2);
+    reset_doc();
+    PARSE_PUBLIC("- foo\n-----");
+    check_dump("(doc (ul - tight (li (p))) (hr))");
+    reset_doc();
+
+    /* Inside the item it underlines: "- Foo\n" 0-5, "  ---" 6-10. */
+    PARSE_PUBLIC("- Foo\n  ---");
+    check_dump("(doc (ul - tight (li (h 2 setext))))");
+    item = nth_child(root_child(0), 0);
+    check_node(item, AMARK_KIND_LIST_ITEM, 0, 11, 1, 2);
+    check_node(nth_child(item, 0), AMARK_KIND_HEADING, 2, 11, 1, 2);
+    check_content(0, nth_child(item, 0), 2, 5);
+    check_record(2, 8, 0);
+    reset_doc();
+
+    /* A heading and a fence as the first block of an item. */
+    PARSE_PUBLIC("- # a\n- ```\n  b\n  ```");
+    check_dump("(doc (ul - tight (li (h 1 atx)) (li (code fenced ` 3))))");
+    check_node(nth_child(root_child(0), 1), AMARK_KIND_LIST_ITEM, 6, 21, 2,
+               4);
+    check_record(3, 14, 0);
+}
+
+NAOS_TEST(lists_in_block_quotes)
+{
+    /* Example 235: "> - foo\n" 0-7, "- bar" 8-12. */
+    PARSE_PUBLIC("> - foo\n- bar");
+    check_dump("(doc (bq (ul - tight (li (p)))) (ul - tight (li (p))))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 7, 1, 1);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST, 2, 7, 1, 1);
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_LIST_ITEM, 2, 7, 1, 1);
+    check_node(root_child(1), AMARK_KIND_LIST, 8, 13, 2, 2);
+    check_record(1, 4, 0);
+    check_record(2, 10, 0);
+    reset_doc();
+
+    /* A block quote in an item: "- > a\n" 0-5, "  > b" 6-10. */
+    PARSE_PUBLIC("- > a\n  > b");
+    check_dump("(doc (ul - tight (li (bq (p)))))");
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_BLOCK_QUOTE, 2, 11, 1, 2);
+    check_record(2, 10, 0);
+    reset_doc();
+
+    /* A lazy line through both: "> - a\n" 0-5, "b" 6. */
+    PARSE_PUBLIC("> - a\nb");
+    check_dump("(doc (bq (ul - tight (li (p)))))");
+    check_node(root_child(0), AMARK_KIND_BLOCK_QUOTE, 0, 7, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST, 2, 7, 1, 2);
+    check_record(2, 6, 0);
+}
+
+NAOS_TEST(list_with_crlf_in_a_range_starting_inside_a_line)
+{
+    /*
+     * "x- a\r\n" 0-5, "  b\r\n" 6-10; the range starts at 1, which is
+     * column 0.
+     */
+    PARSE_RANGE("x- a\r\n  b\r\n", 1, 11);
+    check_dump("(doc (ul - tight (li (p))))");
+    check_node(root_child(0), AMARK_KIND_LIST, 1, 9, 1, 2);
+    check_node(nth_child(root_child(0), 0), AMARK_KIND_LIST_ITEM, 1, 9, 1, 2);
+    check_node(nth_child(nth_child(root_child(0), 0), 0),
+               AMARK_KIND_PARAGRAPH, 3, 9, 1, 2);
+    check_record(1, 3, 0);
+    check_record(2, 8, 0);
+}
+
+NAOS_TEST(limits_with_lists)
+{
+    /* "- a": the list at depth 1, the item at 2, the paragraph at 3. */
+    NAOS_CHECK_INT_EQ(parse_public("- a", 3, 2, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(g_doc == NULL);
+    NAOS_REQUIRE_INT_EQ(parse_public("- a", 3, 3, 0), AMARK_ERROR_NONE);
+    reset_doc();
+
+    /* The root, the list, the item and the paragraph. */
+    NAOS_CHECK_INT_EQ(parse_public("- a", 3, 0, 3),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(g_doc == NULL);
+    NAOS_REQUIRE_INT_EQ(parse_public("- a", 3, 0, 4), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
+}
+
+/* DEEP markers "- ", "a", a line ending, 2 DEEP spaces and "b". */
+static char g_deep_list[4 * DEEP + 3];
+
+NAOS_TEST(deeply_nested_lists)
+{
+    amark_node_id_t node;
+    size_t i;
+
+    for (i = 0; i < DEEP; i++) {
+        g_deep_list[2 * i] = '-';
+        g_deep_list[2 * i + 1] = ' ';
+    }
+    memcpy(g_deep_list + 2 * DEEP, "a\n", 2);
+    memset(g_deep_list + 2 * DEEP + 2, ' ', 2 * DEEP);
+    g_deep_list[4 * DEEP + 2] = 'b';
+
+    /* The paragraph is at depth 2 DEEP + 1. */
+    NAOS_CHECK_INT_EQ(
+        parse_public(g_deep_list, sizeof(g_deep_list), 2 * DEEP, 0),
+        AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_REQUIRE_INT_EQ(
+        parse_public(g_deep_list, sizeof(g_deep_list), 2 * DEEP + 1, 0),
+        AMARK_ERROR_NONE);
+    reset_doc();
+
+    parse_public_ok(g_deep_list, sizeof(g_deep_list));
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 2);
+    node = amark_document_root(g_doc);
+    for (i = 0; i < 2 * DEEP; i++) {
+        amark_range_t range;
+
+        node = amark_node_first_child(g_doc, node);
+        NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node),
+                             i % 2 == 0 ? AMARK_KIND_LIST
+                                        : AMARK_KIND_LIST_ITEM);
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+        NAOS_REQUIRE_UINT_EQ(range.start, i - i % 2);
+        NAOS_REQUIRE_UINT_EQ(range.end, 4 * DEEP + 3);
+        NAOS_REQUIRE_UINT_EQ(amark_node_next_sibling(g_doc, node),
+                             AMARK_NODE_NONE);
+    }
+    check_node(amark_node_first_child(g_doc, node), AMARK_KIND_PARAGRAPH,
+               2 * DEEP, 4 * DEEP + 3, 1, 2);
+    check_record(1, 2 * DEEP, 0);
+    check_record(2, 4 * DEEP + 2, 0);
+}
+
+NAOS_TEST(allocation_failure_with_lists)
+{
+    static const char k_input[] = "- a\n  - b\n1. c\n\n> - [x]: /u\n";
+    size_t fail_at;
+    amark_error_t err = AMARK_ERROR_NOMEM;
+
+    for (fail_at = 1; fail_at < 1000; fail_at++) {
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        set_content(k_input, sizeof(k_input) - 1);
+        err = parse_buffer(0, g_length, 0, 0);
+        g_state.fail_at = 0;
+        amark_arena_deinit(&g_scratch);
+        if (err == AMARK_ERROR_NONE) {
+            break;
+        }
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_REQUIRE_UINT_EQ(g_state.live, 0);
+    }
+    NAOS_REQUIRE_INT_EQ(err, AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_GT(fail_at, 1);
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_doc).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    check_dump("(doc (ul - tight (li (p) (ul - tight (li (p))))) "
+               "(ol 1 . tight (li (p))) (bq (ul - tight (li (def)))))");
+    NAOS_CHECK_UINT_EQ(definition_count(), 1);
+}
+
+/* ---------------------------------------------------------------------- */
 /* Parsed ranges that do not start at offset 0                           */
 /* ---------------------------------------------------------------------- */
 
@@ -2727,6 +3405,25 @@ NAOS_SUITE(block_quotes,
     NAOS_ADD_TEST(allocation_failure_with_block_quotes)
 )
 
+NAOS_SUITE(block_lists,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(list_item_of_one_line_and_its_attributes),
+    NAOS_ADD_TEST(list_items_over_several_lines),
+    NAOS_ADD_TEST(a_different_marker_starts_a_new_list),
+    NAOS_ADD_TEST(content_indent_of_list_items),
+    NAOS_ADD_TEST(items_that_start_with_a_blank_line),
+    NAOS_ADD_TEST(blank_lines_inside_list_items),
+    NAOS_ADD_TEST(nested_lists),
+    NAOS_ADD_TEST(list_items_and_paragraphs),
+    NAOS_ADD_TEST(list_items_and_thematic_breaks_and_setext_headings),
+    NAOS_ADD_TEST(lists_in_block_quotes),
+    NAOS_ADD_TEST(list_with_crlf_in_a_range_starting_inside_a_line),
+    NAOS_ADD_TEST(limits_with_lists),
+    NAOS_ADD_TEST(deeply_nested_lists),
+    NAOS_ADD_TEST(allocation_failure_with_lists)
+)
+
 NAOS_SUITE(block_ranges,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -2765,6 +3462,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(block_leaves),
     NAOS_ADD_SUITE(block_definitions),
     NAOS_ADD_SUITE(block_quotes),
+    NAOS_ADD_SUITE(block_lists),
     NAOS_ADD_SUITE(block_ranges),
     NAOS_ADD_SUITE(block_limits)
 )

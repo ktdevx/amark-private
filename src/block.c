@@ -201,6 +201,8 @@ typedef struct block_parser {
     amark_line_pos_t pos;
     bool all_matched;     /* every open block matched on this line */
     bool line_taken;      /* a leaf opened on this line took all of it */
+    size_t break_kill;    /* no thematic break starts on this line before
+                             this offset (see start_thematic_break) */
 } block_parser_t;
 
 static size_t stack_top(const block_parser_t *p)
@@ -610,6 +612,34 @@ static continue_result_t continue_code_block(block_parser_t *p,
 }
 
 /*
+ * The continuation of a list item: indentation of at least its content
+ * indent, which is consumed by columns (a tab crossing it keeps the rest of
+ * its columns as pad), or a blank line, whose white space it consumes whole,
+ * once something has opened inside the item. An item whose marker line was
+ * blank and that has nothing in it yet does not go on over a blank line: it
+ * can begin with one blank line at most.
+ */
+static continue_result_t continue_list_item(block_parser_t *p,
+                                            const open_block_t *block)
+{
+    amark_line_pos_t *pos = &p->pos;
+    size_t content_indent = block->marker_offset + block->padding;
+
+    if (pos->indent >= content_indent) {
+        amark_line_pos_advance(pos, p->bytes, content_indent,
+                               AMARK_ADVANCE_COLUMNS);
+        return CONTINUE_YES;
+    }
+    if (pos->blank && block->child_count > 0) {
+        amark_line_pos_advance(pos, p->bytes,
+                               pos->first_nonspace - pos->offset,
+                               AMARK_ADVANCE_BYTES);
+        return CONTINUE_YES;
+    }
+    return CONTINUE_NO;
+}
+
+/*
  * The continuation rules of each kind: whether the element at index
  * continues on the current line, consuming its prefix if it does. The
  * position is at the first byte the element may look at, with
@@ -650,12 +680,10 @@ static continue_result_t continue_block(block_parser_t *p, size_t index)
         block->end = p->pos.content_end;
         return CONTINUE_YES;
     case AMARK_KIND_LIST:
+        /* A list goes on while its items do, or a new item can join it. */
+        return CONTINUE_YES;
     case AMARK_KIND_LIST_ITEM:
-        /*
-         * No start rule opens these kinds yet; the rules that open them
-         * give their continuation here.
-         */
-        return CONTINUE_NO;
+        return continue_list_item(p, block);
     default:
         /* Dialect kinds do not continue. */
         return CONTINUE_NO;
@@ -812,6 +840,15 @@ static amark_error_t start_setext_heading(block_parser_t *p,
  * Starts a thematic break if the rest of the line is one. The caller has
  * checked that the indentation is at most 3 columns. The record of the line
  * is the first character of the break.
+ *
+ * A line of nested list items ("- - - ... a") is tried at each marker, and
+ * each scan reads to the end of the line, which would make the line
+ * quadratic. So when a scan fails, the run of its first character and white
+ * space after it is skipped by the later tries on the same line: a break
+ * starting inside the run would read the same characters up to the same
+ * byte that ended the scan (or the same end of line with fewer characters),
+ * and fail too. A try at or after the end of the run scans again (as
+ * "- * * *", where the break starts at the '*' that ended the run).
  */
 static amark_error_t start_thematic_break(block_parser_t *p,
                                           size_t *container,
@@ -820,12 +857,114 @@ static amark_error_t start_thematic_break(block_parser_t *p,
     const amark_line_pos_t *pos = &p->pos;
     size_t first = pos->first_nonspace;
 
+    if (first < p->break_kill) {
+        return AMARK_ERROR_NONE;
+    }
     if (!amark_scan_thematic_break(p->bytes + first,
                                    pos->content_end - first)) {
+        unsigned char c = p->bytes[first];
+        size_t end = first;
+
+        while (end < pos->content_end &&
+               (p->bytes[end] == c || p->bytes[end] == ' ' ||
+                p->bytes[end] == '\t')) {
+            end++;
+        }
+        p->break_kill = end;
         return AMARK_ERROR_NONE;
     }
     return open_line_leaf(p, container, AMARK_KIND_THEMATIC_BREAK, first,
                           result);
+}
+
+/*
+ * Starts a list item if the rest of the line starts with a list item marker.
+ * The caller has checked that the indentation is at most 3 columns. When the
+ * element at *container is a paragraph, only a bullet item or an ordered
+ * item numbered 1, either with content after the marker, interrupts it
+ * (amark_scan_list_marker leaves this to its caller, and a thematic break
+ * was tried before).
+ *
+ * The item joins the list at *container if that list has the same type and
+ * the same bullet character or delimiter; otherwise a new list opens, tight
+ * until its spacing is decided. Both start at the marker, and their nodes
+ * are made now. The marker is consumed with the white space after it that
+ * belongs to the content indent: the marker's width plus 1 to 4 columns of
+ * white space, or the width plus 1 when 5 columns or more follow (the
+ * content is then indented code) or nothing does. Tabs count by columns, so
+ * the 1 column of a wide tab leaves the rest as pad. The item ends at least
+ * at the end of the marker line's content; the starts are looked for again
+ * inside it.
+ */
+static amark_error_t start_list_item(block_parser_t *p, size_t *container,
+                                     start_result_t *result)
+{
+    amark_line_pos_t *pos = &p->pos;
+    size_t first = pos->first_nonspace;
+    open_block_t *parent = stack_at(p, *container);
+    amark_list_marker_t marker;
+    size_t marker_offset;
+    size_t list;
+    size_t index;
+    open_block_t *block;
+    amark_error_t err;
+
+    if (!amark_scan_list_marker(p->bytes + first, pos->content_end - first,
+                                &marker)) {
+        return AMARK_ERROR_NONE;
+    }
+    if (parent->kind == AMARK_KIND_PARAGRAPH &&
+        (marker.blank_after || (marker.type == AMARK_LIST_ORDERED &&
+                                marker.start_number != 1))) {
+        return AMARK_ERROR_NONE;
+    }
+
+    if (parent->kind == AMARK_KIND_LIST && parent->list_type == marker.type &&
+        parent->marker == marker.marker) {
+        list = *container;
+    } else {
+        err = push_block(p, *container, AMARK_KIND_LIST, true, first, &list);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+        block = stack_at(p, list);
+        block->list_type = marker.type;
+        block->marker = marker.marker;
+        block->start_number =
+            marker.type == AMARK_LIST_ORDERED ? marker.start_number : 0;
+        err = amark_tree_set_list(p->doc, block->node, block->list_type,
+                                  block->marker, block->start_number,
+                                  AMARK_LIST_TIGHT);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+    }
+    err = push_block(p, list, AMARK_KIND_LIST_ITEM, true, first, &index);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+
+    /* The marker, then the white space of the content indent. */
+    marker_offset = pos->indent;
+    amark_line_pos_advance(pos, p->bytes, pos->indent, AMARK_ADVANCE_COLUMNS);
+    amark_line_pos_advance(pos, p->bytes, marker.width, AMARK_ADVANCE_BYTES);
+    amark_line_pos_find_nonspace(pos, p->bytes);
+    block = stack_at(p, index);
+    if (pos->blank || pos->indent > CODE_INDENT) {
+        block->padding = marker.width + 1;
+        if (pos->first_nonspace > pos->offset) {
+            amark_line_pos_advance(pos, p->bytes, 1, AMARK_ADVANCE_COLUMNS);
+        }
+    } else {
+        block->padding = marker.width + pos->indent;
+        amark_line_pos_advance(pos, p->bytes, pos->indent,
+                               AMARK_ADVANCE_COLUMNS);
+    }
+    block->marker_offset = marker_offset;
+    block->end = pos->content_end;
+    *container = index;
+    *result = START_CONTAINER;
+    return AMARK_ERROR_NONE;
 }
 
 /*
@@ -951,9 +1090,11 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
         /*
          * The CommonMark starts are checked here in this order, each under
          * its own condition: block quote, ATX heading, opening fence, HTML
-         * block, setext underline, thematic break (these at most 3 columns
-         * of indentation), list item, indented code block. Those not added
-         * yet leave the line to become paragraph text.
+         * block, setext underline, thematic break, list item (these at most
+         * 3 columns of indentation), indented code block. A list item needs
+         * at most 3 columns even inside an open list (CommonMark example
+         * 312): the indentation counts from the list's container, so a
+         * marker indented 4 columns from it is not an item.
          */
         if (shallow) {
             err = start_block_quote(p, container, result);
@@ -977,6 +1118,10 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
                 return err;
             }
             err = start_thematic_break(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
+            err = start_list_item(p, container, result);
             if (err != AMARK_ERROR_NONE || *result != START_NONE) {
                 return err;
             }
@@ -1136,6 +1281,7 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
 
     amark_line_pos_init(&p->pos, line, bounds);
     p->line_taken = false;
+    p->break_kill = bounds->start;
 
     /* 1. Match the open blocks from the outside in; the root always does. */
     for (i = 1; i <= top; i++) {
@@ -1211,6 +1357,7 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     p.max_nodes = config->max_node_count;
     p.all_matched = false;
     p.line_taken = false;
+    p.break_kill = 0;
     amark_array_init(&p.stack, scratch, sizeof(open_block_t));
     amark_array_init(&p.definitions, scratch,
                      sizeof(amark_definition_entry_t));
