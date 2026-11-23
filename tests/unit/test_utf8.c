@@ -1097,7 +1097,7 @@ NAOS_TEST(failure_injection_loop)
     int succeeded = 0;
 
     g_input = (unsigned char *)malloc((size_t)1 << 17);
-    NAOS_REQUIRE_NOT_NULL(g_input);
+    NAOS_REQUIRE_TRUE(g_input != NULL);
     for (fail_at = 1; fail_at <= 100 && !succeeded; fail_at++) {
         amark_error_t err = AMARK_ERROR_NONE;
         size_t round;
