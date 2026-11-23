@@ -186,7 +186,7 @@
   - _Depends: 1.3_
   - _Requirements: 19.1, 19.5_
 
-- [ ] 9.2 (P) Link reference definitions の例を確かめる
+- [x] 9.2 (P) Link reference definitions の例を確かめる
   - 同じ形式で、27 個の例を表に書き、比べ、検査を通す
   - 完了の状態：spec.txt の定義の単体テスト（`tests/unit/test_spec_refdef.c`）が登録され、27 個の例がすべて通る
   - _Boundary: test_spec_refdef_
