@@ -10,6 +10,7 @@ set(AMARK_SOURCES
     alloc.c
     arena.c
     array.c
+    config.c
     entity.c
     line_index.c
     unicode.c

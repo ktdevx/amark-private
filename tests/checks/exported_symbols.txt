@@ -6,3 +6,5 @@
 # compares this list with the library. Lines starting with "#" and blank
 # lines are ignored.
 amark_version_string
+amark_config_init
+amark_config_validate

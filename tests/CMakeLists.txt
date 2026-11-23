@@ -123,6 +123,7 @@ amark_add_unit_test(test_line_index SOURCES unit/test_line_index.c)
 amark_add_unit_test(test_utf8 SOURCES unit/test_utf8.c)
 amark_add_unit_test(test_unicode SOURCES unit/test_unicode.c)
 amark_add_unit_test(test_entity SOURCES unit/test_entity.c)
+amark_add_unit_test(test_config SOURCES unit/test_config.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
