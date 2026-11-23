@@ -6,7 +6,7 @@
 
 **Users**: 利用者は、木を読み取り専用でたどる公開 API と、解析の設定・エラーの種類・診断の型を使う。解析器の開発者（block-parser、inline-parser、dialect-extension）は、木を作る内部 API と、不変条件を検査する関数を使う。
 
-**Impact**: 公開ヘッダに、はじめて解析に関わる型と関数が加わる。project-foundation の `src/alloc.h` にある確保関数の型の定義を、公開ヘッダへ移す（動作は変えない）。この spec だけでは Markdown を解析できない。解析の入口は block-parser が作る。
+**Impact**: 公開ヘッダに、はじめて解析に関わる型と関数が加わる。project-foundation の `src/alloc.h` にある確保関数の型の定義と、`src/error.h` のエラーの型を、公開ヘッダへ移す。エラーの型は値を 5 つに広げ、`OVERFLOW` を `LIMIT_EXCEEDED` に名前を変える（部品の動作は変えない）。この spec だけでは Markdown を解析できない。解析の入口は block-parser が作る。
 
 ### Goals
 - CommonMark 0.31.2 の全要素と方言の種類を、1 つのノードの形で表す。
@@ -28,9 +28,9 @@
 - ノードの種類の ID の値と、方言の種類の ID の空間（`AMARK_KIND_DIALECT_MIN` 以上）
 - ノードの表し方（範囲、行、つながり、属性）と、文書の本体のレイアウト（内部ヘッダ `src/document.h`）
 - 木の不変条件の定義と、それを検査する関数
-- 公開の型：`amark_document_t`、`amark_node_id_t`、`amark_kind_t`、`amark_range_t`、属性の列挙、`amark_status_t`、`amark_allocator_t`、`amark_config_t`、`amark_diagnostic_t`
+- 公開の型：`amark_document_t`、`amark_node_id_t`、`amark_kind_t`、`amark_range_t`、属性の列挙、`amark_error_t`、`amark_allocator_t`、`amark_config_t`、`amark_diagnostic_t`
 - 公開の関数：木をたどる関数、属性を返す関数、診断を読む関数、文書を解放する関数、設定を初期化する関数、設定を検査する関数
-- 内部の関数：文書を作る、ノードを足す・変える・取り除く・包む、属性を設定する、診断を足す、設定を解決する、内部のエラーを公開のエラーに変換する
+- 内部の関数：文書を作る、ノードを足す・変える・取り除く・包む、属性を設定する、診断を足す、設定を解決する
 
 ### Out of Boundary
 - どの構文にどの種類と属性を付けるか（block-parser、inline-parser）
@@ -41,14 +41,14 @@
 - 内容のバイト列を利用者に返す公開 API（source-text）
 
 ### Allowed Dependencies
-- project-foundation の内部の部品：`alloc`、`arena`、`array`、`line_index`、`error.h`
+- project-foundation の内部の部品：`alloc`、`arena`、`array`、`line_index`
 - C99 の標準ヘッダ：`stdbool.h`、`stddef.h`、`stdint.h`、`string.h`
 - 依存してはならないもの：`utf8`、`unicode`、`entity`（Markdown と文字の知識は要らない）、および解析器と方言のモジュール
 - 公開ヘッダは内部ヘッダを取り込まない。内部ヘッダは公開ヘッダを取り込んでよい。
 
 ### Revalidation Triggers
 次の変更は、下流の spec（block-parser、inline-parser、source-text、dialect-extension、spec-conformance）の見直しを要する。
-- 種類の ID の値、`AMARK_KIND_DIALECT_MIN`、`amark_status_t` の値の変更
+- 種類の ID の値、`AMARK_KIND_DIALECT_MIN`、`amark_error_t` の値の変更
 - 公開の関数の引数や戻り値、`amark_range_t`・`amark_diagnostic_t`・`amark_config_t` の項目の変更
 - 内部 API（`src/tree.h`、`src/document.h`、`src/config.h`）の関数の契約の変更
 - 不変条件の追加・削除・意味の変更
@@ -62,7 +62,7 @@
 - 公開ヘッダは `include/amark/` をディレクトリごとインストールする。ヘッダを足しても、インストールの規則は変えなくてよい。
 - `checks.exports` は、動的ライブラリの公開シンボルが `tests/checks/exported_symbols.txt` と一致することを確かめる。`checks.objects` は、可変の静的データと `abort`・`exit`・`longjmp` の参照を禁じる。このため `assert` は使わない。
 - `amark_array_t` は伸びるときに要素を写すので、要素へのポインタは次の追加で無効になる。
-- 内部のエラーの型 `amark_error_t` は `NONE`・`NOMEM`・`OVERFLOW` の 3 つである。この型は変えない。
+- 内部のエラーの型 `amark_error_t`（`src/error.h`）は `NONE`・`NOMEM`・`OVERFLOW` の 3 つである。この型を公開の型に広げ、ライブラリ全体で 1 つにする（ErrorKind の節を参照）。
 
 ### Architecture Pattern & Boundary Map
 
@@ -70,7 +70,7 @@
 graph TB
     subgraph Public
         HAlloc[amark allocator.h]
-        HStatus[amark status.h]
+        HError[amark error.h]
         HConfig[amark config.h]
         HTree[amark tree.h]
     end
@@ -110,7 +110,7 @@ graph TB
     User --> HConfig
     User --> HTree
     HConfig --> HAlloc
-    HConfig --> HStatus
+    HConfig --> HError
 ```
 
 **Architecture Integration**:
@@ -135,11 +135,10 @@ graph TB
 ```
 include/amark/
 ├── allocator.h        # 確保関数の型（amark_malloc_fn_t、amark_free_fn_t、amark_allocator_t）
-├── status.h           # amark_status_t
+├── error.h            # amark_error_t（src/error.h から移す）
 ├── config.h           # amark_config_t、amark_utf8_mode_t、AMARK_END_OF_CONTENT、初期化と検査の関数
 └── tree.h             # 文書、ノードの ID、種類、範囲、属性、診断の型と、読み出しと解放の関数
 src/
-├── status.c / status.h        # amark_error_t から amark_status_t への変換
 ├── config.c / config.h        # 設定の初期化・検査・解決（amark_resolved_config_t）
 ├── document.c / document.h    # 文書の本体とノードのレイアウト、文書を作る・解放する、診断を足す・読む
 ├── tree.c / tree.h            # 木を作る内部 API（足す、差し込む、変える、取り除く、包む、属性の設定）
@@ -147,7 +146,7 @@ src/
 └── tree_check.c / tree_check.h  # 不変条件の検査
 tests/
 ├── unit/
-│   ├── test_config.c          # 設定の解決と、エラーの変換
+│   ├── test_config.c          # 設定の解決と、エラーの種類の値
 │   ├── test_document.c        # 文書を作る・解放する、診断、確保の失敗の注入
 │   ├── test_tree.c            # 木を作る操作と、公開の読み出し、深い木
 │   └── test_tree_check.c      # 不変条件の各条件
@@ -158,7 +157,11 @@ tests/
 ### Modified Files
 - `include/amark/amark.h` — 新しい 4 つの公開ヘッダを取り込む。
 - `src/alloc.h` — 確保関数の 3 つの型の定義を消し、`<amark/allocator.h>` を取り込む。関数の宣言は変えない。
-- `src/CMakeLists.txt` — `AMARK_SOURCES` に `config.c`、`document.c`、`node.c`、`status.c`、`tree.c`、`tree_check.c` を足す。
+- `src/error.h` — 消す。内容は `include/amark/error.h` に移す。
+- `src/alloc.h`、`src/arena.h`、`src/array.h`、`src/line_index.h`、`src/utf8.h` — `"error.h"` の代わりに `<amark/error.h>` を取り込む。
+- `src/alloc.c`、`src/arena.c`、`src/array.c`、`src/line_index.c`、`src/utf8.c` と、上の内部ヘッダの注釈、`tests/unit/test_alloc.c`、`tests/unit/test_arena.c`、`tests/unit/test_array.c` — `AMARK_ERROR_OVERFLOW` を `AMARK_ERROR_LIMIT_EXCEEDED` に置き換える。
+- `.kiro/specs/project-foundation/design.md` — `OVERFLOW` の記述を新しい名前に合わせる。
+- `src/CMakeLists.txt` — `AMARK_SOURCES` に `config.c`、`document.c`、`node.c`、`tree.c`、`tree_check.c` を足す。
 - `tests/CMakeLists.txt` — 上の 4 つの単体テストと 1 つの公開 API のテストを登録する。
 - `tests/public/header_cxx.cpp` — 新しい公開の型と関数を C++ から使うテストを足す。
 - `tests/checks/exported_symbols.txt` — この spec が公開する関数の名前を足す。
@@ -297,8 +300,8 @@ while (node != AMARK_NODE_NONE) {
 | 7.5 | 範囲・種類の変更、取り除く、包む | TreeBuilder | `amark_tree_set_range`、`amark_tree_set_kind`、`amark_tree_remove`、`amark_tree_wrap`、`amark_tree_insert_before` |
 | 7.6 | 方言のノードを作る | TreeBuilder | `amark_tree_append` の `cls`、`amark_tree_set_dialect_data` |
 | 7.7 | 文書の確保関数だけを使う | Document | 文書のアリーナ |
-| 7.8 | 確保の失敗 | TreeBuilder | `AMARK_STATUS_NOMEM` |
-| 7.9 | ノードの数の上限 | TreeBuilder | `AMARK_STATUS_LIMIT_EXCEEDED` |
+| 7.8 | 確保の失敗 | TreeBuilder | `AMARK_ERROR_NOMEM` |
+| 7.9 | ノードの数の上限 | TreeBuilder | `AMARK_ERROR_LIMIT_EXCEEDED` |
 | 7.10 | 作りかけの文書の解放 | Document | `amark_document_free` |
 | 7.11 | 途中の木を検査に渡せる | TreeBuilder、TreeCheck | つながりを常に正しく保つ |
 | 7.12 | 公開しない | TreeBuilder | `src/tree.h`、`AMARK_API` を付けない |
@@ -322,10 +325,10 @@ while (node != AMARK_NODE_NONE) {
 | 9.8 | 上限の超過は判定しない | Config | 検査の規則にない |
 | 9.9 | 確保も変更もしない | Config | 引数は `const`、結果は呼び出した側の変数 |
 | 9.10 | 公開の関数 | Config | `AMARK_API` |
-| 10.1 | 成功と 4 つの失敗 | Status | `amark_status_t` |
-| 10.2 | 構文の誤りの値がない | Status | `amark_status_t` |
-| 10.3 | 値は変えない | Status | 列挙に値を明示する |
-| 10.4 | 戻り値で伝える | Status、Config、TreeBuilder | `assert` と `abort` を使わない |
+| 10.1 | 成功と 4 つの失敗 | ErrorKind | `amark_error_t` |
+| 10.2 | 構文の誤りの値がない | ErrorKind | `amark_error_t` |
+| 10.3 | 値は変えない | ErrorKind | 列挙に値を明示する |
+| 10.4 | 戻り値で伝える | ErrorKind、Config、TreeBuilder | `assert` と `abort` を使わない |
 | 11.1 | 診断の項目 | PublicTree | `amark_diagnostic_t` |
 | 11.2 | 重大度 | PublicTree | `amark_severity_t` |
 | 11.3 | メッセージは NUL で終わる | Document | `amark_document_add_diagnostic` が写す |
@@ -339,8 +342,8 @@ while (node != AMARK_NODE_NONE) {
 | 11.11 | 足すときの確保の失敗 | Document | 写してから配列に足す順序 |
 | 11.12 | 足す関数は公開しない | Document | `src/document.h` |
 | 12.1 | 中身の見えないハンドル | PublicTree | `amark_document_t` は不完全型、ノードは ID |
-| 12.2 | C99、全コンパイラ、C++ | PublicTree、Config、Status | 公開ヘッダの決まり |
-| 12.3 | それだけで取り込める | PublicTree、Config、Status | 公開ヘッダの決まり |
+| 12.2 | C99、全コンパイラ、C++ | PublicTree、Config、ErrorKind | 公開ヘッダの決まり |
+| 12.3 | それだけで取り込める | PublicTree、Config、ErrorKind | 公開ヘッダの決まり |
 | 12.4 | 名前の決まり | すべて | `amark_`、`AMARK_` |
 | 12.5 | 公開シンボルの一覧 | BuildAndChecks | `exported_symbols.txt` |
 | 12.6 | 状態も I/O もない | すべて | `checks.objects` |
@@ -354,8 +357,8 @@ while (node != AMARK_NODE_NONE) {
 
 | Component | Layer | Intent | Req Coverage | Key Dependencies | Contracts |
 |-----------|-------|--------|--------------|------------------|-----------|
-| Status | 公開の型 | エラーの種類と、内部のエラーからの変換 | 10.1–10.4 | `error.h` (P0) | Service |
-| Config | 公開の型と関数 | 設定の型、初期化、検査、解決 | 8.1–8.9、9.1–9.10 | Status (P0)、`alloc` (P0) | Service |
+| ErrorKind | 公開の型 | ライブラリ全体で 1 つのエラーの型 | 10.1–10.4 | なし | Service |
+| Config | 公開の型と関数 | 設定の型、初期化、検査、解決 | 8.1–8.9、9.1–9.10 | ErrorKind (P0)、`alloc` (P0) | Service |
 | PublicTree | 公開ヘッダ | 文書・ノード・種類・属性・診断の型と定数 | 1.2–1.6、1.9、4.3、4.13、11.1、11.2、12.1–12.3 | なし | Service |
 | Document | 内部 | 文書の本体、作る・解放する、診断 | 2.1、2.2、2.4、2.7–2.9、4.10、4.14、5.1–5.6、7.1、7.7、7.10、11.3–11.12 | `arena`・`array`・`line_index` (P0) | Service、State |
 | TreeBuilder | 内部 | 木を作る操作と属性の設定 | 2.3、2.5、2.6、3.1–3.14、7.2–7.9、7.11–7.13、12.7 | Document (P0) | Service |
@@ -366,33 +369,35 @@ while (node != AMARK_NODE_NONE) {
 
 ### 公開の型
 
-#### Status
+#### ErrorKind
 
 | Field | Detail |
 |-------|--------|
-| Intent | 失敗の原因を 4 つの種類で伝える |
+| Intent | 失敗の原因を 4 つの種類で伝える、ライブラリ全体で 1 つのエラーの型 |
 | Requirements | 10.1, 10.2, 10.3, 10.4 |
 
 **Responsibilities & Constraints**
-- 公開の関数と、この spec の内部 API は、失敗を `amark_status_t` で返す。
-- project-foundation の部品が返す `amark_error_t` は、`amark_status_from_error` で変換する。変換はこの関数だけで行う。
+- エラーの型は `amark_error_t` の 1 つだけとする。project-foundation の内部の部品も、この spec の内部 API も、公開の関数も、同じ型で失敗を返す。変換は要らない。
+- project-foundation の `src/error.h` を公開ヘッダ `include/amark/error.h` に移し、値を下の 5 つにする。内部の部品が返していた `AMARK_ERROR_OVERFLOW`（大きさの計算があふれた）は、`AMARK_ERROR_LIMIT_EXCEEDED` に名前を変える。あふれは、実装が表せる大きさを超えたことを意味するので、資源の上限の超過にあたる。
+- 内部の部品の動作は変えない。メモリ不足とあふれは、これまでどおり別の値で返る（project-foundation の要件 12.5）。
 
 ##### Service Interface
 ```c
-/* include/amark/status.h */
-typedef enum amark_status {
-    AMARK_STATUS_OK = 0,
-    AMARK_STATUS_INVALID_INPUT = 1,  /* 入力の制約違反 */
-    AMARK_STATUS_INVALID_CONFIG = 2, /* 設定の誤り */
-    AMARK_STATUS_LIMIT_EXCEEDED = 3, /* 資源の上限の超過 */
-    AMARK_STATUS_NOMEM = 4           /* メモリ不足 */
-} amark_status_t;
-
-/* src/status.h */
-amark_status_t amark_status_from_error(amark_error_t error);
+/* include/amark/error.h（src/error.h から移す） */
+typedef enum amark_error {
+    AMARK_ERROR_NONE = 0,
+    AMARK_ERROR_INVALID_INPUT = 1,  /* 入力の制約違反 */
+    AMARK_ERROR_INVALID_CONFIG = 2, /* 設定の誤り */
+    AMARK_ERROR_LIMIT_EXCEEDED = 3, /* 資源の上限の超過（大きさの計算のあふれを含む） */
+    AMARK_ERROR_NOMEM = 4           /* メモリ不足 */
+} amark_error_t;
 ```
-- 変換：`AMARK_ERROR_NONE` → `OK`、`AMARK_ERROR_NOMEM` → `NOMEM`、`AMARK_ERROR_OVERFLOW` → `LIMIT_EXCEEDED`。
-- `OVERFLOW`（大きさの計算があふれた）を資源の上限の超過とするのは、実装が表せる大きさを超えたことを意味するからである。
+- `AMARK_ERROR_NONE` と `AMARK_ERROR_NOMEM` は、名前を変えない。`AMARK_ERROR_NOMEM` の値は 1 から 4 に変わるが、まだ公開していない型なので、互換性の問題はない。
+
+**Implementation Notes**
+- Integration: `src/` の内部ヘッダ（`alloc.h`、`arena.h`、`array.h`、`line_index.h`、`utf8.h`）は、`"error.h"` の代わりに `<amark/error.h>` を取り込む。`src/` と `tests/unit/` の `AMARK_ERROR_OVERFLOW` を、すべて `AMARK_ERROR_LIMIT_EXCEEDED` に置き換える。
+- Validation: 置き換えの後、project-foundation と unicode-tables の既存の単体テストがそのまま通ることを確かめる。
+- Risks: project-foundation の `design.md` に `OVERFLOW` の記述が 12 か所ある。実装と同じ変更で、名前を合わせて直す。
 
 #### Config
 
@@ -446,7 +451,7 @@ typedef struct amark_config {
 } amark_config_t;
 
 AMARK_API void amark_config_init(amark_config_t *config);
-AMARK_API amark_status_t amark_config_validate(const amark_config_t *config,
+AMARK_API amark_error_t amark_config_validate(const amark_config_t *config,
                                                size_t content_length);
 
 /* src/config.h */
@@ -462,13 +467,13 @@ typedef struct amark_resolved_config {
     size_t max_node_count;
 } amark_resolved_config_t;
 
-amark_status_t amark_config_resolve(const amark_config_t *config,
+amark_error_t amark_config_resolve(const amark_config_t *config,
                                     size_t content_length,
                                     amark_resolved_config_t *out);
 ```
 - `amark_config_init`：`config` を既定の値にする。`struct_size` は `sizeof(amark_config_t)`、`end` は `AMARK_END_OF_CONTENT`、ほかはすべて 0 か `NULL`。`config` が `NULL` なら何もしない。
 - `utf8_mode` を `int` にしているのは、定義されていない値が入っていても、読むことが未定義の動作にならないようにするためである。
-- `amark_config_resolve` と `amark_config_validate`：`config` が `NULL` のときは、既定の設定として扱う。次の規則を順に確かめ、最初に破れたところで `AMARK_STATUS_INVALID_CONFIG` を返す。すべて通れば `AMARK_STATUS_OK` を返す。
+- `amark_config_resolve` と `amark_config_validate`：`config` が `NULL` のときは、既定の設定として扱う。次の規則を順に確かめ、最初に破れたところで `AMARK_ERROR_INVALID_CONFIG` を返す。すべて通れば `AMARK_ERROR_NONE` を返す。
   1. `struct_size` が `sizeof(amark_config_t)` に等しい。
   2. `allocator.malloc_fn` と `allocator.free_fn` が、どちらも `NULL` か、どちらも `NULL` でない。
   3. `end` が `AMARK_END_OF_CONTENT` なら `content_length` に読み替える。そのうえで `start <= end` かつ `end <= content_length` である。
@@ -592,14 +597,14 @@ typedef struct amark_diagnostic {
 ##### Service Interface
 ```c
 /* src/document.h */
-amark_status_t amark_document_create(const amark_allocator_t *allocator,
+amark_error_t amark_document_create(const amark_allocator_t *allocator,
                                      const unsigned char *content,
                                      size_t content_length,
                                      size_t start, size_t end,
                                      const char *filename,
                                      amark_document_t **out);
 
-amark_status_t amark_document_add_diagnostic(amark_document_t *doc,
+amark_error_t amark_document_add_diagnostic(amark_document_t *doc,
                                              size_t offset,
                                              amark_severity_t severity,
                                              const char *message);
@@ -661,13 +666,13 @@ typedef enum amark_node_class {
 } amark_node_class_t;
 
 /* ノードを足す */
-amark_status_t amark_tree_append(amark_document_t *doc, amark_node_id_t parent,
+amark_error_t amark_tree_append(amark_document_t *doc, amark_node_id_t parent,
                                  amark_kind_t kind, amark_node_class_t cls,
                                  size_t start, size_t end, amark_node_id_t *out);
-amark_status_t amark_tree_insert_before(amark_document_t *doc, amark_node_id_t sibling,
+amark_error_t amark_tree_insert_before(amark_document_t *doc, amark_node_id_t sibling,
                                         amark_kind_t kind, amark_node_class_t cls,
                                         size_t start, size_t end, amark_node_id_t *out);
-amark_status_t amark_tree_wrap(amark_document_t *doc,
+amark_error_t amark_tree_wrap(amark_document_t *doc,
                                amark_node_id_t first, amark_node_id_t last,
                                amark_kind_t kind, amark_node_class_t cls,
                                size_t start, size_t end, amark_node_id_t *out);
@@ -680,26 +685,26 @@ void amark_tree_set_kind(amark_document_t *doc, amark_node_id_t node,
 void amark_tree_remove(amark_document_t *doc, amark_node_id_t node);
 
 /* 属性を設定する */
-amark_status_t amark_tree_set_heading(amark_document_t *doc, amark_node_id_t node,
+amark_error_t amark_tree_set_heading(amark_document_t *doc, amark_node_id_t node,
                                       unsigned level, amark_heading_style_t style);
-amark_status_t amark_tree_set_list(amark_document_t *doc, amark_node_id_t node,
+amark_error_t amark_tree_set_list(amark_document_t *doc, amark_node_id_t node,
                                    amark_list_type_t type, char marker,
                                    uint32_t start_number, amark_list_spacing_t spacing);
-amark_status_t amark_tree_set_code_block(amark_document_t *doc, amark_node_id_t node,
+amark_error_t amark_tree_set_code_block(amark_document_t *doc, amark_node_id_t node,
                                          amark_code_block_style_t style, char fence_char,
                                          size_t fence_length, const amark_range_t *info);
-amark_status_t amark_tree_set_link(amark_document_t *doc, amark_node_id_t node,
+amark_error_t amark_tree_set_link(amark_document_t *doc, amark_node_id_t node,
                                    amark_link_form_t form,
                                    const amark_range_t *destination,
                                    const amark_range_t *title,
                                    amark_node_id_t definition);
-amark_status_t amark_tree_set_definition(amark_document_t *doc, amark_node_id_t node,
+amark_error_t amark_tree_set_definition(amark_document_t *doc, amark_node_id_t node,
                                          const amark_range_t *label,
                                          const amark_range_t *destination,
                                          const amark_range_t *title);
-amark_status_t amark_tree_set_autolink(amark_document_t *doc, amark_node_id_t node,
+amark_error_t amark_tree_set_autolink(amark_document_t *doc, amark_node_id_t node,
                                        amark_autolink_type_t type);
-amark_status_t amark_tree_set_dialect_data(amark_document_t *doc, amark_node_id_t node,
+amark_error_t amark_tree_set_dialect_data(amark_document_t *doc, amark_node_id_t node,
                                            const void *data, size_t size);
 ```
 
@@ -963,8 +968,8 @@ struct amark_document {
 ## Error Handling
 
 ### Error Strategy
-- すべての失敗は、戻り値の `amark_status_t` で伝える。`assert`、`abort`、`exit`、`longjmp` は使わない。
-- この spec の関数が返す失敗は、次の 3 つだけである。`AMARK_STATUS_INVALID_INPUT` は、この spec のどの関数も返さない（block-parser が UTF-8 の検査で使う）。
+- すべての失敗は、戻り値の `amark_error_t` で伝える。`assert`、`abort`、`exit`、`longjmp` は使わない。
+- この spec の関数が返す失敗は、次の 3 つだけである。`AMARK_ERROR_INVALID_INPUT` は、この spec のどの関数も返さない（block-parser が UTF-8 の検査で使う）。
 
 | 失敗 | 返す関数 | 原因 | 失敗の後の状態 |
 |------|----------|------|----------------|
@@ -983,7 +988,7 @@ struct amark_document {
 どのテストも、`tests/support/` の数える確保関数を使い、終わりに解放されていないブロックがないことを確かめる。
 
 ### 単体テスト：`tests/unit/test_config.c`
-- `amark_status_from_error` が 3 つの内部のエラーを決まった値に変換する（10.1）。`amark_status_t` の 5 つの値が 0 から 4 である（10.3）。
+- `amark_error_t` の 5 つの値が、互いに異なり、0 から 4 である（10.1、10.3）。
 - `amark_config_resolve` が、既定の設定を「方言なし、`[0, content_length)`、既定の確保関数、エラーにする、上限なし」に解決する。内容の長さが 0 でも、`SIZE_MAX` でも成功する（8.3、8.4、9.2）。
 - `config` が `NULL` のとき、既定の設定と同じ結果になる。
 - 規則 1 から 4 のそれぞれについて、破った設定が `INVALID_CONFIG` になり、`*out` が変わらない（9.3、9.4、9.5、9.7）。境界の値（`start == end`、`end == content_length`、`start == content_length` で `end` が `AMARK_END_OF_CONTENT`）は成功する（9.6）。
