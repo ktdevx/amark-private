@@ -11,3 +11,15 @@ amark_config_validate
 amark_document_destroy
 amark_document_diagnostic_count
 amark_document_diagnostic
+amark_kind_is_core
+amark_kind_is_dialect
+amark_document_root
+amark_node_parent
+amark_node_first_child
+amark_node_next_sibling
+amark_node_kind
+amark_node_is_block
+amark_node_is_inline
+amark_node_range
+amark_node_start_line
+amark_node_end_line

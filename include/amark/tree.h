@@ -150,6 +150,93 @@ typedef struct amark_diagnostic {
 } amark_diagnostic_t;
 
 /*
+ * Reading the tree.
+ *
+ * None of the functions below changes the document, allocates memory or
+ * takes time that grows with the size of the tree, so a document that is no
+ * longer changed may be read from several threads at the same time. Node IDs
+ * and ranges stay valid until the document is destroyed.
+ *
+ * A call that cannot be answered returns a fixed value instead: doc is NULL,
+ * the ID is AMARK_NODE_NONE or larger than the number of nodes created, or
+ * the ID is that of a node that was removed while the tree was built.
+ * Functions that return an ID then return AMARK_NODE_NONE, those that return
+ * a kind AMARK_KIND_NONE, those that return a line 0 (lines start at 1),
+ * and those that return bool false, leaving *out unchanged.
+ *
+ * The parent, the first child and the next sibling are enough to visit
+ * every node in document order, without recursion or a stack:
+ *
+ *     amark_node_id_t root = amark_document_root(doc);
+ *     amark_node_id_t node = root;
+ *     while (node != AMARK_NODE_NONE) {
+ *         // visit node
+ *         amark_node_id_t next = amark_node_first_child(doc, node);
+ *         while (next == AMARK_NODE_NONE && node != root) {
+ *             next = amark_node_next_sibling(doc, node);
+ *             if (next == AMARK_NODE_NONE) {
+ *                 node = amark_node_parent(doc, node);
+ *             }
+ *         }
+ *         node = next;
+ *     }
+ */
+
+/*
+ * amark_kind_is_core returns true if kind is a defined CommonMark kind (1 to
+ * 10 and 32 to 43). amark_kind_is_dialect returns true if kind is
+ * AMARK_KIND_DIALECT_MIN or above. Both return false for AMARK_KIND_NONE and
+ * for the reserved values.
+ */
+AMARK_API bool amark_kind_is_core(amark_kind_t kind);
+AMARK_API bool amark_kind_is_dialect(amark_kind_t kind);
+
+/* Returns the root (a node of AMARK_KIND_DOCUMENT), or AMARK_NODE_NONE. */
+AMARK_API amark_node_id_t amark_document_root(const amark_document_t *doc);
+
+/*
+ * Return the parent, the first child and the next sibling of node, or
+ * AMARK_NODE_NONE if it has none (the root has no parent and no sibling).
+ */
+AMARK_API amark_node_id_t amark_node_parent(const amark_document_t *doc,
+                                            amark_node_id_t node);
+AMARK_API amark_node_id_t amark_node_first_child(const amark_document_t *doc,
+                                                 amark_node_id_t node);
+AMARK_API amark_node_id_t amark_node_next_sibling(const amark_document_t *doc,
+                                                  amark_node_id_t node);
+
+/* Returns the kind of node. */
+AMARK_API amark_kind_t amark_node_kind(const amark_document_t *doc,
+                                       amark_node_id_t node);
+
+/*
+ * Return whether node is a block or an inline. A CommonMark kind is decided
+ * by its ID (the document is a block); a dialect kind reports the class it
+ * was created with.
+ */
+AMARK_API bool amark_node_is_block(const amark_document_t *doc,
+                                   amark_node_id_t node);
+AMARK_API bool amark_node_is_inline(const amark_document_t *doc,
+                                    amark_node_id_t node);
+
+/*
+ * Stores the range [start, end) of node in *out and returns true. Returns
+ * false and leaves *out unchanged if the call cannot be answered or out is
+ * NULL.
+ */
+AMARK_API bool amark_node_range(const amark_document_t *doc,
+                                amark_node_id_t node, amark_range_t *out);
+
+/*
+ * Return the line of the start of node and the line of its last byte (the
+ * start line for an empty range). The first line is 1.
+ */
+AMARK_API size_t amark_node_start_line(const amark_document_t *doc,
+                                       amark_node_id_t node);
+AMARK_API size_t amark_node_end_line(const amark_document_t *doc,
+                                     amark_node_id_t node);
+
+/*
  * Releases doc and everything it holds (nodes, attributes, diagnostics)
  * through the allocator it was created with. The content is neither changed
  * nor released. Does nothing if doc is NULL.

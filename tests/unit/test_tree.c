@@ -9,7 +9,9 @@
  * changing the range and the kind, removing and wrapping nodes, setting the
  * attributes of each kind, the node and attribute limits and allocation
  * failures. The results are checked through
- * the internal layout of the document (src/document.h).
+ * the internal layout of the document (src/document.h). The public readers
+ * (include/amark/tree.h: kind classification, walking, kind, class, range
+ * and lines) are checked on trees built here.
  */
 
 #include "document.h"
@@ -1916,6 +1918,346 @@ NAOS_TEST(attribute_limit_leaves_the_node_unchanged)
     NAOS_CHECK_UINT_EQ(node_at(g_doc, h)->attr, (uint32_t)saved);
 }
 
+/* ---- the public readers (1.7, 1.8, 1.9, 2.1, 4.1-4.4, 4.7-4.12, 4.14) ---- */
+
+NAOS_TEST(kind_classification)
+{
+    size_t i;
+    amark_kind_t k;
+    static const amark_kind_t neither[] = {
+        AMARK_KIND_NONE, 11, 12, 30, 31, 44, 45, 63, 64, 1000, 0xFFFE,
+        AMARK_KIND_DIALECT_MIN - 1
+    };
+    static const amark_kind_t dialect[] = {
+        AMARK_KIND_DIALECT_MIN, AMARK_KIND_DIALECT_MIN + 1, 0x7FFFFFFF,
+        UINT32_MAX - 1, UINT32_MAX
+    };
+
+    for (i = 0; i < CORE_KIND_COUNT; i++) {
+        NAOS_CHECK_TRUE(amark_kind_is_core(k_core_kinds[i]));
+        NAOS_CHECK_FALSE(amark_kind_is_dialect(k_core_kinds[i]));
+    }
+    for (i = 0; i < sizeof(neither) / sizeof(neither[0]); i++) {
+        NAOS_CHECK_FALSE(amark_kind_is_core(neither[i]));
+        NAOS_CHECK_FALSE(amark_kind_is_dialect(neither[i]));
+    }
+    for (i = 0; i < sizeof(dialect) / sizeof(dialect[0]); i++) {
+        NAOS_CHECK_FALSE(amark_kind_is_core(dialect[i]));
+        NAOS_CHECK_TRUE(amark_kind_is_dialect(dialect[i]));
+    }
+    /* Every value below the dialect range: core exactly for 1-10, 32-43. */
+    for (k = 0; k < AMARK_KIND_DIALECT_MIN; k++) {
+        bool core = (k >= 1 && k <= 10) || (k >= 32 && k <= 43);
+        NAOS_CHECK_INT_EQ(amark_kind_is_core(k), core);
+        NAOS_CHECK_FALSE(amark_kind_is_dialect(k));
+    }
+}
+
+NAOS_TEST(kind_ids_equal_the_design_table)
+{
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_NONE, 0);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_DOCUMENT, 1);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_BLOCK_QUOTE, 2);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_LIST, 3);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_LIST_ITEM, 4);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_THEMATIC_BREAK, 5);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_HEADING, 6);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_CODE_BLOCK, 7);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_HTML_BLOCK, 8);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_PARAGRAPH, 9);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_LINK_REFERENCE_DEFINITION, 10);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_TEXT, 32);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_CODE_SPAN, 33);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_EMPHASIS, 34);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_STRONG, 35);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_LINK, 36);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_IMAGE, 37);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_AUTOLINK, 38);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_RAW_HTML, 39);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_HARD_BREAK, 40);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_SOFT_BREAK, 41);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_BACKSLASH_ESCAPE, 42);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_CHARACTER_REFERENCE, 43);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_DIALECT_MIN, 0x10000);
+    NAOS_CHECK_UINT_EQ(AMARK_NODE_NONE, 0);
+}
+
+/* Checks a node through the public readers only. */
+static void check_read(amark_node_id_t id, amark_kind_t kind, bool is_inline,
+                       size_t start, size_t end, size_t start_line,
+                       size_t end_line)
+{
+    amark_range_t r = {99, 99};
+
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, id), kind);
+    NAOS_CHECK_INT_EQ(amark_node_is_block(g_doc, id), !is_inline);
+    NAOS_CHECK_INT_EQ(amark_node_is_inline(g_doc, id), is_inline);
+    NAOS_CHECK_TRUE(amark_node_range(g_doc, id, &r));
+    NAOS_CHECK_UINT_EQ(r.start, start);
+    NAOS_CHECK_UINT_EQ(r.end, end);
+    NAOS_CHECK_UINT_EQ(amark_node_start_line(g_doc, id), start_line);
+    NAOS_CHECK_UINT_EQ(amark_node_end_line(g_doc, id), end_line);
+}
+
+NAOS_TEST(readers_return_kind_class_range_and_lines)
+{
+    size_t i;
+    amark_node_id_t ids[CORE_KIND_COUNT];
+    amark_node_id_t block = AMARK_NODE_NONE;
+    amark_node_id_t inl = AMARK_NODE_NONE;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_root(g_doc), 1);
+    check_read(1, AMARK_KIND_DOCUMENT, false, 0, 12, 1, 4);
+    NAOS_CHECK_UINT_EQ(amark_node_parent(g_doc, 1), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, 1), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, 1), AMARK_NODE_NONE);
+
+    for (i = 0; i < CORE_KIND_COUNT; i++) {
+        size_t start = i % (MIXED_LENGTH + 1);
+        ids[i] = add(1, k_core_kinds[i], start, MIXED_LENGTH);
+    }
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, 1), ids[0]);
+    for (i = 0; i < CORE_KIND_COUNT; i++) {
+        size_t start = i % (MIXED_LENGTH + 1);
+        check_read(ids[i], k_core_kinds[i], i >= CORE_BLOCK_COUNT, start,
+                   MIXED_LENGTH, k_line_of[start],
+                   start < MIXED_LENGTH ? 4 : k_line_of[start]);
+        NAOS_CHECK_UINT_EQ(amark_node_parent(g_doc, ids[i]), 1);
+        NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, ids[i]),
+                           AMARK_NODE_NONE);
+        NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, ids[i]),
+                           i + 1 < CORE_KIND_COUNT ? ids[i + 1]
+                                                   : AMARK_NODE_NONE);
+    }
+
+    /* Dialect kinds report the class they were created with (4.7). */
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(g_doc, 1, AMARK_KIND_DIALECT_MIN,
+                                          AMARK_NODE_CLASS_BLOCK, 3, 7,
+                                          &block),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(g_doc, block, UINT32_MAX,
+                                          AMARK_NODE_CLASS_INLINE, 7, 7, &inl),
+                        AMARK_ERROR_NONE);
+    check_read(block, AMARK_KIND_DIALECT_MIN, false, 3, 7, 2, 2);
+    check_read(inl, UINT32_MAX, true, 7, 7, 3, 3);
+    NAOS_CHECK_UINT_EQ(amark_node_parent(g_doc, inl), block);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, block), inl);
+}
+
+/*
+ * Walks the tree of g_doc with the loop of the design ("文書の順の走査"),
+ * using the public readers only, and compares the IDs with
+ * expected[0..count). Also checks that every ID is visited once.
+ */
+#define DESIGN_WALK_MAX 64
+static void check_design_walk(const amark_node_id_t *expected, size_t count)
+{
+    amark_node_id_t seen[DESIGN_WALK_MAX];
+    unsigned visits[DESIGN_WALK_MAX];
+    size_t n = 0;
+    size_t i;
+    amark_node_id_t root = amark_document_root(g_doc);
+    amark_node_id_t node = root;
+
+    memset(visits, 0, sizeof(visits));
+    while (node != AMARK_NODE_NONE) {
+        amark_node_id_t next;
+
+        /* Visit node. */
+        NAOS_REQUIRE_UINT_LT(n, DESIGN_WALK_MAX);
+        NAOS_REQUIRE_UINT_LT(node, DESIGN_WALK_MAX);
+        seen[n++] = node;
+        visits[node]++;
+        NAOS_CHECK_UINT_NE(amark_node_kind(g_doc, node), AMARK_KIND_NONE);
+
+        next = amark_node_first_child(g_doc, node);
+        while (next == AMARK_NODE_NONE && node != root) {
+            next = amark_node_next_sibling(g_doc, node);
+            if (next == AMARK_NODE_NONE) {
+                node = amark_node_parent(g_doc, node);
+            }
+        }
+        node = next;
+    }
+
+    NAOS_CHECK_UINT_EQ(n, count);
+    for (i = 0; i < n && i < count; i++) {
+        NAOS_CHECK_UINT_EQ(seen[i], expected[i]);
+        NAOS_CHECK_UINT_EQ(visits[expected[i]], 1);
+    }
+}
+
+NAOS_TEST(design_loop_visits_an_irregular_tree_in_document_order)
+{
+    amark_node_id_t para;
+    amark_node_id_t emph;
+    amark_node_id_t strong;
+    amark_node_id_t gone;
+    amark_node_id_t quote;
+    amark_node_id_t list;
+    amark_node_id_t item;
+    amark_node_id_t html = AMARK_NODE_NONE;
+    static const amark_node_id_t expected[] = {
+        1, 16, 2, 3, 4, 5, 6, 8, 9, 10, 11, 14, 15
+    };
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+
+    /* Only the root. */
+    {
+        static const amark_node_id_t only_root[] = {1};
+        check_design_walk(only_root, 1);
+    }
+
+    para = add(1, AMARK_KIND_PARAGRAPH, 0, 5);           /* 2 */
+    add(para, AMARK_KIND_TEXT, 0, 2);                    /* 3 */
+    emph = add(para, AMARK_KIND_EMPHASIS, 3, 5);         /* 4 */
+    strong = add(emph, AMARK_KIND_STRONG, 3, 5);         /* 5 */
+    add(strong, AMARK_KIND_TEXT, 3, 4);                  /* 6 */
+    gone = add(emph, AMARK_KIND_TEXT, 4, 5);             /* 7 */
+    quote = add(1, AMARK_KIND_BLOCK_QUOTE, 7, 12);       /* 8 */
+    list = add(quote, AMARK_KIND_LIST, 7, 12);           /* 9 */
+    item = add(list, AMARK_KIND_LIST_ITEM, 7, 9);        /* 10 */
+    add(item, AMARK_KIND_PARAGRAPH, 7, 9);               /* 11 */
+    item = add(list, AMARK_KIND_LIST_ITEM, 9, 10);       /* 12 */
+    add(item, AMARK_KIND_PARAGRAPH, 9, 10);              /* 13 */
+    amark_tree_remove(g_doc, item);  /* 12 and its child 13 leave the tree */
+    add(list, AMARK_KIND_LIST_ITEM, 10, 12);             /* 14 */
+    add(1, AMARK_KIND_THEMATIC_BREAK, 12, 12);           /* 15 */
+    amark_tree_remove(g_doc, gone);
+    NAOS_REQUIRE_INT_EQ(amark_tree_insert_before(g_doc, para,
+                                                 AMARK_KIND_HTML_BLOCK,
+                                                 AMARK_NODE_CLASS_AUTO, 0, 0,
+                                                 &html),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(html, 16);
+
+    check_design_walk(expected, sizeof(expected) / sizeof(expected[0]));
+    /* The descendant of a removed node keeps its kind (not reachable). */
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, 13), AMARK_KIND_PARAGRAPH);
+}
+
+/* Checks that every reader gives its fixed value for (doc, id). */
+static void check_unanswerable(const amark_document_t *doc, amark_node_id_t id)
+{
+    amark_range_t r = {77, 88};
+
+    NAOS_CHECK_UINT_EQ(amark_node_parent(doc, id), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(doc, id), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(doc, id), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(doc, id), AMARK_KIND_NONE);
+    NAOS_CHECK_FALSE(amark_node_is_block(doc, id));
+    NAOS_CHECK_FALSE(amark_node_is_inline(doc, id));
+    NAOS_CHECK_FALSE(amark_node_range(doc, id, &r));
+    NAOS_CHECK_UINT_EQ(r.start, 77);
+    NAOS_CHECK_UINT_EQ(r.end, 88);
+    NAOS_CHECK_FALSE(amark_node_range(doc, id, NULL));
+    NAOS_CHECK_UINT_EQ(amark_node_start_line(doc, id), 0);
+    NAOS_CHECK_UINT_EQ(amark_node_end_line(doc, id), 0);
+}
+
+NAOS_TEST(unanswerable_calls_return_fixed_values)
+{
+    amark_node_id_t para;
+    amark_node_id_t gone;
+    amark_node_id_t last;
+    amark_range_t r = {77, 88};
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    para = add(1, AMARK_KIND_PARAGRAPH, 0, 2);    /* 2 */
+    gone = add(para, AMARK_KIND_EMPHASIS, 0, 2);  /* 3 */
+    add(gone, AMARK_KIND_TEXT, 0, 1);             /* 4 */
+    last = add(1, AMARK_KIND_PARAGRAPH, 3, 5);    /* 5: the last ID */
+    amark_tree_remove(g_doc, gone);
+    NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_doc), 5);
+
+    /* NULL document. */
+    NAOS_CHECK_UINT_EQ(amark_document_root(NULL), AMARK_NODE_NONE);
+    check_unanswerable(NULL, 1);
+    check_unanswerable(NULL, AMARK_NODE_NONE);
+    /* "No node", one past the count, the largest ID, a removed node. */
+    check_unanswerable(g_doc, AMARK_NODE_NONE);
+    check_unanswerable(g_doc, last + 1);
+    check_unanswerable(g_doc, UINT32_MAX);
+    check_unanswerable(g_doc, gone);
+
+    /* The last ID itself answers (exact fit). */
+    check_read(last, AMARK_KIND_PARAGRAPH, false, 3, 5, 2, 2);
+    NAOS_CHECK_UINT_EQ(amark_node_parent(g_doc, last), 1);
+    /* The parent of the removed node lost the link to it. */
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, para), AMARK_NODE_NONE);
+    /* A NULL out on a node that exists gives false too. */
+    NAOS_CHECK_FALSE(amark_node_range(g_doc, last, NULL));
+    NAOS_CHECK_TRUE(amark_node_range(g_doc, last, &r));
+}
+
+/* Copies of the document taken before the reads. */
+#define SNAP_NODES 16
+#define SNAP_ATTRS 8
+static struct amark_document g_doc_before;
+static amark_node_t g_snap_nodes[SNAP_NODES];
+static amark_node_attr_t g_snap_attrs[SNAP_ATTRS];
+static unsigned char g_snap_content[MIXED_LENGTH];
+
+NAOS_TEST(reads_do_not_change_the_document)
+{
+    amark_node_id_t h;
+    amark_node_id_t id;
+    size_t nodes_len;
+    size_t attrs_len;
+    size_t count;
+    size_t sum = 0;
+
+    NAOS_REQUIRE_INT_EQ(create_mixed(&g_doc), AMARK_ERROR_NONE);
+    h = add(1, AMARK_KIND_HEADING, 0, 2);
+    add(h, AMARK_KIND_TEXT, 0, 2);
+    add(1, AMARK_KIND_PARAGRAPH, 3, 12);
+    NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, h, 1, AMARK_HEADING_ATX),
+                        AMARK_ERROR_NONE);
+    amark_tree_remove(g_doc, add(1, AMARK_KIND_TEXT, 12, 12));
+
+    nodes_len = amark_array_len(&g_doc->nodes);
+    attrs_len = amark_array_len(&g_doc->attrs);
+    NAOS_REQUIRE_UINT_LE(nodes_len, SNAP_NODES);
+    NAOS_REQUIRE_UINT_LE(attrs_len, SNAP_ATTRS);
+    memcpy(&g_doc_before, g_doc, sizeof(g_doc_before));
+    memcpy(g_snap_nodes, amark_array_at(&g_doc->nodes, 0),
+           nodes_len * sizeof(amark_node_t));
+    memcpy(g_snap_attrs, amark_array_at(&g_doc->attrs, 0),
+           attrs_len * sizeof(amark_node_attr_t));
+    memcpy(g_snap_content, k_mixed, MIXED_LENGTH);
+
+    count = amark_document_node_count(g_doc);
+    sum += amark_document_root(g_doc);
+    for (id = 0; id <= count + 1; id++) {
+        amark_range_t r = {0, 0};
+        sum += amark_node_parent(g_doc, id);
+        sum += amark_node_first_child(g_doc, id);
+        sum += amark_node_next_sibling(g_doc, id);
+        sum += amark_node_kind(g_doc, id);
+        sum += amark_node_is_block(g_doc, id);
+        sum += amark_node_is_inline(g_doc, id);
+        sum += amark_node_range(g_doc, id, &r);
+        sum += r.start + r.end;
+        sum += amark_node_start_line(g_doc, id);
+        sum += amark_node_end_line(g_doc, id);
+    }
+    NAOS_CHECK_UINT_GT(sum, 0);
+
+    NAOS_CHECK_MEM_EQ(g_doc, sizeof(g_doc_before), &g_doc_before,
+                      sizeof(g_doc_before));
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->nodes), nodes_len);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_doc->attrs), attrs_len);
+    NAOS_CHECK_MEM_EQ(amark_array_at(&g_doc->nodes, 0),
+                      nodes_len * sizeof(amark_node_t), g_snap_nodes,
+                      nodes_len * sizeof(amark_node_t));
+    NAOS_CHECK_MEM_EQ(amark_array_at(&g_doc->attrs, 0),
+                      attrs_len * sizeof(amark_node_attr_t), g_snap_attrs,
+                      attrs_len * sizeof(amark_node_attr_t));
+    NAOS_CHECK_MEM_EQ(k_mixed, MIXED_LENGTH, g_snap_content, MIXED_LENGTH);
+}
+
 NAOS_SUITE(tree,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -1947,7 +2289,13 @@ NAOS_SUITE(tree,
     NAOS_ADD_TEST(dialect_data_is_copied_and_aligned),
     NAOS_ADD_TEST(elements_only_for_nodes_with_attributes),
     NAOS_ADD_TEST(setter_failure_injection_loop),
-    NAOS_ADD_TEST(attribute_limit_leaves_the_node_unchanged)
+    NAOS_ADD_TEST(attribute_limit_leaves_the_node_unchanged),
+    NAOS_ADD_TEST(kind_classification),
+    NAOS_ADD_TEST(kind_ids_equal_the_design_table),
+    NAOS_ADD_TEST(readers_return_kind_class_range_and_lines),
+    NAOS_ADD_TEST(design_loop_visits_an_irregular_tree_in_document_order),
+    NAOS_ADD_TEST(unanswerable_calls_return_fixed_values),
+    NAOS_ADD_TEST(reads_do_not_change_the_document)
 )
 
 NAOS_MAIN(
