@@ -10,6 +10,7 @@ set(AMARK_SOURCES
     alloc.c
     arena.c
     array.c
+    block.c
     config.c
     definition.c
     document.c

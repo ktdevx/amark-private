@@ -1,0 +1,619 @@
+/*
+ * Copyright (c) The Amark Authors
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "block.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <amark/tree.h>
+
+#include "array.h"
+#include "line.h"
+#include "parse_data.h"
+#include "tree_internal.h"
+
+/*
+ * The parse follows the "three phases per line" of CommonMark 0.31.2
+ * (appendix "A parsing strategy"): for each line of the parsed range, (1)
+ * match the open blocks from the outside in, (2) open new blocks where the
+ * line starts them, (3) add the rest of the line to the innermost block, or
+ * open a paragraph for it. The open blocks are an explicit stack in the
+ * scratch arena; nothing recurses.
+ *
+ * Leaves get their nodes when they close; containers get theirs when they
+ * open, since they become the parents of what opens inside them. A
+ * container's range is set once, when it closes: while it is open its stack
+ * element carries the end, and every child that closes reports its end to
+ * its parent.
+ *
+ * The rules of each kind are in three functions, each one switch over the
+ * kind: continue_block (does an open block continue on this line), start
+ * blocks (does a new block start here) and close_block. Dialect kinds take
+ * the default branches, which do not continue, start nothing and close
+ * doing nothing.
+ */
+
+#define TAB_STOP 4
+
+/* ------------------------------------------------------------------------ */
+/* The position on a line                                                   */
+/* ------------------------------------------------------------------------ */
+
+void amark_line_pos_init(amark_line_pos_t *pos, size_t line,
+                         const amark_line_bounds_t *bounds)
+{
+    pos->line = line;
+    pos->content_end = bounds->content_end;
+    pos->offset = bounds->start;
+    pos->column = 0;
+    pos->pad = 0;
+    /* first_nonspace <= offset: the first search on the line scans. */
+    pos->first_nonspace = bounds->start;
+    pos->first_nonspace_column = 0;
+    pos->indent = 0;
+    pos->blank = bounds->start == bounds->content_end;
+}
+
+void amark_line_pos_find_nonspace(amark_line_pos_t *pos,
+                                  const unsigned char *bytes)
+{
+    if (pos->first_nonspace <= pos->offset) {
+        size_t i = pos->offset;
+        size_t column = pos->column;
+
+        while (i < pos->content_end) {
+            if (bytes[i] == ' ') {
+                column++;
+            } else if (bytes[i] == '\t') {
+                column += TAB_STOP - column % TAB_STOP;
+            } else {
+                break;
+            }
+            i++;
+        }
+        pos->first_nonspace = i;
+        pos->first_nonspace_column = column;
+    }
+    /*
+     * Otherwise only spaces and tabs lie between offset and first_nonspace
+     * (the advances move offset forward only, and never past a byte that is
+     * not a space or a tab without passing first_nonspace), so the earlier
+     * result still holds; column already counts any part of a tab at offset
+     * that was consumed.
+     */
+    pos->indent = pos->first_nonspace_column - pos->column;
+    pos->blank = pos->first_nonspace == pos->content_end;
+}
+
+void amark_line_pos_advance(amark_line_pos_t *pos, const unsigned char *bytes,
+                            size_t count, amark_advance_unit_t unit)
+{
+    while (count > 0 && pos->offset < pos->content_end) {
+        if (bytes[pos->offset] == '\t') {
+            size_t to_tab = TAB_STOP - pos->column % TAB_STOP;
+
+            if (unit == AMARK_ADVANCE_COLUMNS) {
+                if (to_tab > count) {
+                    pos->column += count;
+                    pos->pad = (unsigned)(to_tab - count);
+                    return;
+                }
+                count -= to_tab;
+            } else {
+                count--;
+            }
+            pos->column += to_tab;
+        } else {
+            pos->column++;
+            count--;
+        }
+        pos->offset++;
+        pos->pad = 0;
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* The stack of open blocks                                                 */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * An open block. Element 0 of the stack is the root (depth 0); the index of
+ * an element is its nesting depth. Members that a kind does not use stay 0.
+ */
+typedef struct open_block {
+    amark_kind_t kind;
+    bool is_container;
+    amark_node_id_t node; /* containers: made when opened; leaves:
+                             AMARK_NODE_NONE until closed */
+    size_t start;
+    size_t end;           /* extended by each line added and by each child
+                             that closes */
+
+    /* Lists and list items. */
+    size_t marker_offset;
+    size_t padding;       /* the content indent of the item, in columns */
+    amark_list_type_t list_type;
+    char marker;
+    uint32_t start_number;
+    size_t content_indent; /* list items: the sum of the content indents from
+                              the root */
+
+    /* Fenced code blocks. */
+    char fence_char;
+    size_t fence_length;
+    size_t fence_offset;
+    amark_opt_range_t info;
+
+    /* HTML blocks. */
+    unsigned html_type;
+
+    /* Headings and paragraphs: the level, and the inline content. */
+    unsigned level;
+    size_t content_start;
+    size_t content_end;
+
+    /* Indented code blocks: the end of the last line that is not blank. */
+    size_t last_nonblank_end;
+
+    /*
+     * Containers: the number of blocks opened inside this one, leaves still
+     * open and paragraphs that became definitions only included.
+     */
+    size_t child_count;
+
+    /* The blank line marks (tight and loose, and the blank line run). */
+    bool ends_blank;       /* this block ended with a blank line */
+    bool last_child_blank; /* the value its last closed child reported */
+    bool blank_run;        /* lists: the previous line was blank here too */
+    bool loose;            /* lists: a blank line separates items or their
+                              children */
+} open_block_t;
+
+typedef struct block_parser {
+    amark_document_t *doc;
+    const unsigned char *bytes;
+    size_t max_depth;     /* 0: no limit */
+    size_t max_nodes;     /* 0: no limit */
+    amark_array_t stack;  /* open_block_t, in the scratch arena */
+    amark_line_pos_t pos;
+    bool all_matched;     /* every open block matched on this line */
+} block_parser_t;
+
+static size_t stack_top(const block_parser_t *p)
+{
+    return amark_array_len(&p->stack) - 1;
+}
+
+static open_block_t *stack_at(const block_parser_t *p, size_t index)
+{
+    return (open_block_t *)amark_array_at(&p->stack, index);
+}
+
+/*
+ * Creates a node of kind over [start, end) as the last child of the node of
+ * the element at parent. Checks the node count limit first: the count
+ * includes the root, and nothing is removed, so it is the number of nodes
+ * the returned tree has.
+ */
+static amark_error_t append_node(block_parser_t *p, size_t parent,
+                                 amark_kind_t kind, size_t start, size_t end,
+                                 amark_node_id_t *out)
+{
+    if (p->max_nodes != 0 &&
+        amark_document_node_count(p->doc) >= p->max_nodes) {
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    }
+    return amark_tree_append(p->doc, stack_at(p, parent)->node, kind,
+                             AMARK_NODE_CLASS_AUTO, start, end, out);
+}
+
+/* Whether a block of kind child may be a child of a block of kind parent. */
+static bool can_contain(amark_kind_t parent, amark_kind_t child)
+{
+    switch (parent) {
+    case AMARK_KIND_DOCUMENT:
+    case AMARK_KIND_BLOCK_QUOTE:
+    case AMARK_KIND_LIST_ITEM:
+        return child != AMARK_KIND_LIST_ITEM;
+    case AMARK_KIND_LIST:
+        return child == AMARK_KIND_LIST_ITEM;
+    default:
+        return false;
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Closing                                                                  */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Closes a paragraph: adds its node under the element at parent and its
+ * inline content.
+ */
+static amark_error_t close_paragraph(block_parser_t *p, size_t parent,
+                                     const open_block_t *block)
+{
+    amark_node_id_t node;
+    amark_error_t err;
+
+    err = append_node(p, parent, AMARK_KIND_PARAGRAPH, block->start,
+                      block->end, &node);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    return amark_inline_content_add(p->doc, node, block->content_start,
+                                    block->content_end);
+}
+
+/*
+ * The closing rules of each kind, for block, just taken off the stack;
+ * parent is the index of its parent element (now the top).
+ */
+static amark_error_t close_block(block_parser_t *p, size_t parent,
+                                 const open_block_t *block)
+{
+    switch (block->kind) {
+    case AMARK_KIND_PARAGRAPH:
+        return close_paragraph(p, parent, block);
+    case AMARK_KIND_BLOCK_QUOTE:
+    case AMARK_KIND_LIST:
+    case AMARK_KIND_LIST_ITEM:
+        /* The node was made when the container opened. */
+        amark_tree_set_range(p->doc, block->node, block->start, block->end);
+        return AMARK_ERROR_NONE;
+    case AMARK_KIND_THEMATIC_BREAK:
+    case AMARK_KIND_HEADING:
+    case AMARK_KIND_CODE_BLOCK:
+    case AMARK_KIND_HTML_BLOCK:
+        /*
+         * No start rule opens these leaves yet; the rules that open them
+         * make their nodes here.
+         */
+        return AMARK_ERROR_NONE;
+    default:
+        /* Dialect kinds close doing nothing. */
+        return AMARK_ERROR_NONE;
+    }
+}
+
+/*
+ * Takes the innermost element off the stack (never the root), closes it and
+ * reports its end and its blank line mark to its parent.
+ */
+static amark_error_t close_top(block_parser_t *p)
+{
+    open_block_t block;
+    open_block_t *parent;
+    size_t parent_index;
+    amark_error_t err;
+
+    (void)amark_array_pop(&p->stack, &block);
+    parent_index = stack_top(p);
+    err = close_block(p, parent_index, &block);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    parent = stack_at(p, parent_index);
+    if (block.end > parent->end) {
+        parent->end = block.end;
+    }
+    if ((block.kind == AMARK_KIND_LIST || block.kind == AMARK_KIND_LIST_ITEM) &&
+        block.child_count > 0) {
+        parent->last_child_blank = block.last_child_blank;
+    } else {
+        parent->last_child_blank = block.ends_blank;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/* Closes elements until the element at index is the innermost. */
+static amark_error_t close_above(block_parser_t *p, size_t index)
+{
+    while (stack_top(p) > index) {
+        amark_error_t err = close_top(p);
+
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Opens a block of kind starting at start inside the element at parent:
+ * closes every element above parent, then parents that cannot contain kind
+ * (never the root), checks the nesting depth limit, makes the node of a
+ * container, and pushes the element. Stores its index in *index.
+ */
+static amark_error_t push_block(block_parser_t *p, size_t parent,
+                                amark_kind_t kind, bool is_container,
+                                size_t start, size_t *index)
+{
+    open_block_t block;
+    size_t depth;
+    amark_error_t err;
+
+    err = close_above(p, parent);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    while (stack_top(p) > 0 && !can_contain(stack_at(p, stack_top(p))->kind,
+                                            kind)) {
+        err = close_top(p);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+    }
+    parent = stack_top(p);
+    depth = parent + 1;
+    if (p->max_depth != 0 && depth > p->max_depth) {
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    }
+
+    memset(&block, 0, sizeof(block));
+    block.kind = kind;
+    block.is_container = is_container;
+    block.node = AMARK_NODE_NONE;
+    block.start = start;
+    block.end = start;
+    if (is_container) {
+        err = append_node(p, parent, kind, start, start, &block.node);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+    }
+    err = amark_array_push(&p->stack, &block);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    stack_at(p, parent)->child_count++;
+    *index = depth;
+    return AMARK_ERROR_NONE;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Continuing and starting                                                  */
+/* ------------------------------------------------------------------------ */
+
+typedef enum continue_result {
+    CONTINUE_NO,        /* the block does not continue on this line */
+    CONTINUE_YES,       /* it continues; its prefix is consumed */
+    CONTINUE_LINE_DONE  /* it took the whole line (a closing fence) */
+} continue_result_t;
+
+/*
+ * The continuation rules of each kind: whether the element at index
+ * continues on the current line, consuming its prefix if it does. The
+ * position is at the first byte the element may look at, with
+ * amark_line_pos_find_nonspace done.
+ */
+static continue_result_t continue_block(block_parser_t *p, size_t index)
+{
+    const open_block_t *block = stack_at(p, index);
+
+    switch (block->kind) {
+    case AMARK_KIND_PARAGRAPH:
+        return p->pos.blank ? CONTINUE_NO : CONTINUE_YES;
+    case AMARK_KIND_THEMATIC_BREAK:
+    case AMARK_KIND_HEADING:
+        /* One-line leaves never continue. */
+        return CONTINUE_NO;
+    case AMARK_KIND_BLOCK_QUOTE:
+    case AMARK_KIND_LIST:
+    case AMARK_KIND_LIST_ITEM:
+    case AMARK_KIND_CODE_BLOCK:
+    case AMARK_KIND_HTML_BLOCK:
+        /*
+         * No start rule opens these kinds yet; the rules that open them
+         * give their continuation here.
+         */
+        return CONTINUE_NO;
+    default:
+        /* Dialect kinds do not continue. */
+        return CONTINUE_NO;
+    }
+}
+
+typedef enum start_result {
+    START_NONE,      /* nothing starts here */
+    START_CONTAINER, /* a container opened; look for more inside it */
+    START_LEAF       /* a leaf opened; the rest of the line is its own */
+} start_result_t;
+
+/*
+ * The start rules: whether a new block starts at the current position
+ * inside the element at *container (the innermost matched or opened one).
+ * If one does, it is opened and *container becomes its index. The position
+ * has amark_line_pos_find_nonspace done.
+ */
+static amark_error_t start_block(block_parser_t *p, size_t *container,
+                                 start_result_t *result)
+{
+    *result = START_NONE;
+    switch (stack_at(p, *container)->kind) {
+    case AMARK_KIND_DOCUMENT:
+    case AMARK_KIND_BLOCK_QUOTE:
+    case AMARK_KIND_LIST:
+    case AMARK_KIND_LIST_ITEM:
+    case AMARK_KIND_PARAGRAPH:
+        /*
+         * The CommonMark starts are checked here in this order: block
+         * quote, ATX heading, opening fence, HTML block, setext underline,
+         * thematic break, list item, indented code block. None is added
+         * yet, so every line that is not blank becomes paragraph text.
+         */
+        return AMARK_ERROR_NONE;
+    case AMARK_KIND_CODE_BLOCK:
+    case AMARK_KIND_HTML_BLOCK:
+    case AMARK_KIND_THEMATIC_BREAK:
+    case AMARK_KIND_HEADING:
+        /* Nothing starts inside a leaf that takes the whole line. */
+        return AMARK_ERROR_NONE;
+    default:
+        /* Dialect kinds start nothing. */
+        return AMARK_ERROR_NONE;
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* Adding lines                                                             */
+/* ------------------------------------------------------------------------ */
+
+/*
+ * Adds the current line to the paragraph at index: its content starts at the
+ * first non-space byte (the record), the node ends at the end of the line's
+ * content, and the inline content after the last non-space byte.
+ */
+static void paragraph_add_line(block_parser_t *p, size_t index)
+{
+    amark_line_pos_t *pos = &p->pos;
+    open_block_t *block = stack_at(p, index);
+    size_t end = pos->content_end;
+
+    amark_line_pos_advance(pos, p->bytes, pos->first_nonspace - pos->offset,
+                           AMARK_ADVANCE_BYTES);
+    amark_line_set(p->doc, pos->line, pos->offset, pos->pad);
+    while (end > pos->offset &&
+           (p->bytes[end - 1] == ' ' || p->bytes[end - 1] == '\t')) {
+        end--;
+    }
+    block->end = pos->content_end;
+    block->content_end = end;
+}
+
+/*
+ * The third phase: closes the elements that did not match, and adds the
+ * rest of the line to the element at container, or opens a paragraph for
+ * it. A blank line opens nothing and gets the record of a blank line.
+ */
+static amark_error_t add_line(block_parser_t *p, size_t container)
+{
+    amark_line_pos_t *pos = &p->pos;
+    size_t index;
+    amark_error_t err;
+
+    err = close_above(p, container);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    if (stack_at(p, container)->kind == AMARK_KIND_PARAGRAPH) {
+        paragraph_add_line(p, container);
+        return AMARK_ERROR_NONE;
+    }
+    if (pos->blank) {
+        amark_line_set(p->doc, pos->line, pos->content_end, 0);
+        return AMARK_ERROR_NONE;
+    }
+    err = push_block(p, container, AMARK_KIND_PARAGRAPH, false,
+                     pos->first_nonspace, &index);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    stack_at(p, index)->content_start = pos->first_nonspace;
+    paragraph_add_line(p, index);
+    return AMARK_ERROR_NONE;
+}
+
+/* Processes one line in the three phases. */
+static amark_error_t process_line(block_parser_t *p, size_t line,
+                                  const amark_line_bounds_t *bounds)
+{
+    size_t top = stack_top(p);
+    size_t matched = 0;
+    size_t container;
+    size_t i;
+
+    amark_line_pos_init(&p->pos, line, bounds);
+
+    /* 1. Match the open blocks from the outside in; the root always does. */
+    for (i = 1; i <= top; i++) {
+        continue_result_t result;
+
+        amark_line_pos_find_nonspace(&p->pos, p->bytes);
+        result = continue_block(p, i);
+        if (result == CONTINUE_LINE_DONE) {
+            return AMARK_ERROR_NONE;
+        }
+        if (result == CONTINUE_NO) {
+            break;
+        }
+        matched = i;
+    }
+    p->all_matched = matched == top;
+
+    /* 2. Open new blocks until a leaf opens or nothing starts. */
+    container = matched;
+    for (;;) {
+        start_result_t result;
+        amark_error_t err;
+
+        amark_line_pos_find_nonspace(&p->pos, p->bytes);
+        err = start_block(p, &container, &result);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+        if (result != START_CONTAINER) {
+            break;
+        }
+    }
+
+    /* 3. Add the rest of the line. */
+    amark_line_pos_find_nonspace(&p->pos, p->bytes);
+    return add_line(p, container);
+}
+
+/* ------------------------------------------------------------------------ */
+/* The entry                                                                */
+/* ------------------------------------------------------------------------ */
+
+amark_error_t amark_block_parse(amark_document_t *doc,
+                                const amark_resolved_config_t *config,
+                                amark_arena_t *scratch)
+{
+    block_parser_t p;
+    open_block_t root;
+    amark_line_bounds_t bounds;
+    amark_range_t range;
+    size_t line;
+    amark_error_t err;
+
+    p.doc = doc;
+    p.bytes = amark_document_content(doc);
+    p.max_depth = config->max_nesting_depth;
+    p.max_nodes = config->max_node_count;
+    p.all_matched = false;
+    amark_array_init(&p.stack, scratch, sizeof(open_block_t));
+
+    /*
+     * The root is element 0. Its range is the parsed range and is never set
+     * again; the end its children report to it is not used.
+     */
+    memset(&root, 0, sizeof(root));
+    root.kind = AMARK_KIND_DOCUMENT;
+    root.is_container = true;
+    root.node = amark_document_root(doc);
+    (void)amark_node_range(doc, root.node, &range);
+    root.start = range.start;
+    root.end = range.start;
+    err = amark_array_push(&p.stack, &root);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+
+    /* The lines the range covers; an empty range covers none. */
+    for (line = amark_node_start_line(doc, root.node);
+         amark_line_bounds(doc, line, &bounds); line++) {
+        err = process_line(&p, line, &bounds);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+    }
+
+    /* Close what is still open, from the inside out. */
+    return close_above(&p, 0);
+}
