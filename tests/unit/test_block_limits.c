@@ -709,6 +709,199 @@ NAOS_TEST(runs_of_open_brackets)
 }
 
 /* ---------------------------------------------------------------------- */
+/* The blank line cutoff leaves the tree as it is                         */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * The cutoff skips matching the elements inside a list on a line whose rest
+ * is blank there, when it was blank there on the line before too. One blank
+ * line never reaches it (the list's mark is set on that line and used from
+ * the next), so a run of blank lines is checked against one blank line at
+ * the same place: with no code or HTML block open, CommonMark gives them the
+ * same tree, tight and loose included, and so must the parser with the
+ * cutoff.
+ *
+ * Each input below is a pattern whose one line holding '@' stands for the
+ * blank lines: the bytes before the '@' (a prefix of ">" markers, say) start
+ * each of them, and a filler of white space follows. The strings of
+ * k_blank_fillers give the fillers of the lines, separated by ','; the first
+ * one, a single empty filler, is the one blank line the others are compared
+ * with. In every input but the last three of the table a list is open on
+ * the blank lines and goes on over them (a blank line closes no list), with
+ * its blank line mark set by the first of them, so each blank line after
+ * the first reaches the cutoff at that list or at one outside it.
+ *
+ * The exception to the rule is an item with nothing in it, which a line of
+ * white space as wide as its content indent continues (as in cmark), so
+ * that what follows can still go into it. For such an item (empty_item) the
+ * fillers are followed by one more empty line, which closes the item as the
+ * one blank line does. When a narrow line has closed the item first, the
+ * lines after it reach the cutoff at its list; when wide lines keep it
+ * open, the second of them reaches the cutoff with the item at the top, and
+ * the empty line after them must not: it closes the item.
+ */
+typedef struct blank_case {
+    const char *input; /* the pattern, one line holding '@' */
+    bool empty_item;   /* an empty item is open on the blank lines */
+    const char *want;  /* the tree with one empty blank line */
+} blank_case_t;
+
+static const blank_case_t k_blank_cases[] = {
+    /* Lists, the blank line between items, after them, and in an item. */
+    {"- a\n@\n- b\n", false, "(doc (ul - loose (li (p)) (li (p))))"},
+    {"- a\n- b\n@\nc\n", false,
+     "(doc (ul - tight (li (p)) (li (p))) (p))"},
+    {"- a\n- b\n@\n", false, "(doc (ul - tight (li (p)) (li (p))))"},
+    {"- a\n@\n  b\n", false, "(doc (ul - loose (li (p) (p))))"},
+    {"3. a\n@\n4. b\n", false, "(doc (ol 3 . loose (li (p)) (li (p))))"},
+    {"- a\n\n- b\n- c\n@\n- d\n", false,
+     "(doc (ul - loose (li (p)) (li (p)) (li (p)) (li (p))))"},
+    /* Two lists side by side, one tight and one loose. */
+    {"1. a\n@\n2) b\n", false,
+     "(doc (ol 1 . tight (li (p))) (ol 2 ) tight (li (p))))"},
+    {"- a\n@\n- b\n+ c\n+ d\n", false,
+     "(doc (ul - loose (li (p)) (li (p))) (ul + tight (li (p)) (li (p))))"},
+    {"- a\n+ b\n@\n+ c\n", false,
+     "(doc (ul - tight (li (p))) (ul + loose (li (p)) (li (p))))"},
+    /* Nested lists, the outer and the inner one loose in turn. */
+    {"- a\n  - b\n  - c\n@\n- d\n", false,
+     "(doc (ul - loose (li (p) (ul - tight (li (p)) (li (p)))) (li (p))))"},
+    {"- a\n  - b\n@\n    c\n- d\n", false,
+     "(doc (ul - tight (li (p) (ul - loose (li (p) (p)))) (li (p))))"},
+    {"- a\n  - b\n@\n  c\n", false,
+     "(doc (ul - loose (li (p) (ul - tight (li (p))) (p))))"},
+    {"- a\n  - b\n    - c\n@\n      d\n", false,
+     "(doc (ul - tight (li (p) (ul - tight (li (p) (ul - loose (li (p) "
+     "(p))))))))"},
+    {"- a\n  - b\n    - c\n@\n    d\n", false,
+     "(doc (ul - tight (li (p) (ul - loose (li (p) (ul - tight (li (p))) "
+     "(p))))))"},
+    {"- - - a\n@\n      b\n", false,
+     "(doc (ul - tight (li (ul - tight (li (ul - loose (li (p) "
+     "(p))))))))"},
+    {"- - - a\n@\n- b\n", false,
+     "(doc (ul - loose (li (ul - tight (li (ul - tight (li (p)))))) "
+     "(li (p))))"},
+    {"1. - a\n@\n   - b\n", false,
+     "(doc (ol 1 . tight (li (ul - loose (li (p)) (li (p))))))"},
+    /* Lists in block quotes, and block quotes in lists. */
+    {"> - a\n>@\n> - b\n", false,
+     "(doc (bq (ul - loose (li (p)) (li (p)))))"},
+    {"> - a\n>@\n>   b\n", false, "(doc (bq (ul - loose (li (p) (p)))))"},
+    {"> - a\n> - b\n>@\n> c\n", false,
+     "(doc (bq (ul - tight (li (p)) (li (p))) (p)))"},
+    {"> 1. a\n>    - b\n>@\n>    c\n", false,
+     "(doc (bq (ol 1 . loose (li (p) (ul - tight (li (p))) (p)))))"},
+    {"> > - a\n> >@\n> >   - b\n", false,
+     "(doc (bq (bq (ul - loose (li (p) (ul - tight (li (p))))))))"},
+    {"- > a\n@\n  > b\n", false, "(doc (ul - loose (li (bq (p)) (bq (p)))))"},
+    {"- > - a\n  >@\n  >   b\n", false,
+     "(doc (ul - tight (li (bq (ul - loose (li (p) (p)))))))"},
+    /* Empty items, at the top, after an item, nested and in a quote. */
+    {"-\n@\n  a\n", true, "(doc (ul - tight (li)) (p))"},
+    {"1.\n@\n   a\n", true, "(doc (ol 1 . tight (li)) (p))"},
+    {"- a\n-\n@\n  b\n", true, "(doc (ul - tight (li (p)) (li)) (p))"},
+    {"- a\n  - b\n  -\n@\n    c\n", true,
+     "(doc (ul - loose (li (p) (ul - tight (li (p)) (li)) (p))))"},
+    {"> -\n>@\n>   a\n", true, "(doc (bq (ul - tight (li)) (p)))"},
+    /* No list on the blank lines: the cutoff is not reached. */
+    {"> - a\n@\n- b\n", false,
+     "(doc (bq (ul - tight (li (p)))) (ul - tight (li (p))))"},
+    {"a\n@\nb\n", false, "(doc (p) (p))"},
+    {"> a\n>@\n> b\n", false, "(doc (bq (p) (p)))"}};
+
+/*
+ * The fillers of the blank lines, separated by ','. The first is the one
+ * empty blank line; then runs of 2 and 3 empty lines, single lines of white
+ * space and runs that mix spaces, tabs and empty lines.
+ */
+static const char *const k_blank_fillers[] = {
+    "",      ",",        ",,",      " ",          "\t",       "  ,\t",
+    ", \t ,", "\t,,   ", " ,  ,\t, \t", "        ", "\t\t,\t", ",,,,,,,"};
+
+#define COUNT_OF(a) (sizeof(a) / sizeof((a)[0]))
+
+/*
+ * Builds the input of the pattern with the blank lines of fillers, and one
+ * more empty blank line if extra is true.
+ */
+static void build_blank_input(const char *pattern, const char *fillers,
+                              bool extra)
+{
+    size_t length = strlen(pattern);
+    size_t mark = (size_t)(strchr(pattern, '@') - pattern);
+    size_t line = mark;
+    const char *filler = fillers;
+
+    /* At most strlen(fillers) + 2 lines, each of prefix, filler and LF. */
+    input_begin(length + (strlen(fillers) + 2) * (mark + 1) +
+                strlen(fillers));
+    while (line > 0 && pattern[line - 1] != '\n') {
+        line--;
+    }
+    input_repeat(pattern, line, 1);
+    for (;;) {
+        size_t width = strcspn(filler, ",");
+
+        input_repeat(pattern + line, mark - line, 1);
+        input_repeat(filler, width, 1);
+        if (filler[width] == '\0') {
+            break;
+        }
+        APPEND("\n");
+        filler += width + 1;
+    }
+    if (extra) {
+        APPEND("\n");
+        input_repeat(pattern + line, mark - line, 1);
+    }
+    input_repeat(pattern + mark + 1, length - mark - 1, 1);
+}
+
+/*
+ * Parses the input with no limits, requires the tree check to pass, and
+ * writes the block structure into buffer.
+ */
+static void parse_and_dump(char *buffer, size_t size)
+{
+    amark_tree_check_result_t check;
+
+    NAOS_REQUIRE_INT_EQ(parse_input(0, 0), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_TRUE(g_doc != NULL && g_doc != k_sentinel);
+    check = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(check.node, AMARK_NODE_NONE);
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_blocks(g_doc, buffer, size), size);
+}
+
+NAOS_TEST(runs_of_blank_lines_give_the_tree_of_one)
+{
+    char one[512];
+    char run[512];
+    size_t c;
+    size_t f;
+
+    for (c = 0; c < COUNT_OF(k_blank_cases); c++) {
+        const blank_case_t *test = &k_blank_cases[c];
+
+        /* One empty blank line, with no line added for an empty item. */
+        NAOS_TRACE_PUSH("case %lu", (unsigned long)c);
+        build_blank_input(test->input, k_blank_fillers[0], false);
+        parse_and_dump(one, sizeof(one));
+        NAOS_CHECK_STR_EQ(one, test->want);
+        for (f = 0; f < COUNT_OF(k_blank_fillers); f++) {
+            NAOS_TRACE_PUSH("fillers %lu", (unsigned long)f);
+            build_blank_input(test->input, k_blank_fillers[f],
+                              test->empty_item);
+            parse_and_dump(run, sizeof(run));
+            NAOS_CHECK_STR_EQ(run, one);
+            NAOS_TRACE_POP();
+        }
+        NAOS_TRACE_POP();
+    }
+}
+
+/* ---------------------------------------------------------------------- */
 
 NAOS_SUITE(limits,
     NAOS_SET_SETUP(counting),
@@ -744,8 +937,15 @@ NAOS_SUITE(large_inputs,
     NAOS_ADD_TEST(runs_of_open_brackets)
 )
 
+NAOS_SUITE(blank_line_cutoff,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(runs_of_blank_lines_give_the_tree_of_one)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(limits),
     NAOS_ADD_SUITE(deep_nesting),
-    NAOS_ADD_SUITE(large_inputs)
+    NAOS_ADD_SUITE(large_inputs),
+    NAOS_ADD_SUITE(blank_line_cutoff)
 )
