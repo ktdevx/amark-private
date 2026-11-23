@@ -17,6 +17,7 @@ set(AMARK_SOURCES
     line_index.c
     node.c
     parse_data.c
+    scan.c
     tree.c
     tree_check.c
     unicode.c
