@@ -1,7 +1,7 @@
 # Copyright (c) The Amark Authors
 # SPDX-License-Identifier: MIT
 
-# Builds and tests amark on every push to main and on every pull request.
+# Builds and tests Amark on every push to main and on every pull request.
 # The configure, build, test and install commands are the ones in README.md,
 # with -DAMARK_WARNINGS_AS_ERRORS=ON added to the configure command and, in
 # the build matrix, both values of BUILD_SHARED_LIBS. The compiler is chosen
@@ -131,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # amark as a subproject leaves warnings as warnings; the consumer
+      # Amark as a subproject leaves warnings as warnings; the consumer
       # project fails to configure if AMARK_WARNINGS_AS_ERRORS is ON.
       - name: Configure the consumer project (add_subdirectory)
         run: cmake -S tests/consumer -B build-consumer -DCMAKE_BUILD_TYPE=Release -DAMARK_CONSUMER_MODE=subdirectory
