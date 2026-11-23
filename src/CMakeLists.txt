@@ -9,6 +9,7 @@ include(GNUInstallDirs)
 set(AMARK_SOURCES
     alloc.c
     arena.c
+    array.c
     version.c
 )
 
