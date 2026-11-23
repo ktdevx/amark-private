@@ -119,6 +119,7 @@ endif()
 amark_add_unit_test(test_alloc SOURCES unit/test_alloc.c)
 amark_add_unit_test(test_arena SOURCES unit/test_arena.c)
 amark_add_unit_test(test_array SOURCES unit/test_array.c)
+amark_add_unit_test(test_line_index SOURCES unit/test_line_index.c)
 
 # Public API tests (tests/public/), linked to Amark::amark.
 amark_add_public_test(test_version SOURCES public/test_version.c)

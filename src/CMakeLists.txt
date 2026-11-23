@@ -10,6 +10,7 @@ set(AMARK_SOURCES
     alloc.c
     arena.c
     array.c
+    line_index.c
     version.c
 )
 
