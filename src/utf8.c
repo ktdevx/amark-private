@@ -5,6 +5,10 @@
 
 #include "utf8.h"
 
+#include "alloc.h"
+
+#include <string.h>
+
 /* Returns 1 if b is a continuation byte (80..BF). */
 static int is_continuation(unsigned char b)
 {
@@ -113,4 +117,68 @@ size_t amark_utf8_decode(const unsigned char *bytes, size_t length,
     }
     *codepoint = value;
     return size;
+}
+
+amark_error_t amark_utf8_replace(amark_arena_t *arena,
+                                 const unsigned char *bytes, size_t length,
+                                 amark_utf8_replaced_t *out)
+{
+    /* U+FFFD in UTF-8. */
+    static const unsigned char replacement[3] = {0xEF, 0xBF, 0xBD};
+    size_t result_length = 0;
+    size_t count = 0;
+    size_t i;
+    size_t o;
+    size_t size;
+    bool well_formed;
+    unsigned char *result;
+    void *block;
+    amark_error_t err;
+
+    /* Pass 1: the result length and the number of replacements. */
+    for (i = 0; i < length; i += size) {
+        size = amark_utf8_inspect(bytes + i, length - i, &well_formed);
+        if (well_formed) {
+            if (!amark_size_add(result_length, size, &result_length)) {
+                return AMARK_ERROR_OVERFLOW;
+            }
+        } else {
+            if (!amark_size_add(result_length, sizeof(replacement),
+                                &result_length)) {
+                return AMARK_ERROR_OVERFLOW;
+            }
+            count++; /* at most length, so it cannot overflow */
+        }
+    }
+
+    if (count == 0) {
+        out->bytes = bytes;
+        out->length = length;
+        out->replacement_count = 0;
+        return AMARK_ERROR_NONE;
+    }
+
+    err = amark_arena_alloc(arena, result_length, &block);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    result = (unsigned char *)block;
+
+    /* Pass 2: one U+FFFD per maximal subpart; well-formed parts as they are. */
+    o = 0;
+    for (i = 0; i < length; i += size) {
+        size = amark_utf8_inspect(bytes + i, length - i, &well_formed);
+        if (well_formed) {
+            memcpy(result + o, bytes + i, size);
+            o += size;
+        } else {
+            memcpy(result + o, replacement, sizeof(replacement));
+            o += sizeof(replacement);
+        }
+    }
+
+    out->bytes = result;
+    out->length = result_length;
+    out->replacement_count = count;
+    return AMARK_ERROR_NONE;
 }

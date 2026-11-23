@@ -10,6 +10,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "arena.h"
+#include "error.h"
+
 /*
  * UTF-8. Well-formedness follows Table 3-7 (Well-Formed UTF-8 Byte
  * Sequences) of the Unicode Standard:
@@ -29,7 +32,8 @@
  * F5..FF), truncated sequences and continuation bytes without a lead byte.
  * U+0000 and U+FEFF are well-formed like any other code point.
  *
- * No function here allocates or changes the bytes it is given.
+ * No function here changes the bytes it is given; only amark_utf8_replace
+ * allocates, and only from the arena it is given.
  */
 
 /*
@@ -67,5 +71,37 @@ bool amark_utf8_validate(const unsigned char *bytes, size_t length,
  */
 size_t amark_utf8_decode(const unsigned char *bytes, size_t length,
                          uint32_t *codepoint);
+
+/*
+ * The result of amark_utf8_replace. When replacement_count is 0, bytes and
+ * length are the input itself (the same pointer); otherwise bytes points at
+ * a new byte sequence in the arena.
+ */
+typedef struct amark_utf8_replaced {
+    const unsigned char *bytes; /* the result; the input if nothing replaced */
+    size_t length;
+    size_t replacement_count;   /* the number of U+FFFD written */
+} amark_utf8_replaced_t;
+
+/*
+ * Replaces each maximal subpart of an ill-formed sequence in the length bytes
+ * at bytes with one U+FFFD (EF BF BD), following "U+FFFD Substitution of
+ * Maximal Subparts" in the Unicode Standard (section 3.9), and copies the
+ * well-formed sequences unchanged and in order. The result is always
+ * well-formed. The input is never changed.
+ *
+ * If the input is well-formed, allocates nothing and stores the input
+ * pointer and length with replacement_count 0, so the caller must keep the
+ * input alive for as long as it uses the result. Otherwise allocates the
+ * result from arena exactly once.
+ *
+ * Returns AMARK_ERROR_NONE on success. Returns AMARK_ERROR_OVERFLOW if the
+ * result length does not fit in size_t, or AMARK_ERROR_NOMEM (or
+ * AMARK_ERROR_OVERFLOW) if the arena fails; on failure nothing is allocated
+ * and *out is not changed. Takes time proportional to length.
+ */
+amark_error_t amark_utf8_replace(amark_arena_t *arena,
+                                 const unsigned char *bytes, size_t length,
+                                 amark_utf8_replaced_t *out);
 
 #endif /* AMARK_UTF8_H */
