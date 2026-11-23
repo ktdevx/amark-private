@@ -5,20 +5,23 @@
 
 /*
  * Unit tests of the block scanners (src/scan.h): thematic breaks, ATX
- * headings, setext heading underlines, and opening and closing code fences.
- * Each case is one line given as bytes, starting at the first byte that is
- * not white space (the indentation is the caller's business), taken from the
- * matching and non-matching examples of the CommonMark 0.31.2 sections 4.1,
- * 4.2, 4.3 and 4.5. Only the space and the tab are white space; U+0000 and
- * Unicode white space (U+00A0 as C2 A0) are not.
+ * headings, setext heading underlines, opening and closing code fences, and
+ * list item markers. Each case is one line given as bytes, starting at the
+ * first byte that is not white space (the indentation is the caller's
+ * business), taken from the matching and non-matching examples of the
+ * CommonMark 0.31.2 sections 4.1, 4.2, 4.3, 4.5 and 5.2. Only the space
+ * and the tab are white space; U+0000 and Unicode white space (U+00A0 as
+ * C2 A0) are not.
  */
 
 #include "scan.h"
 
+#include <amark/tree.h>
 #include <naos/naos.h>
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /* The bytes of a string literal, without the terminating NUL. */
@@ -385,6 +388,172 @@ NAOS_TEST(close_fence_treats_nul_and_unicode_space_as_content)
     NAOS_CHECK_UINT_EQ(CLOSE("```\v", '`'), 0);
 }
 
+/* ---- list item markers (5.2) -------------------------------------------- */
+
+/*
+ * Checks that line starts with a list marker of type, marker character,
+ * start number (ordered only) and width, with blank_after as given.
+ */
+static void check_marker(const char *line, size_t length,
+                         amark_list_type_t type, char marker,
+                         uint32_t start_number, size_t width,
+                         bool blank_after)
+{
+    amark_list_marker_t got;
+
+    memset(&got, 0x5A, sizeof(got));
+    got.start_number = 4242;
+    NAOS_REQUIRE_TRUE(amark_scan_list_marker((const unsigned char *)line,
+                                             length, &got));
+    NAOS_CHECK_INT_EQ((int)got.type, (int)type);
+    NAOS_CHECK_INT_EQ(got.marker, marker);
+    if (type == AMARK_LIST_ORDERED) {
+        NAOS_CHECK_UINT_EQ(got.start_number, start_number);
+    }
+    NAOS_CHECK_UINT_EQ(got.width, width);
+    NAOS_CHECK_TRUE(got.blank_after == blank_after);
+}
+
+#define CHECK_BULLET(line, marker, blank_after)                              \
+    check_marker((line), sizeof(line) - 1, AMARK_LIST_BULLET, (marker), 0,  \
+                 1, (blank_after))
+
+#define CHECK_ORDERED(line, delimiter, start, width, blank_after)            \
+    check_marker((line), sizeof(line) - 1, AMARK_LIST_ORDERED, (delimiter), \
+                 (start), (width), (blank_after))
+
+/* Checks that line has no list marker and the output is unchanged. */
+static void check_not_marker(const char *line, size_t length)
+{
+    amark_list_marker_t got;
+    amark_list_marker_t before;
+
+    memset(&got, 0x5A, sizeof(got));
+    before = got;
+    NAOS_CHECK_FALSE(amark_scan_list_marker((const unsigned char *)line,
+                                            length, &got));
+    NAOS_CHECK_MEM_EQ(&got, sizeof(got), &before, sizeof(before));
+}
+
+#define CHECK_NOT_MARKER(line) check_not_marker((line), sizeof(line) - 1)
+
+NAOS_TEST(list_marker_bullets_of_three_characters)
+{
+    CHECK_BULLET("- one", '-', false);
+    CHECK_BULLET("+ one", '+', false);
+    CHECK_BULLET("* one", '*', false);
+    CHECK_BULLET("-\tone", '-', false);
+    CHECK_BULLET("-    one", '-', false);
+    CHECK_BULLET("- > foo", '-', false);
+}
+
+NAOS_TEST(list_marker_ordered_with_two_delimiters)
+{
+    CHECK_ORDERED("1. A paragraph", '.', 1, 2, false);
+    CHECK_ORDERED("2) foo", ')', 2, 2, false);
+    CHECK_ORDERED("123456789. ok", '.', 123456789, 10, false);
+    CHECK_ORDERED("003. ok", '.', 3, 4, false);
+    CHECK_ORDERED("10)\tfoo", ')', 10, 3, false);
+}
+
+NAOS_TEST(list_marker_start_numbers_zero_and_largest)
+{
+    CHECK_ORDERED("0. ok", '.', 0, 2, false);
+    CHECK_ORDERED("999999999. ok", '.', 999999999, 10, false);
+    CHECK_ORDERED("999999999)", ')', 999999999, 10, true);
+    CHECK_ORDERED("000000000. ok", '.', 0, 10, false);
+}
+
+NAOS_TEST(list_marker_rejects_ten_digits)
+{
+    CHECK_NOT_MARKER("1234567890. not ok");
+    CHECK_NOT_MARKER("0000000000. not ok");
+    CHECK_NOT_MARKER("9999999999)");
+}
+
+NAOS_TEST(list_marker_needs_white_space_or_end_after_the_marker)
+{
+    CHECK_NOT_MARKER("-one");
+    CHECK_NOT_MARKER("+one");
+    CHECK_NOT_MARKER("*one");
+    CHECK_NOT_MARKER("2.two");
+    CHECK_NOT_MARKER("1)x");
+    CHECK_NOT_MARKER("--");
+    CHECK_NOT_MARKER("-1. x");
+    CHECK_NOT_MARKER("#5 bolt");
+}
+
+NAOS_TEST(list_marker_rejects_other_shapes)
+{
+    CHECK_NOT_MARKER("");
+    CHECK_NOT_MARKER("a. foo");
+    CHECK_NOT_MARKER("1 foo");
+    CHECK_NOT_MARKER("1");
+    CHECK_NOT_MARKER("1: foo");
+    CHECK_NOT_MARKER(". foo");
+    CHECK_NOT_MARKER(") foo");
+    CHECK_NOT_MARKER("= foo");
+    CHECK_NOT_MARKER("-1 foo");
+    NAOS_CHECK_FALSE(amark_scan_list_marker(NULL, 0, NULL));
+}
+
+NAOS_TEST(list_marker_alone_on_the_line_is_blank_after)
+{
+    CHECK_BULLET("-", '-', true);
+    CHECK_BULLET("+", '+', true);
+    CHECK_BULLET("*", '*', true);
+    CHECK_BULLET("-   ", '-', true);
+    CHECK_BULLET("-\t \t", '-', true);
+    CHECK_ORDERED("1.", '.', 1, 2, true);
+    CHECK_ORDERED("1)", ')', 1, 2, true);
+    CHECK_ORDERED("2.   ", '.', 2, 2, true);
+    CHECK_ORDERED("10.\t", '.', 10, 3, true);
+}
+
+NAOS_TEST(list_marker_content_after_white_space_is_not_blank)
+{
+    CHECK_BULLET("-   x", '-', false);
+    CHECK_BULLET("- \t x ", '-', false);
+    CHECK_ORDERED("1.  \tx", '.', 1, 2, false);
+}
+
+NAOS_TEST(list_marker_treats_nul_and_unicode_space_as_content)
+{
+    CHECK_NOT_MARKER("-\0");
+    CHECK_NOT_MARKER("1.\0");
+    CHECK_NOT_MARKER("*\xC2\xA0x");
+    CHECK_NOT_MARKER("1)\xC2\xA0x");
+    CHECK_NOT_MARKER("-\v");
+    CHECK_NOT_MARKER("-\f");
+    CHECK_BULLET("- \0", '-', false);
+    CHECK_BULLET("- \xC2\xA0", '-', false);
+    CHECK_ORDERED("1. \0", '.', 1, 2, false);
+}
+
+NAOS_TEST(list_marker_reads_only_the_given_bytes)
+{
+    /* The bytes after len must not be read or counted. */
+    static const char line[] = "12. x";
+    static const char digits[] = "1234567890. x";
+    amark_list_marker_t got;
+
+    NAOS_REQUIRE_TRUE(amark_scan_list_marker((const unsigned char *)line, 3,
+                                             &got));
+    NAOS_CHECK_UINT_EQ(got.start_number, 12);
+    NAOS_CHECK_UINT_EQ(got.width, 3);
+    NAOS_CHECK_TRUE(got.blank_after);
+    NAOS_CHECK_FALSE(amark_scan_list_marker((const unsigned char *)line, 2,
+                                            &got));
+    NAOS_CHECK_FALSE(amark_scan_list_marker((const unsigned char *)line, 1,
+                                            &got));
+    NAOS_CHECK_FALSE(amark_scan_list_marker((const unsigned char *)digits, 9,
+                                            &got));
+    NAOS_REQUIRE_TRUE(amark_scan_list_marker((const unsigned char *)"- x", 1,
+                                             &got));
+    NAOS_CHECK_INT_EQ((int)got.type, (int)AMARK_LIST_BULLET);
+    NAOS_CHECK_TRUE(got.blank_after);
+}
+
 NAOS_SUITE(thematic_break,
     NAOS_ADD_TEST(thematic_break_accepts_three_characters_of_one_kind),
     NAOS_ADD_TEST(thematic_break_rejects_other_characters_and_fewer_than_three),
@@ -421,9 +590,23 @@ NAOS_SUITE(fence,
     NAOS_ADD_TEST(close_fence_treats_nul_and_unicode_space_as_content)
 )
 
+NAOS_SUITE(list_marker,
+    NAOS_ADD_TEST(list_marker_bullets_of_three_characters),
+    NAOS_ADD_TEST(list_marker_ordered_with_two_delimiters),
+    NAOS_ADD_TEST(list_marker_start_numbers_zero_and_largest),
+    NAOS_ADD_TEST(list_marker_rejects_ten_digits),
+    NAOS_ADD_TEST(list_marker_needs_white_space_or_end_after_the_marker),
+    NAOS_ADD_TEST(list_marker_rejects_other_shapes),
+    NAOS_ADD_TEST(list_marker_alone_on_the_line_is_blank_after),
+    NAOS_ADD_TEST(list_marker_content_after_white_space_is_not_blank),
+    NAOS_ADD_TEST(list_marker_treats_nul_and_unicode_space_as_content),
+    NAOS_ADD_TEST(list_marker_reads_only_the_given_bytes)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(thematic_break),
     NAOS_ADD_SUITE(atx_heading),
     NAOS_ADD_SUITE(setext_underline),
-    NAOS_ADD_SUITE(fence)
+    NAOS_ADD_SUITE(fence),
+    NAOS_ADD_SUITE(list_marker)
 )

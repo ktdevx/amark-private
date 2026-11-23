@@ -162,3 +162,45 @@ size_t amark_scan_close_fence(const unsigned char *p, size_t len,
     }
     return run;
 }
+
+bool amark_scan_list_marker(const unsigned char *p, size_t len,
+                            amark_list_marker_t *out)
+{
+    amark_list_type_t type;
+    uint32_t number = 0;
+    size_t width;
+
+    if (len == 0) {
+        return false;
+    }
+    if (p[0] == '-' || p[0] == '+' || p[0] == '*') {
+        type = AMARK_LIST_BULLET;
+        width = 1;
+    } else {
+        /* At most 9 digits, so number stays below 10^9 and fits. */
+        width = 0;
+        while (width < len && p[width] >= '0' && p[width] <= '9') {
+            if (width == 9) {
+                return false;
+            }
+            number = number * 10u + (uint32_t)(p[width] - '0');
+            width++;
+        }
+        if (width == 0 || width == len ||
+            (p[width] != '.' && p[width] != ')')) {
+            return false;
+        }
+        type = AMARK_LIST_ORDERED;
+        width++;
+    }
+    if (width < len && !is_space_or_tab(p[width])) {
+        return false;
+    }
+
+    out->type = type;
+    out->marker = (char)p[width - 1];
+    out->start_number = number;
+    out->width = width;
+    out->blank_after = skip_space_or_tab(p, width, len) == len;
+    return true;
+}

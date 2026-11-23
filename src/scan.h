@@ -6,8 +6,11 @@
 #ifndef AMARK_SCAN_H
 #define AMARK_SCAN_H
 
+#include <amark/tree.h>
+
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 /*
  * The block scanners. Each function looks at the bytes of one line and tells
@@ -75,5 +78,31 @@ bool amark_scan_open_fence(const unsigned char *p, size_t len,
  */
 size_t amark_scan_close_fence(const unsigned char *p, size_t len,
                               char fence_char);
+
+/* A list item marker, as found by amark_scan_list_marker. */
+typedef struct amark_list_marker {
+    amark_list_type_t type;
+    char marker;           /* the bullet character, or the ordered delimiter */
+    uint32_t start_number; /* the start number; ordered markers only */
+    size_t width;          /* bytes of the marker: the digits and delimiter,
+                              or the one bullet character */
+    bool blank_after;      /* only white space follows the marker */
+} amark_list_marker_t;
+
+/*
+ * Returns true when the line starts with a list item marker followed by a
+ * space, a tab or the end of the line. A bullet marker is '-', '+' or '*';
+ * an ordered marker is 1 to 9 ASCII digits followed by '.' or ')'. Stores
+ * the type, the character, the start number (ordered markers only; for a
+ * bullet marker it is 0), the width of the marker and whether only white
+ * space follows it in *out.
+ *
+ * Only the shape is checked. Whether the marker may interrupt a paragraph
+ * (start number 1 and not blank_after), whether the line is a thematic break
+ * instead, and the columns of the white space after the marker are decided
+ * by the caller.
+ */
+bool amark_scan_list_marker(const unsigned char *p, size_t len,
+                            amark_list_marker_t *out);
 
 #endif /* AMARK_SCAN_H */
