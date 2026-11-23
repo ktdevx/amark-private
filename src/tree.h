@@ -66,4 +66,37 @@ amark_error_t amark_tree_insert_before(amark_document_t *doc,
                                        amark_node_class_t cls, size_t start,
                                        size_t end, amark_node_id_t *out);
 
+/*
+ * Creates a node as amark_tree_append does and moves the consecutive
+ * siblings from first to last under it, keeping their order. first and last
+ * have the same parent and first is last or comes before it. The new node
+ * takes the place of first. Takes time in proportion to the number of
+ * siblings moved (each one's parent is changed), with one loop. Fails as
+ * amark_tree_append does; on failure no sibling has moved.
+ */
+amark_error_t amark_tree_wrap(amark_document_t *doc, amark_node_id_t first,
+                              amark_node_id_t last, amark_kind_t kind,
+                              amark_node_class_t cls, size_t start, size_t end,
+                              amark_node_id_t *out);
+
+/* Changes the range of node and derives its lines again. Cannot fail. */
+void amark_tree_set_range(amark_document_t *doc, amark_node_id_t node,
+                          size_t start, size_t end);
+
+/*
+ * Changes the kind of node, which is not the root. Its attributes become
+ * "none" (the old attribute element stays in the array, unreferenced); its
+ * children stay. Cannot fail.
+ */
+void amark_tree_set_kind(amark_document_t *doc, amark_node_id_t node,
+                         amark_kind_t kind, amark_node_class_t cls);
+
+/*
+ * Detaches node, which is not the root, together with its descendants, in
+ * constant time. Its kind becomes AMARK_KIND_NONE and its ID must not be
+ * used again; the element is not reused, so later nodes still get new IDs.
+ * The descendants are left as they are, out of the tree. Cannot fail.
+ */
+void amark_tree_remove(amark_document_t *doc, amark_node_id_t node);
+
 #endif /* AMARK_TREE_INTERNAL_H */
