@@ -151,4 +151,35 @@ void amark_draft_set_autolink(amark_draft_t *draft,
 const amark_draft_item_t *amark_draft_get(const amark_draft_t *draft,
                                           amark_draft_id_t id);
 
+/*
+ * Writes the items of the draft to doc as inline nodes under parent (the
+ * paragraph or the heading the root stands for), in document order, and
+ * stores the node of each item in its node member. The only function of the
+ * draft that uses the tree builder; it uses amark_tree_append and the
+ * attribute setters only.
+ *
+ * The items are visited through first_child, next and parent only, without
+ * recursion or a stack. Consecutive siblings that are both texts, the end of
+ * the first equal to the start of the second, become one text node, whose
+ * node every such item names. A link or an image with a link attribute gets
+ * it with amark_tree_set_link, an autolink with a type gets it with
+ * amark_tree_set_autolink. A kind below AMARK_KIND_DIALECT_MIN is added with
+ * AMARK_NODE_CLASS_AUTO, a dialect kind with AMARK_NODE_CLASS_INLINE.
+ *
+ * parent_depth is the depth of parent (the root of doc is at depth 0); the
+ * children of the draft's root are at parent_depth + 1. Before each node is
+ * added, fails with AMARK_ERROR_LIMIT_EXCEEDED if max_depth is not 0 and the
+ * depth of the node is above it, or if max_nodes is not 0 and
+ * amark_document_node_count(doc) (removed nodes included) is max_nodes or
+ * more. parent_depth is not used when max_depth is 0.
+ *
+ * On failure (those limits, or a failure of the tree builder:
+ * AMARK_ERROR_NOMEM or AMARK_ERROR_LIMIT_EXCEEDED) returns at once; the
+ * nodes added so far stay in doc, which the caller then destroys.
+ */
+amark_error_t amark_draft_emit(amark_document_t *doc,
+                               amark_draft_t *draft,
+                               amark_node_id_t parent, size_t parent_depth,
+                               size_t max_depth, size_t max_nodes);
+
 #endif /* AMARK_DRAFT_H */

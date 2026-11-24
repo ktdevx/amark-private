@@ -738,7 +738,7 @@ amark_error_t amark_tree_set_dialect_data(amark_document_t *doc, amark_node_id_t
 - 終了行：`start < end` なら `amark_line_index_line_at(end - 1)`、そうでなければ開始行と同じ
 
 **Implementation Notes**
-- Integration: block-parser は、開いているブロックの終わりを `amark_tree_set_range` で延ばす。inline-parser は、区切りのテキストを `amark_tree_remove` で外し、間の兄弟を `amark_tree_wrap` で包む。
+- Integration: block-parser は、開いているブロックの終わりを `amark_tree_set_range` で延ばす。inline-parser は、作業用の項目の木で強調とリンクの形を決めてから、文書の順に `amark_tree_append` でノードを末尾に足し、属性の設定（`amark_tree_set_link`、`amark_tree_set_autolink`）を呼ぶだけで、`amark_tree_wrap`、`amark_tree_remove`、`amark_tree_set_range`、`amark_tree_set_kind`、`amark_tree_insert_before` は使わない（inline-parser で変更）。
 - Risks: 配列に足すと要素が動く。1 つの関数の中でも、足した後にノードへのポインタを取り直す。
 
 ### 公開：読み出す
