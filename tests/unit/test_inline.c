@@ -1478,7 +1478,7 @@ static void check_blocks_unchanged(void)
         check_same_attributes(node);
         NAOS_TRACE_POP();
     }
-    for (node = blocks + 1; node <= count; node++) {
+    for (node = (amark_node_id_t)blocks + 1; node <= count; node++) {
         amark_node_id_t parent = amark_node_parent(g_doc, node);
 
         NAOS_TRACE_PUSH("node %lu", (unsigned long)node);
