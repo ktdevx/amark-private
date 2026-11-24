@@ -54,11 +54,12 @@ if(NOT AMARK_MATH_WITHOUT_LIBM)
 endif()
 unset(_amark_libm_probe)
 
-# amark_test_support: the counting, failing test allocator ("test_alloc.h")
-# and the dumps of a tree as one line ("tree_dump.h"). A test-only
-# static library, never installed.
+# amark_test_support: the counting, failing test allocator ("test_alloc.h"),
+# the dumps of a tree as one line ("tree_dump.h") and of the values of its
+# nodes ("text_dump.h"). A test-only static library, never installed.
 add_library(amark_test_support STATIC
     support/test_alloc.c
+    support/text_dump.c
     support/tree_dump.c
 )
 amark_target_defaults(amark_test_support)
@@ -157,6 +158,7 @@ amark_add_unit_test(test_text_sink SOURCES unit/test_text_sink.c)
 amark_add_unit_test(test_text_lines SOURCES unit/test_text_lines.c)
 amark_add_unit_test(test_text_build SOURCES unit/test_text_build.c)
 amark_add_unit_test(test_text SOURCES unit/test_text.c)
+amark_add_unit_test(test_spec_text_leaf SOURCES unit/test_spec_text_leaf.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
