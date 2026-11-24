@@ -36,7 +36,16 @@ typedef enum amark_text_rule {
      * backslash or '&' stays as written. The output is not read again, and
      * neither an escape nor a reference runs past the end of its segment.
      */
-    AMARK_TEXT_RULE_DECODED = 2
+    AMARK_TEXT_RULE_DECODED = 2,
+    /*
+     * Code span: the content is read as the bytes of its segments with one
+     * space for each line ending in the range (container prefixes and the
+     * leading whitespace of continuation lines are left out). When that
+     * sequence starts with a space, ends with a space and holds a byte that
+     * is not a space, one space is dropped at each end. Tabs, other spaces,
+     * backslashes and '&' stay as written.
+     */
+    AMARK_TEXT_RULE_CODE_SPAN = 3
 } amark_text_rule_t;
 
 /*

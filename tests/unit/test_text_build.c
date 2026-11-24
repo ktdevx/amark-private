@@ -16,6 +16,10 @@
  * references do not run past the end of a line or of the range; titles over
  * several lines leave out container prefixes and the leading whitespace of
  * their continuation lines; spaces and parentheses in a destination stay.
+ * CODE_SPAN: each line ending becomes one space; one space is stripped from
+ * each end only when both ends are spaces and the content is not all spaces;
+ * tabs, other spaces, backslashes and '&' stay; container prefixes and the
+ * leading whitespace of continuation lines are left out.
  */
 
 #include "document.h"
@@ -613,7 +617,137 @@ NAOS_SUITE(text_build_decoded,
     NAOS_ADD_TEST(info_is_one_string_with_its_inner_spaces)
 )
 
+/* --- CODE_SPAN ----------------------------------------------------------- */
+
+/*
+ * Writes the content of the n-th code span with CODE_SPAN into g_out: its
+ * range without the backtick strings that open and close it, which have the
+ * same length.
+ */
+static void code_span_node(size_t n)
+{
+    amark_node_id_t node = find(AMARK_KIND_CODE_SPAN, n);
+    const unsigned char *content;
+    amark_range_t range;
+    size_t ticks = 0;
+
+    NAOS_REQUIRE_UINT_NE(node, AMARK_NODE_NONE);
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+    content = amark_document_content(g_doc);
+    while (range.start + ticks < range.end &&
+           content[range.start + ticks] == '`') {
+        ticks++;
+    }
+    NAOS_REQUIRE_UINT_LE(2 * ticks, range.end - range.start);
+    build_rule(range.start + ticks, range.end - ticks,
+               amark_node_start_line(g_doc, node), AMARK_TEXT_RULE_CODE_SPAN);
+}
+
+/* Checks the CODE_SPAN text of the first code span of content. */
+static void check_code_span(const char *content, const char *want)
+{
+    parse(content);
+    code_span_node(0);
+    check_out(want);
+}
+
+NAOS_TEST(code_span_strips_one_space_on_both_sides)
+{
+    check_code_span("` a `", "a");
+    check_code_span("` `` `", "``");
+    check_code_span("x ` \xC3\xA9 ` y", "\xC3\xA9");
+}
+
+NAOS_TEST(code_span_keeps_a_space_on_one_side_only)
+{
+    check_code_span("` a`", " a");
+    check_code_span("`a `", "a ");
+    check_code_span("`a`", "a");
+}
+
+NAOS_TEST(code_span_of_spaces_only_stays)
+{
+    check_code_span("` `", " ");
+    check_code_span("`  `", "  ");
+    check_code_span("``   ``", "   ");
+}
+
+NAOS_TEST(code_span_strips_only_one_of_several_spaces)
+{
+    check_code_span("`  a  `", " a ");
+    check_code_span("`  ``  `", " `` ");
+    check_code_span("` a  b `", "a  b");
+}
+
+NAOS_TEST(code_span_keeps_tabs)
+{
+    check_code_span("`\ta\t`", "\ta\t");
+    check_code_span("` \ta\t `", "\ta\t");
+    check_code_span("`\t \t`", "\t \t");
+}
+
+NAOS_TEST(code_span_line_endings_become_spaces)
+{
+    check_code_span("`a\nb`", "a b");
+    check_code_span("`a\r\nb`", "a b");
+    check_code_span("`a\rb`", "a b");
+    /* Trailing spaces of a line stay; a line ending adds one space. */
+    check_code_span("``\nfoo\nbar  \nbaz\n``", "foo bar   baz");
+}
+
+NAOS_TEST(code_span_starting_or_ending_with_a_line_ending)
+{
+    /* The spaces from line endings are stripped like written spaces. */
+    check_code_span("``\nfoo\n``", "foo");
+    check_code_span("`\nfoo`", " foo");
+    check_code_span("`foo\n`", "foo ");
+    check_code_span("` \nfoo\n `", " foo");
+    check_code_span("`  \nfoo\n`", "  foo");
+    check_code_span("`a\n`", "a ");
+    check_code_span("`\n`", " ");
+}
+
+NAOS_TEST(code_span_in_containers)
+{
+    /* Prefixes and the leading whitespace of continuation lines go. */
+    check_code_span("> `a\n>   b`", "a b");
+    check_code_span("> ``\n> foo\n> ``", "foo");
+    check_code_span("> `a\nb`", "a b");
+    check_code_span("- ``\n  foo\r\n    bar\n  ``", "foo bar");
+    check_code_span("1. > - `a\n   >   b `\n", "a b ");
+}
+
+NAOS_TEST(code_span_keeps_backslashes_and_ampersands)
+{
+    check_code_span("`\\*&amp;`", "\\*&amp;");
+    check_code_span("`a\\`b", "a\\");
+    check_code_span("` &#35; \\\\ `", "&#35; \\\\");
+}
+
+NAOS_TEST(code_span_second_span_on_a_later_line)
+{
+    parse("`a`\nx `` b\nc ``");
+    code_span_node(1);
+    check_out("b c");
+}
+
+NAOS_SUITE(text_build_code_span,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(code_span_strips_one_space_on_both_sides),
+    NAOS_ADD_TEST(code_span_keeps_a_space_on_one_side_only),
+    NAOS_ADD_TEST(code_span_of_spaces_only_stays),
+    NAOS_ADD_TEST(code_span_strips_only_one_of_several_spaces),
+    NAOS_ADD_TEST(code_span_keeps_tabs),
+    NAOS_ADD_TEST(code_span_line_endings_become_spaces),
+    NAOS_ADD_TEST(code_span_starting_or_ending_with_a_line_ending),
+    NAOS_ADD_TEST(code_span_in_containers),
+    NAOS_ADD_TEST(code_span_keeps_backslashes_and_ampersands),
+    NAOS_ADD_TEST(code_span_second_span_on_a_later_line)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(text_build_plain),
-    NAOS_ADD_SUITE(text_build_decoded)
+    NAOS_ADD_SUITE(text_build_decoded),
+    NAOS_ADD_SUITE(text_build_code_span)
 )

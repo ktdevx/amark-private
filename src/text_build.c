@@ -102,9 +102,117 @@ static void build_decoded(const unsigned char *content,
     }
 }
 
-void amark_text_build_range(const amark_document_t *doc, size_t start,
+/*
+ * What the first pass of CODE_SPAN learns about the content read as one
+ * sequence: the bytes of the segments, with one space for each line ending.
+ */
+typedef struct code_span_scan {
+    size_t count;     /* the length of the sequence */
+    bool first_space; /* its first element is a space */
+    bool last_space;  /* its last element is a space */
+    bool non_space;   /* it holds an element that is not a space */
+} code_span_scan_t;
+
+/* Adds element c to the sequence of scan. */
+static void scan_element(code_span_scan_t *scan, unsigned char c)
+{
+    if (scan->count == 0) {
+        scan->first_space = c == ' ';
+    }
+    scan->last_space = c == ' ';
+    if (c != ' ') {
+        scan->non_space = true;
+    }
+    scan->count++;
+}
+
+/*
+ * The second pass of CODE_SPAN: emits one space as element *index of the
+ * sequence when it lies in [low, high), and moves to the next element.
+ */
+static void put_space_in(size_t *index, size_t low, size_t high,
+                         amark_text_sink_t *sink)
+{
+    if (*index >= low && *index < high) {
+        amark_text_sink_put_byte(sink, ' ');
+    }
+    (*index)++;
+}
+
+/*
+ * CODE_SPAN: reads the range twice. The first pass finds whether the
+ * sequence (segment bytes, a space for each line ending; pad spaces, which a
+ * paragraph line never has, count as spaces) starts and ends with a space
+ * and holds a byte that is not a space; if all three hold, one element is
+ * dropped at each end. The second pass emits the elements in [low, high):
+ * the segment bytes as source bytes, the line endings as spaces.
+ */
+static void build_code_span(const amark_document_t *doc, size_t start,
                             size_t end, size_t first_line,
-                            amark_text_rule_t rule, amark_text_sink_t *sink)
+                            amark_text_sink_t *sink)
+{
+    const unsigned char *content = amark_document_content(doc);
+    amark_text_lines_t lines;
+    amark_text_segment_t segment;
+    code_span_scan_t scan = {0, false, false, false};
+    size_t low = 0;
+    size_t high;
+    size_t index = 0;
+    size_t pos;
+    unsigned i;
+
+    amark_text_lines_init(&lines, doc, start, end, first_line);
+    while (amark_text_lines_next(&lines, &segment)) {
+        for (i = 0; i < segment.pad; i++) {
+            scan_element(&scan, ' ');
+        }
+        pos = segment.pad != 0 ? segment.start + 1 : segment.start;
+        for (; pos < segment.end; pos++) {
+            scan_element(&scan, content[pos]);
+        }
+        if (segment.line_end) {
+            scan_element(&scan, ' ');
+        }
+    }
+
+    high = scan.count;
+    if (scan.first_space && scan.last_space && scan.non_space) {
+        low = 1;
+        high--;
+    }
+
+    amark_text_lines_init(&lines, doc, start, end, first_line);
+    while (amark_text_lines_next(&lines, &segment)) {
+        size_t from;
+        size_t to;
+
+        for (i = 0; i < segment.pad; i++) {
+            put_space_in(&index, low, high, sink);
+        }
+        pos = segment.pad != 0 ? segment.start + 1 : segment.start;
+        /* The bytes [pos, end) are the elements [index, index + count). */
+        from = pos + (low > index ? low - index : 0);
+        to = segment.end;
+        if (high < index + (segment.end - pos)) {
+            to = pos + (high > index ? high - index : 0);
+        }
+        if (from < to) {
+            amark_text_sink_put_source(sink, content + from, to - from);
+        }
+        index += segment.end - pos;
+        if (segment.line_end) {
+            put_space_in(&index, low, high, sink);
+        }
+    }
+}
+
+/*
+ * PLAIN and DECODED: each segment is written on its own, with the line
+ * ending inside the range as '\n'.
+ */
+static void build_segments(const amark_document_t *doc, size_t start,
+                           size_t end, size_t first_line,
+                           amark_text_rule_t rule, amark_text_sink_t *sink)
 {
     const unsigned char *content = amark_document_content(doc);
     amark_text_lines_t lines;
@@ -112,13 +220,25 @@ void amark_text_build_range(const amark_document_t *doc, size_t start,
 
     amark_text_lines_init(&lines, doc, start, end, first_line);
     while (amark_text_lines_next(&lines, &segment)) {
-        switch (rule) {
-        case AMARK_TEXT_RULE_PLAIN:
+        if (rule == AMARK_TEXT_RULE_PLAIN) {
             build_plain(content, &segment, sink);
-            break;
-        case AMARK_TEXT_RULE_DECODED:
+        } else {
             build_decoded(content, &segment, sink);
-            break;
         }
+    }
+}
+
+void amark_text_build_range(const amark_document_t *doc, size_t start,
+                            size_t end, size_t first_line,
+                            amark_text_rule_t rule, amark_text_sink_t *sink)
+{
+    switch (rule) {
+    case AMARK_TEXT_RULE_PLAIN:
+    case AMARK_TEXT_RULE_DECODED:
+        build_segments(doc, start, end, first_line, rule, sink);
+        break;
+    case AMARK_TEXT_RULE_CODE_SPAN:
+        build_code_span(doc, start, end, first_line, sink);
+        break;
     }
 }
