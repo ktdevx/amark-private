@@ -28,7 +28,15 @@ typedef enum amark_text_rule {
      * CR LF) is inside the range. Trailing spaces, other tabs, backslash
      * escapes, character references and syntax delimiters stay as written.
      */
-    AMARK_TEXT_RULE_PLAIN = 1
+    AMARK_TEXT_RULE_PLAIN = 1,
+    /*
+     * Decoded: as PLAIN, except that within each segment a backslash before
+     * an ASCII punctuation character gives that character alone and a
+     * character reference (amark_charref_scan) gives its value. Any other
+     * backslash or '&' stays as written. The output is not read again, and
+     * neither an escape nor a reference runs past the end of its segment.
+     */
+    AMARK_TEXT_RULE_DECODED = 2
 } amark_text_rule_t;
 
 /*

@@ -10,6 +10,12 @@
  * the same as the source; trailing spaces, escapes, character references and
  * syntax delimiters stay as written; pad spaces replace the tab at the
  * record, other tabs stay; line endings of the three kinds become '\n'.
+ * DECODED: a backslash before each ASCII punctuation character gives that
+ * character alone, any other backslash stays; a character reference gives
+ * its value, any other '&' stays; the output is not read again; escapes and
+ * references do not run past the end of a line or of the range; titles over
+ * several lines leave out container prefixes and the leading whitespace of
+ * their continuation lines; spaces and parentheses in a destination stay.
  */
 
 #include "document.h"
@@ -97,25 +103,35 @@ static amark_node_id_t find(amark_kind_t kind, size_t n)
     return AMARK_NODE_NONE;
 }
 
-/* Writes [start, end) from first_line with PLAIN into g_out. */
-static void build_lines(size_t start, size_t end, size_t first_line)
+/* Writes [start, end) from first_line with rule into g_out. */
+static void build_rule(size_t start, size_t end, size_t first_line,
+                       amark_text_rule_t rule)
 {
     amark_text_sink_t sink;
 
     memset(g_out, 0, sizeof(g_out));
     amark_text_sink_init(&sink, g_out, OUT_SIZE - 1);
-    amark_text_build_range(g_doc, start, end, first_line,
-                           AMARK_TEXT_RULE_PLAIN, &sink);
+    amark_text_build_range(g_doc, start, end, first_line, rule, &sink);
     g_length = sink.length;
     NAOS_REQUIRE_UINT_LT(g_length, OUT_SIZE);
+}
+
+/* Writes [start, end) from first_line with PLAIN into g_out. */
+static void build_lines(size_t start, size_t end, size_t first_line)
+{
+    build_rule(start, end, first_line, AMARK_TEXT_RULE_PLAIN);
+}
+
+/* Returns the line that holds offset. */
+static size_t line_at(size_t offset)
+{
+    return amark_line_index_line_at(amark_document_line_index(g_doc), offset);
 }
 
 /* Writes [start, end) with PLAIN, from the line that holds start. */
 static void build(size_t start, size_t end)
 {
-    build_lines(start, end,
-                amark_line_index_line_at(amark_document_line_index(g_doc),
-                                         start));
+    build_lines(start, end, line_at(start));
 }
 
 /* Writes the range of node with PLAIN into g_out. */
@@ -367,6 +383,237 @@ NAOS_SUITE(text_build_plain,
     NAOS_ADD_TEST(empty_range_writes_nothing)
 )
 
+/* --- DECODED ------------------------------------------------------------- */
+
+/* Writes [start, end) with DECODED, from the line that holds start. */
+static void decode(size_t start, size_t end)
+{
+    build_rule(start, end, line_at(start), AMARK_TEXT_RULE_DECODED);
+}
+
+/* Writes range (a range from the tree API) with DECODED into g_out. */
+static void decode_range(const amark_range_t *range)
+{
+    decode(range->start, range->end);
+}
+
+/* Writes the range of the n-th node of kind with DECODED into g_out. */
+static void decode_node(amark_kind_t kind, size_t n)
+{
+    amark_node_id_t node = find(kind, n);
+    amark_range_t range;
+
+    NAOS_REQUIRE_UINT_NE(node, AMARK_NODE_NONE);
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+    build_rule(range.start, range.end, amark_node_start_line(g_doc, node),
+               AMARK_TEXT_RULE_DECODED);
+}
+
+/* Checks the DECODED text of the whole of content (a C string). */
+static void check_decoded(const char *content, const char *want)
+{
+    parse(content);
+    decode(0, strlen(content));
+    check_out(want);
+}
+
+NAOS_TEST(every_ascii_punctuation_escape_gives_the_character)
+{
+    static const char punctuation[] = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+    char content[2 * sizeof(punctuation)];
+    size_t i;
+
+    NAOS_REQUIRE_UINT_EQ(strlen(punctuation), 32);
+    for (i = 0; punctuation[i] != '\0'; i++) {
+        content[2 * i] = '\\';
+        content[2 * i + 1] = punctuation[i];
+    }
+    content[2 * i] = '\0';
+    check_decoded(content, punctuation);
+}
+
+NAOS_TEST(each_ascii_punctuation_escape_alone)
+{
+    char content[4];
+    char want[2];
+    int c;
+
+    for (c = 0x21; c <= 0x7E; c++) {
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z')) {
+            continue;
+        }
+        content[0] = 'x';
+        content[1] = '\\';
+        content[2] = (char)c;
+        content[3] = '\0';
+        parse(content);
+        decode(1, 3);
+        want[0] = (char)c;
+        want[1] = '\0';
+        check_out(want);
+    }
+}
+
+NAOS_TEST(backslash_before_other_characters_stays)
+{
+    /* Letters, digits, space, tab, non-ASCII: the backslash stays. */
+    check_decoded("\\a \\Z \\1 \\ x \\\tx \\\xC3\xA9 \\\x7F",
+                  "\\a \\Z \\1 \\ x \\\tx \\\xC3\xA9 \\\x7F");
+}
+
+NAOS_TEST(backslash_at_the_end_stays)
+{
+    /* At the end of the content, of a line and of the range. */
+    check_decoded("x\\", "x\\");
+    check_decoded("a\\\nb", "a\\\nb");
+    check_decoded("a\\\r\nb", "a\\\nb");
+
+    parse("a\\*b");
+    decode(0, 2);
+    check_out("a\\");
+}
+
+NAOS_TEST(escaped_backslash_then_a_new_escape)
+{
+    check_decoded("\\\\*", "\\*");
+    check_decoded("\\\\\\*", "\\*");
+    check_decoded("\\\\\\\\", "\\\\");
+}
+
+NAOS_TEST(references_give_their_values)
+{
+    check_decoded("&amp; &copy; &#35; &#x41; &#X42; &ngE;",
+                  "& \xC2\xA9 # A B \xE2\x89\xA7\xCC\xB8");
+    /* 0, a surrogate and a value above U+10FFFF give U+FFFD. */
+    check_decoded("&#0;&#xD800;&#x110000;",
+                  "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD");
+}
+
+NAOS_TEST(other_ampersands_stay)
+{
+    check_decoded("& &amp &bogus; &aMp; &#; &#12345678; &#x1234567; &x;",
+                  "& &amp &bogus; &aMp; &#; &#12345678; &#x1234567; &x;");
+}
+
+NAOS_TEST(output_is_not_read_again)
+{
+    check_decoded("&amp;lt;", "&lt;");
+    check_decoded("\\&amp;", "&amp;");
+    check_decoded("&#92;*", "\\*");
+    check_decoded("&#38;amp;", "&amp;");
+}
+
+NAOS_TEST(references_do_not_run_past_a_line_or_the_range)
+{
+    check_decoded("&amp\n;", "&amp\n;");
+
+    parse("x &amp; y");
+    decode(2, 6);
+    check_out("&amp");
+    decode(2, 7);
+    check_out("&");
+}
+
+NAOS_TEST(decoded_pads_and_line_endings_like_plain)
+{
+    /* The tab line has 3 columns left after the fence's indentation. */
+    parse(" ```\n\t\\*\r\n```");
+    decode_node(AMARK_KIND_CODE_BLOCK, 0);
+    check_out("```\n   *\n```");
+}
+
+NAOS_TEST(source_bytes_still_become_u_fffd)
+{
+    static const char content[] = "a\0\\*\xFF&amp;";
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    NAOS_REQUIRE_INT_EQ(amark_parse(content, sizeof(content) - 1, &g_config,
+                                    &g_doc),
+                        AMARK_ERROR_NONE);
+    decode(0, sizeof(content) - 1);
+    check_out("a\xEF\xBF\xBD*\xEF\xBF\xBD&");
+}
+
+NAOS_TEST(multi_line_definition_title_in_a_block_quote)
+{
+    amark_range_t range;
+
+    parse("> [a]: /u 'it\\'s\n>    &amp; more\n>  x'\n");
+    NAOS_REQUIRE_TRUE(amark_definition_title(
+        g_doc, find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0), &range));
+    decode_range(&range);
+    check_out("it's\n& more\nx");
+}
+
+NAOS_TEST(multi_line_link_title_in_a_list_item)
+{
+    amark_range_t range;
+
+    parse("- [a](/u \"one\r\n     two\\\"\n\t three\")\n");
+    NAOS_REQUIRE_TRUE(amark_link_title(g_doc, find(AMARK_KIND_LINK, 0),
+                                       &range));
+    decode_range(&range);
+    check_out("one\ntwo\"\nthree");
+}
+
+NAOS_TEST(destination_keeps_spaces_and_parentheses)
+{
+    amark_range_t range;
+
+    parse("[a](</u v(w) \\> &amp;>)\n");
+    NAOS_REQUIRE_TRUE(amark_link_destination(g_doc, find(AMARK_KIND_LINK, 0),
+                                             &range));
+    decode_range(&range);
+    check_out("/u v(w) > &");
+
+    parse("[a](/u(v(w))x\\)%20&#x20;)\n");
+    NAOS_REQUIRE_TRUE(amark_link_destination(g_doc, find(AMARK_KIND_LINK, 0),
+                                             &range));
+    decode_range(&range);
+    check_out("/u(v(w))x)%20 ");
+
+    parse("[a]: <b c(> 'd'\n");
+    NAOS_REQUIRE_TRUE(amark_definition_destination(
+        g_doc, find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0), &range));
+    decode_range(&range);
+    check_out("b c(");
+}
+
+NAOS_TEST(info_is_one_string_with_its_inner_spaces)
+{
+    amark_range_t range;
+
+    parse("``` c\\+\\+  x&amp;y \n```\n");
+    NAOS_REQUIRE_TRUE(amark_code_block_info(
+        g_doc, find(AMARK_KIND_CODE_BLOCK, 0), &range));
+    decode_range(&range);
+    check_out("c++  x&y");
+}
+
+NAOS_SUITE(text_build_decoded,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(every_ascii_punctuation_escape_gives_the_character),
+    NAOS_ADD_TEST(each_ascii_punctuation_escape_alone),
+    NAOS_ADD_TEST(backslash_before_other_characters_stays),
+    NAOS_ADD_TEST(backslash_at_the_end_stays),
+    NAOS_ADD_TEST(escaped_backslash_then_a_new_escape),
+    NAOS_ADD_TEST(references_give_their_values),
+    NAOS_ADD_TEST(other_ampersands_stay),
+    NAOS_ADD_TEST(output_is_not_read_again),
+    NAOS_ADD_TEST(references_do_not_run_past_a_line_or_the_range),
+    NAOS_ADD_TEST(decoded_pads_and_line_endings_like_plain),
+    NAOS_ADD_TEST(source_bytes_still_become_u_fffd),
+    NAOS_ADD_TEST(multi_line_definition_title_in_a_block_quote),
+    NAOS_ADD_TEST(multi_line_link_title_in_a_list_item),
+    NAOS_ADD_TEST(destination_keeps_spaces_and_parentheses),
+    NAOS_ADD_TEST(info_is_one_string_with_its_inner_spaces)
+)
+
 NAOS_MAIN(
-    NAOS_ADD_SUITE(text_build_plain)
+    NAOS_ADD_SUITE(text_build_plain),
+    NAOS_ADD_SUITE(text_build_decoded)
 )
