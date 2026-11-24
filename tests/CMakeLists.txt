@@ -54,9 +54,13 @@ if(NOT AMARK_MATH_WITHOUT_LIBM)
 endif()
 unset(_amark_libm_probe)
 
-# amark_test_support: the counting, failing test allocator ("test_alloc.h").
-# A test-only static library, never installed.
-add_library(amark_test_support STATIC support/test_alloc.c)
+# amark_test_support: the counting, failing test allocator ("test_alloc.h")
+# and the dump of the block structure of a tree ("tree_dump.h"). A test-only
+# static library, never installed.
+add_library(amark_test_support STATIC
+    support/test_alloc.c
+    support/tree_dump.c
+)
 amark_target_defaults(amark_test_support)
 target_include_directories(amark_test_support
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/support"
@@ -127,6 +131,17 @@ amark_add_unit_test(test_config SOURCES unit/test_config.c)
 amark_add_unit_test(test_document SOURCES unit/test_document.c)
 amark_add_unit_test(test_tree SOURCES unit/test_tree.c)
 amark_add_unit_test(test_tree_check SOURCES unit/test_tree_check.c)
+amark_add_unit_test(test_tree_dump SOURCES unit/test_tree_dump.c)
+amark_add_unit_test(test_line SOURCES unit/test_line.c)
+amark_add_unit_test(test_scan SOURCES unit/test_scan.c)
+amark_add_unit_test(test_definition SOURCES unit/test_definition.c)
+amark_add_unit_test(test_refdef SOURCES unit/test_refdef.c)
+amark_add_unit_test(test_block SOURCES unit/test_block.c)
+amark_add_unit_test(test_parse SOURCES unit/test_parse.c)
+amark_add_unit_test(test_spec_leaf SOURCES unit/test_spec_leaf.c)
+amark_add_unit_test(test_spec_refdef SOURCES unit/test_spec_refdef.c)
+amark_add_unit_test(test_spec_container SOURCES unit/test_spec_container.c)
+amark_add_unit_test(test_block_limits SOURCES unit/test_block_limits.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
@@ -141,6 +156,8 @@ unset(_amark_data_test)
 amark_add_public_test(test_version SOURCES public/test_version.c)
 # Named test_public_config: test_config is the unit test of the same module.
 amark_add_public_test(test_public_config SOURCES public/test_config.c)
+# Named test_public_parse: test_parse is the unit test of the same module.
+amark_add_public_test(test_public_parse SOURCES public/test_parse.c)
 
 # amark_target_defaults sets only C properties (C99 and so on); its warning
 # flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The

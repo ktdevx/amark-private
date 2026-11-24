@@ -124,6 +124,7 @@ amark_error_t amark_document_create(const amark_allocator_t *allocator,
     amark_arena_init(&doc->arena, &doc->allocator);
     doc->content = content;
     doc->content_length = content_length;
+    doc->parse_data = NULL;
 
     err = fill_document(doc, start, end, filename);
     if (err != AMARK_ERROR_NONE) {
@@ -212,6 +213,22 @@ void amark_document_range_lines(const amark_document_t *doc, size_t start,
     } else {
         *end_line = *start_line;
     }
+}
+
+amark_arena_t *amark_document_arena(amark_document_t *doc)
+{
+    return &doc->arena;
+}
+
+struct amark_parse_data *amark_document_parse_data(const amark_document_t *doc)
+{
+    return doc->parse_data;
+}
+
+void amark_document_set_parse_data(amark_document_t *doc,
+                                   struct amark_parse_data *data)
+{
+    doc->parse_data = data;
 }
 
 void amark_document_destroy(amark_document_t *doc)

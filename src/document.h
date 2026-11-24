@@ -94,6 +94,12 @@ typedef union amark_node_attr {
     } dialect;
 } amark_node_attr_t;
 
+/*
+ * The parse data of a document. Its contents are defined by the parser
+ * (src/parse_data.h); the document only holds a pointer to it.
+ */
+struct amark_parse_data;
+
 /* A diagnostic as the document stores it. */
 typedef struct amark_stored_diagnostic {
     size_t offset;
@@ -112,6 +118,7 @@ struct amark_document {
     amark_array_t attrs;          /* amark_node_attr_t; 0 unused */
     amark_array_t diagnostics;    /* amark_stored_diagnostic_t */
     const char *filename;         /* a copy in the arena, or NULL */
+    struct amark_parse_data *parse_data; /* not read, not freed; or NULL */
 };
 
 /*
@@ -178,5 +185,21 @@ size_t amark_document_node_count(const amark_document_t *doc);
 void amark_document_range_lines(const amark_document_t *doc, size_t start,
                                 size_t end, size_t *start_line,
                                 size_t *end_line);
+
+/*
+ * Returns the arena of doc. Memory allocated from it stays valid until doc
+ * is destroyed, and is released with doc.
+ */
+amark_arena_t *amark_document_arena(amark_document_t *doc);
+
+/*
+ * Return and set the parse data attached to doc. amark_document_create sets
+ * it to NULL. The document neither reads nor frees what the pointer refers
+ * to; the parser allocates it from the document's arena, so it is released
+ * with the arena when doc is destroyed. data may be NULL.
+ */
+struct amark_parse_data *amark_document_parse_data(const amark_document_t *doc);
+void amark_document_set_parse_data(amark_document_t *doc,
+                                   struct amark_parse_data *data);
 
 #endif /* AMARK_DOCUMENT_H */

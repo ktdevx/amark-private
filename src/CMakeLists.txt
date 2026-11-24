@@ -10,11 +10,18 @@ set(AMARK_SOURCES
     alloc.c
     arena.c
     array.c
+    block.c
     config.c
+    definition.c
     document.c
     entity.c
+    line.c
     line_index.c
     node.c
+    parse.c
+    parse_data.c
+    refdef.c
+    scan.c
     tree.c
     tree_check.c
     unicode.c

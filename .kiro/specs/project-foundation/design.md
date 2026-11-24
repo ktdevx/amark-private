@@ -752,6 +752,10 @@ amark_error_t amark_line_index_build(amark_line_index_t *index, amark_arena_t *a
 size_t amark_line_index_line_at(const amark_line_index_t *index, size_t offset);
 
 size_t amark_line_index_line_count(const amark_line_index_t *index);
+
+/* 行 line の最初のバイトのオフセットを返す。最初の行は 1。line は 1 以上、行の数 + 1 以下。
+   行の数 + 1 のときは length を返す。 */
+size_t amark_line_index_line_start(const amark_line_index_t *index, size_t line);
 ```
 - 行の規則：行末は、LF、後ろに LF が続かない CR、CR と LF の組である。行末の記号は、それが終わらせる行に属する。次の行は、行末の直後のバイトから始まる。したがって `line_count` は「行末の数 + 1」である。
   - 長さ 0 のバイト列：1 行。オフセット 0 は行 1。
@@ -760,18 +764,21 @@ size_t amark_line_index_line_count(const amark_line_index_t *index);
 - Postconditions:
   - `build`：バイト列を 2 回走査する。1 回目で行を数え、2 回目で表を埋める。確保はアリーナから 1 回だけ行う。失敗したときは何も確保しておらず、`*index` を変えない（9.10）。行の数に `size_t` の大きさを掛けたバイト数があふれたら `AMARK_ERROR_LIMIT_EXCEEDED` を返す。
   - `line_at`：`line_starts` を二分探索し、`line_starts[i] <= offset` を満たす最大の `i` に 1 を足して返す（9.8）。
+  - `line_start`：`line_starts[line - 1]` を返す。`line` が行の数 + 1 のときは `length` を返す。表を 1 回読むだけで、定数時間で、確保しない。したがって行 `line` は `line_start(line)` から `line_start(line + 1)` の手前までであり、行末で終わるバイト列の最後の空の行は `length` から始まる。
+- Preconditions: `line_start` の `line` は 1 以上、行の数 + 1 以下である。関数はこれを検査しないので、呼ぶ側が守る。
+- 項目は src/ の中から見えるが、ほかのモジュールは関数だけを使い、項目を直接読まない。行の開始位置が要るときは `line_start` を使う（block-parser の `line.c` のために足した）。
 - Invariants: バイト列を変更しない。バイトの値だけを見るので、不正な UTF-8 でも同じ規則で動く（9.11）。索引はバイト列へのポインタを持たない。
 
 #### Utf8
 
 | Field | Detail |
 |-------|--------|
-| Intent | UTF-8 を検査し、コードポイントを取り出し、不正な列を U+FFFD に置き換える |
+| Intent | UTF-8 を検査し、コードポイントを取り出し（不正な列を U+FFFD として読むことも含む）、不正な列を U+FFFD に置き換える |
 | Requirements | 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7, 10.8, 10.9, 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9 |
 
 **Responsibilities & Constraints**
 - 正しさの定義は、Unicode 標準の表 3-7（Well-Formed UTF-8 Byte Sequences）である。
-- 検査と置換は、1 つの内部の関数（1 つの列を調べ、正しければその長さを、不正なら極大の部分列の長さを返す）を共有する。これで、2 つの判定がずれない。
+- 検査と置換は、1 つの内部の関数（1 つの列を調べ、正しければその長さを、不正なら極大の部分列の長さを返す）を共有する。これで、2 つの判定がずれない。寛容なデコード（`amark_utf8_decode_lossy`、block-parser が追加）も同じ関数を使うので、置換と文字の区切りが一致する。
 
 **Dependencies**
 - Outbound: Arena — 置換の結果 (P0)
@@ -790,6 +797,10 @@ bool amark_utf8_validate(const unsigned char *bytes, size_t length, size_t *erro
 /* bytes の先頭の 1 文字をデコードし、コードポイントを *codepoint に書いて、バイト数（1〜4）を返す。 */
 size_t amark_utf8_decode(const unsigned char *bytes, size_t length, uint32_t *codepoint);
 
+/* 検査を通っていないバイト列の先頭の 1 文字を読む。正しい列ならそのコードポイントとバイト数（1〜4）を、
+   不正な列なら U+FFFD と極大の部分列の長さ（1〜3）を返す（block-parser が追加）。 */
+size_t amark_utf8_decode_lossy(const unsigned char *bytes, size_t length, uint32_t *codepoint);
+
 typedef struct amark_utf8_replaced {
     const unsigned char *bytes;   /* 結果。replacement_count が 0 のときは入力と同じポインタ */
     size_t length;
@@ -805,6 +816,9 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *byte
 - `amark_utf8_decode`
   - Preconditions: `length` は 1 以上。`bytes` は、検査を通ったバイト列の中の、文字の先頭を指す。`length` は、そこからバイト列の終わりまでの長さ以下である。
   - Postconditions: `bytes[0]` から `bytes[戻り値 - 1]` までだけを読む（10.9）。前提条件を満たさない入力に対する結果は定めない。
+- `amark_utf8_decode_lossy`（block-parser が追加。「置き換えて続ける」設定で、置き換えた写しを作らずに読むため）
+  - Preconditions: `length` は 1 以上で、`bytes[0]` からバイト列の終わりまでの長さである。バイト列は検査を通っていなくてよい。
+  - Postconditions: 内部の検査の関数で `bytes[0]` からの列を調べる。正しい列なら、そのコードポイントを書いて、長さ（1〜4）を返す。不正な列なら、U+FFFD を書いて、極大の部分列の長さ（1〜3）を返す。判定を検査・置換と共有するので、この関数で先頭から順に読んだ文字の区切りは、`amark_utf8_replace` の結果と一致する。U+0000 は U+0000 のまま返す（U+FFFD にするのは呼び出す側である）。`bytes[length]` 以降は読まない。確保しない。
 - `amark_utf8_replace`
   - 置換の単位：不正な列の極大の部分列 1 つにつき、U+FFFD（`EF BF BD`）を 1 つ出す。極大の部分列とは、正しい列の先頭として続けられる最長の部分、または、それがなければ 1 バイトである。例：`E2 82`（途中で切れた 3 バイトの列）は 1 つ、`F0 80 80` は 3 つ（`F0 80` は正しい列の先頭にならないため、3 バイトをそれぞれ置き換える）、`C0 AF` は 2 つ。
   - 手順：1 回目の走査で結果の長さと置換の数を求める。置換の数が 0 なら、確保せずに入力のポインタと長さを返す（11.5）。そうでなければ、アリーナから 1 回だけ確保し、2 回目の走査で書く。
@@ -834,8 +848,8 @@ amark_error_t amark_utf8_replace(amark_arena_t *arena, const unsigned char *byte
 - **test_alloc**：既定の確保関数で確保と解放ができる。指定した確保関数だけが呼ばれ、文脈の値がそのまま渡る（`ctx_mismatch == 0`）。確保関数が NULL を返すと `NOMEM`。`amark_malloc_array(SIZE_MAX, 2)` は確保関数を呼ばずに `LIMIT_EXCEEDED`。`amark_free(NULL)` は確保関数を呼ばない。`amark_size_add` と `amark_size_mul` の境界（6.1–6.7）。
 - **test_arena**：返した位置が `AMARK_ARENA_ALIGN` の倍数。小さな確保 10,000 回で、確保関数の呼び出しが 100 回より少ない。先に書いた内容が、後の確保のあとも変わらない。1 MiB を超える確保が成功し、その後の小さな確保も成功する。`deinit` のあと `live == 0`。途中の確保を失敗させても、それまでのメモリが読め、`deinit` で `live == 0`。`size` が `SIZE_MAX` で `LIMIT_EXCEEDED`（7.1–7.9）。
 - **test_array**：追加した順に読める。容量が広がっても値が変わらない。`pop` が逆順に返し、空で false。要素の大きさが 1、8、24 バイトの型で動く。伸びるときの確保を失敗させると、`len` と中身が変わらない。`reserve(SIZE_MAX)` が `LIMIT_EXCEEDED`。100,000 個の追加で、確保関数の呼び出しの回数が要素の数に比べて十分に少ない（8.1–8.9）。
-- **test_line_index**：空、行末なし、LF、CR、CRLF、混在、連続する行末、行末で終わる入力、行末だけの入力について、すべてのオフセットの行番号を、1 バイトずつ数える単純な参照実装と比べる。`line_count`。不正な UTF-8 を含む入力。確保の失敗で `NOMEM` を返し、`live` が増えない（9.1–9.11）。
-- **test_utf8**：1〜4 バイトの各範囲の境界（U+007F、U+0080、U+07FF、U+0800、U+FFFF、U+10000、U+10FFFF）、U+0000 と U+FEFF が正しい。不正の各種類について、`error_offset` が最初の不正な列を指す。デコードが検査済みの全境界で正しい値と長さを返す。置換が Unicode 標準の例と一致し、結果が検査を通り、入力が変わらない。正しい入力では `replacement_count == 0` で、ポインタが入力と同じで、確保がない。確保の失敗で `NOMEM` を返し、`live` が増えない（10.1–10.9、11.1–11.9）。
+- **test_line_index**：空、行末なし、LF、CR、CRLF、混在、連続する行末、行末で終わる入力、行末だけの入力について、すべてのオフセットの行番号を、1 バイトずつ数える単純な参照実装と比べる。`line_count`。`line_start` が各行の開始位置と、行の数 + 1 での長さを返し、すべてのオフセットで `line_at` と食い違わない（行末で終わる入力、空の入力を含む）。不正な UTF-8 を含む入力。確保の失敗で `NOMEM` を返し、`live` が増えない（9.1–9.11）。
+- **test_utf8**：1〜4 バイトの各範囲の境界（U+007F、U+0080、U+07FF、U+0800、U+FFFF、U+10000、U+10FFFF）、U+0000 と U+FEFF が正しい。不正の各種類について、`error_offset` が最初の不正な列を指す。デコードが検査済みの全境界で正しい値と長さを返す。寛容なデコードが、正しい列ではデコードと同じ結果を、不正な列（途中で切れた列、最短でない符号化、サロゲート、範囲の外、先頭バイトのない継続バイト）では U+FFFD と置換と同じ区切りを返し、U+0000 をそのまま返す。置換が Unicode 標準の例と一致し、結果が検査を通り、入力が変わらない。正しい入力では `replacement_count == 0` で、ポインタが入力と同じで、確保がない。確保の失敗で `NOMEM` を返し、`live` が増えない（10.1–10.9、11.1–11.9）。
 - **失敗の注入**：確保を行うすべての操作について、`fail_at` を 1 から順に増やす繰り返しで、各回の後始末のあとに `live == 0` を確かめる（12.9、12.10）。
 
 ### Public API Tests（`tests/public/`、`Amark::amark` にリンク）

@@ -98,6 +98,48 @@ static int table_well_formed(const amark_line_index_t *index,
 }
 
 /*
+ * Checks amark_line_index_line_start against amark_line_index_line_at: for
+ * every offset from 0 to length, the line that contains it starts at or
+ * before it, and the next line (or the length, for the last line) starts
+ * after it, except that the offset equal to the length belongs to the last
+ * line. Also checks that line count + 1 gives the length and that the starts
+ * ascend. Returns the number of disagreements.
+ */
+static size_t start_mismatches(const amark_line_index_t *index, size_t length)
+{
+    size_t count = amark_line_index_line_count(index);
+    size_t mismatches = 0;
+    size_t offset;
+    size_t line;
+
+    if (amark_line_index_line_start(index, 1) != 0) {
+        mismatches++;
+    }
+    if (amark_line_index_line_start(index, count + 1) != length) {
+        mismatches++;
+    }
+    for (line = 1; line <= count; line++) {
+        if (amark_line_index_line_start(index, line) >
+            amark_line_index_line_start(index, line + 1)) {
+            mismatches++;
+        }
+    }
+    for (offset = 0; offset <= length; offset++) {
+        size_t at = amark_line_index_line_at(index, offset);
+        size_t start = amark_line_index_line_start(index, at);
+        size_t next = amark_line_index_line_start(index, at + 1);
+
+        if (start > offset) {
+            mismatches++;
+        }
+        if (offset < length ? offset >= next : at != count) {
+            mismatches++;
+        }
+    }
+    return mismatches;
+}
+
+/*
  * Builds an index of bytes in g_arena and compares the line number of every
  * offset from 0 to length with the reference. Also checks the line count,
  * the table, that the bytes are unchanged, and that the build allocated at
@@ -129,6 +171,7 @@ static size_t compare_with_reference(const unsigned char *bytes, size_t length,
             mismatches++;
         }
     }
+    mismatches += start_mismatches(&index, length);
     return mismatches;
 }
 
@@ -263,6 +306,90 @@ NAOS_TEST(table_holds_the_line_starts)
     NAOS_CHECK_UINT_EQ(index.line_starts[3], 10);
     NAOS_CHECK_UINT_EQ(index.line_starts[4], 12);
     NAOS_CHECK_UINT_EQ(index.length, 12);
+}
+
+/* ---- the start of each line (amark_line_index_line_start) ---- */
+
+/*
+ * Builds an index of text and checks that line i (1 to lines + 1) starts at
+ * starts[i - 1]; starts[lines] is the length.
+ */
+static void check_starts(const char *text, size_t length, size_t lines,
+                         const size_t *starts)
+{
+    amark_line_index_t index;
+    size_t line;
+
+    NAOS_REQUIRE_INT_EQ(amark_line_index_build(&index, &g_arena,
+                                               (const unsigned char *)text,
+                                               length),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_UINT_EQ(amark_line_index_line_count(&index), lines);
+    NAOS_REQUIRE_UINT_EQ(starts[lines], length);
+    for (line = 1; line <= lines + 1; line++) {
+        NAOS_CHECK_UINT_EQ(amark_line_index_line_start(&index, line),
+                           starts[line - 1]);
+    }
+    NAOS_CHECK_UINT_EQ(start_mismatches(&index, length), 0);
+}
+
+NAOS_TEST(line_start_mixed_line_endings)
+{
+    /* a LF b CR c CR LF d: the last line "d" has no line ending. */
+    static const size_t starts[] = {0, 2, 4, 7, 8};
+
+    check_starts("a\nb\rc\r\nd", 8, 4, starts);
+}
+
+NAOS_TEST(line_start_last_line_without_line_ending)
+{
+    static const size_t starts[] = {0, 4, 7};
+
+    check_starts("abc\ndef", 7, 2, starts);
+}
+
+NAOS_TEST(line_start_ending_with_line_ending)
+{
+    /*
+     * The content ends with a line ending, so the last line is empty: it
+     * starts at the length, and line count + 1 also gives the length.
+     */
+    static const size_t lf[] = {0, 3, 3};
+    static const size_t crlf[] = {0, 4, 4};
+    static const size_t cr[] = {0, 2, 5, 5};
+
+    check_starts("ab\n", 3, 2, lf);
+    check_starts("ab\r\n", 4, 2, crlf);
+    check_starts("a\rbc\r", 5, 3, cr);
+}
+
+NAOS_TEST(line_start_empty_content)
+{
+    /* One empty line that starts at 0; line 2 (count + 1) gives length 0. */
+    static const size_t starts[] = {0, 0};
+
+    check_starts("", 0, 1, starts);
+}
+
+NAOS_TEST(line_start_only_line_endings)
+{
+    /* LF, CR LF, CR, CR: five lines, the last one empty. */
+    static const size_t starts[] = {0, 1, 3, 4, 5, 5};
+
+    check_starts("\n\r\n\r\r", 5, 5, starts);
+}
+
+NAOS_TEST(line_start_after_last_line_is_the_length)
+{
+    amark_line_index_t index;
+    const char *text = "x\ny\r\nzz";
+
+    NAOS_REQUIRE_INT_EQ(amark_line_index_build(&index, &g_arena,
+                                               (const unsigned char *)text,
+                                               strlen(text)),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_UINT_EQ(amark_line_index_line_count(&index), 3);
+    NAOS_CHECK_UINT_EQ(amark_line_index_line_start(&index, 4), strlen(text));
 }
 
 /* ---- every offset against the reference (9.1–9.6, 9.11) ---- */
@@ -419,6 +546,7 @@ NAOS_TEST(large_input_every_offset)
     NAOS_CHECK_UINT_EQ(mismatches, 0);
     NAOS_CHECK_UINT_EQ(amark_line_index_line_count(&index), line);
     NAOS_CHECK_UINT_GT(line, LARGE_INPUT / 4);
+    NAOS_CHECK_UINT_EQ(start_mismatches(&index, LARGE_INPUT), 0);
 }
 
 /* ---- the table comes from the arena, once (9.1, 9.9) ---- */
@@ -665,6 +793,12 @@ NAOS_SUITE(line_index,
     NAOS_ADD_TEST(input_ending_with_crlf),
     NAOS_ADD_TEST(only_line_endings),
     NAOS_ADD_TEST(table_holds_the_line_starts),
+    NAOS_ADD_TEST(line_start_mixed_line_endings),
+    NAOS_ADD_TEST(line_start_last_line_without_line_ending),
+    NAOS_ADD_TEST(line_start_ending_with_line_ending),
+    NAOS_ADD_TEST(line_start_empty_content),
+    NAOS_ADD_TEST(line_start_only_line_endings),
+    NAOS_ADD_TEST(line_start_after_last_line_is_the_length),
     NAOS_ADD_TEST(reference_without_line_endings),
     NAOS_ADD_TEST(reference_lf),
     NAOS_ADD_TEST(reference_cr),

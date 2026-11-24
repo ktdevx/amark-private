@@ -62,4 +62,15 @@ size_t amark_line_index_line_at(const amark_line_index_t *index,
 /* Returns the number of lines (at least 1). */
 size_t amark_line_index_line_count(const amark_line_index_t *index);
 
+/*
+ * Returns the offset of the first byte of line (the first line is 1), in
+ * constant time by one read of the table. line must be at least 1 and at most
+ * the number of lines plus 1; callers check this, as it is not checked here.
+ * For the number of lines plus 1, returns the length, so every line runs from
+ * its start to the start of the next line. An empty last line starts at the
+ * length.
+ */
+size_t amark_line_index_line_start(const amark_line_index_t *index,
+                                   size_t line);
+
 #endif /* AMARK_LINE_INDEX_H */
