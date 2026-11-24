@@ -13,6 +13,7 @@
 #include <amark/error.h>     /* amark_error_t */
 #include <amark/export.h>    /* AMARK_API (generated) */
 #include <amark/parse.h>     /* amark_parse */
+#include <amark/text.h>      /* amark_node_raw, amark_node_text */
 #include <amark/tree.h>      /* amark_document_t, amark_node_id_t */
 #include <amark/version.h>   /* AMARK_VERSION_* (generated) */
 

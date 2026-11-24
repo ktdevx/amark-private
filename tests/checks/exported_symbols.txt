@@ -44,3 +44,4 @@ amark_definition_destination
 amark_definition_title
 amark_autolink_type
 amark_node_dialect_data
+amark_node_raw
