@@ -46,3 +46,5 @@ amark_autolink_type
 amark_node_dialect_data
 amark_node_raw
 amark_node_text
+amark_node_text_alloc
+amark_text_free

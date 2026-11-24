@@ -72,8 +72,10 @@ AMARK_API bool amark_node_raw(const amark_document_t *doc,
  * if doc or length is NULL, node is not a node of doc, part is not one of
  * the values above, the node has no such part (for example the logical text
  * of a container, or a destination that is not written), or the document
- * was not made by amark_parse. Returns AMARK_ERROR_LIMIT_EXCEEDED, writing
- * nothing, if the size of the result could not be represented.
+ * was not made by amark_parse. Returns AMARK_ERROR_LIMIT_EXCEEDED, leaving
+ * buffer and *length unchanged, if the range read is longer than
+ * (SIZE_MAX - 2) / 3 bytes (the result of such a range and its terminating
+ * NUL might not fit in a size_t).
  */
 AMARK_API amark_error_t amark_node_text(const amark_document_t *doc,
                                         amark_node_id_t node,

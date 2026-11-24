@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "alloc.h"
 #include "array.h"
 #include "document.h"
 #include "line_index.h"
@@ -291,4 +292,53 @@ amark_error_t amark_node_text(const amark_document_t *doc,
         return AMARK_ERROR_BUFFER_TOO_SMALL;
     }
     return AMARK_ERROR_NONE;
+}
+
+amark_error_t amark_node_text_alloc(const amark_document_t *doc,
+                                    amark_node_id_t node,
+                                    amark_text_part_t part, char **out,
+                                    size_t *length)
+{
+    amark_error_t err;
+    size_t needed = 0;
+    size_t written = 0;
+    void *block = NULL;
+
+    if (out == NULL) {
+        return AMARK_ERROR_NOT_AVAILABLE;
+    }
+    /* The first pass only measures. A result of length 0 succeeds here. */
+    err = amark_node_text(doc, node, part, NULL, 0, &needed);
+    if (err != AMARK_ERROR_NONE && err != AMARK_ERROR_BUFFER_TOO_SMALL) {
+        return err; /* NOT_AVAILABLE or LIMIT_EXCEEDED */
+    }
+    /* The range is within the limit, so needed + 1 does not overflow
+       (design, "the length limit"). The string comes from the allocator of
+       the document, not its arena, so the document is not changed. */
+    err = amark_malloc(&doc->allocator, needed + 1, &block);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    /* The second pass writes the same bytes: nothing changes the document
+       or the content in between, so the result is again needed bytes and
+       fits. */
+    err = amark_node_text(doc, node, part, (char *)block, needed, &written);
+    if (err != AMARK_ERROR_NONE) {
+        amark_free(&doc->allocator, block);
+        return err;
+    }
+    ((char *)block)[needed] = '\0';
+    *out = (char *)block;
+    if (length != NULL) {
+        *length = needed;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+void amark_text_free(const amark_document_t *doc, char *text)
+{
+    if (doc == NULL || text == NULL) {
+        return;
+    }
+    amark_free(&doc->allocator, text);
 }

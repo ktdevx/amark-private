@@ -34,6 +34,16 @@
  * calling again with the length reported succeeds; a result of length 0
  * succeeds; a range longer than (SIZE_MAX - 2) / 3 gives LIMIT_EXCEEDED with
  * the buffer and *length unchanged; none of these allocates.
+ *
+ * amark_node_text_alloc and amark_text_free: for every node and part the
+ * alloc way gives the same result as the buffer way (which, like
+ * amark_node_raw, never calls the allocator), as one block of L + 1 bytes
+ * ending in a NUL from the document's allocator; a result of length 0 is a
+ * one-byte string; a NULL output is not available; a failed allocation
+ * gives NOMEM with the outputs unchanged and nothing left after the
+ * document is destroyed; a range past the limit is refused without
+ * allocating; amark_text_free ignores NULL and frees with the document's
+ * allocator.
  */
 
 #include "document.h"
@@ -1254,8 +1264,310 @@ NAOS_SUITE(text_passing,
     NAOS_ADD_TEST(ranges_longer_than_the_limit_are_refused_before_writing)
 )
 
+/* --- amark_node_text_alloc and amark_text_free --------------------------- */
+
+/*
+ * Checks part of node of g_doc with both ways. The buffer way is called
+ * first; it and amark_node_raw must not call the allocator. Then the alloc
+ * way must give the same result: on AMARK_ERROR_NONE one block of L + 1
+ * bytes holding the same bytes and a NUL, freed with amark_text_free (one
+ * call of free_fn); otherwise the same error, both outputs unchanged and
+ * nothing allocated. Returns true if the part was available.
+ */
+static bool check_both_ways(amark_node_id_t node, amark_text_part_t part)
+{
+    char buffer[256];
+    size_t length = 12345;
+    amark_error_t want;
+    char *out;
+    size_t out_length;
+    const char *raw;
+    size_t raw_length;
+    size_t mallocs = g_state.malloc_calls;
+    size_t frees = g_state.free_calls;
+    size_t bytes = g_state.live_bytes;
+    amark_error_t got;
+
+    want = amark_node_text(g_doc, node, part, buffer, sizeof buffer,
+                           &length);
+    NAOS_REQUIRE_TRUE(want == AMARK_ERROR_NONE ||
+                      want == AMARK_ERROR_NOT_AVAILABLE);
+    NAOS_REQUIRE_TRUE(amark_node_raw(g_doc, node, &raw, &raw_length));
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees);
+
+    out = (char *)&out_length; /* a sentinel that is not NULL */
+    out_length = 12345;
+    got = amark_node_text_alloc(g_doc, node, part, &out, &out_length);
+    NAOS_CHECK_INT_EQ(got, want);
+    if (got != AMARK_ERROR_NONE) {
+        NAOS_CHECK_PTR_EQ(out, (char *)&out_length);
+        NAOS_CHECK_UINT_EQ(out_length, 12345);
+        NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+        NAOS_CHECK_UINT_EQ(g_state.live_bytes, bytes);
+        return false;
+    }
+    NAOS_REQUIRE_NOT_NULL(out);
+    NAOS_CHECK_UINT_EQ(out_length, length);
+    NAOS_CHECK_MEM_EQ(out, out_length, buffer, length);
+    NAOS_CHECK_INT_EQ(out[out_length], '\0');
+    NAOS_CHECK_UINT_EQ(strlen(out), out_length); /* no U+0000 inside */
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs + 1);
+    NAOS_CHECK_UINT_EQ(g_state.live_bytes, bytes + length + 1);
+    amark_text_free(g_doc, out);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees + 1);
+    NAOS_CHECK_UINT_EQ(g_state.live_bytes, bytes);
+    return true;
+}
+
+NAOS_TEST(alloc_agrees_with_the_buffer_for_every_node_and_part)
+{
+    static const char content[] =
+        "> - a\0b\xFF *c* `` d ` `` [e](</f g> \"h &amp; i\")\n"
+        ">   ![j][k] <http://l> \\* &#0; &copy;\n"
+        "\n"
+        "[k]: /m 'n'\n"
+        "\n"
+        "```o p\n"
+        "\tq\n"
+        "```\n"
+        "\n"
+        "    r\n"
+        "# s\n"
+        "***\n"
+        "<div>\n";
+    amark_node_id_t node;
+    int part;
+    size_t available = 0;
+    size_t not_available = 0;
+
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    parse_bytes(content, sizeof content - 1);
+    node = amark_document_root(g_doc);
+    while (node != AMARK_NODE_NONE) {
+        /* 0 and 6 are not parts. */
+        for (part = 0; part <= 6; part++) {
+            if (check_both_ways(node, (amark_text_part_t)part)) {
+                available++;
+            } else {
+                not_available++;
+            }
+        }
+        node = next_in_order(node);
+    }
+    /* Both outcomes are exercised many times. */
+    NAOS_CHECK_UINT_GE(available, 40);
+    NAOS_CHECK_UINT_GE(not_available, 40);
+}
+
+NAOS_TEST(alloc_of_length_zero_is_a_one_byte_string)
+{
+    static const char content[] = "[a](<> \"\")\n\n```\n```\n";
+    amark_node_id_t link;
+    amark_node_id_t code;
+    char *out = NULL;
+    size_t length = 12345;
+    size_t bytes;
+
+    parse_bytes(content, sizeof content - 1);
+    link = find(AMARK_KIND_LINK, 0);
+    code = find(AMARK_KIND_CODE_BLOCK, 0);
+    NAOS_REQUIRE_UINT_NE(link, AMARK_NODE_NONE);
+    NAOS_REQUIRE_UINT_NE(code, AMARK_NODE_NONE);
+    bytes = g_state.live_bytes;
+
+    NAOS_REQUIRE_INT_EQ(amark_node_text_alloc(g_doc, link,
+                                              AMARK_TEXT_DESTINATION, &out,
+                                              &length),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(out);
+    NAOS_CHECK_UINT_EQ(length, 0);
+    NAOS_CHECK_INT_EQ(out[0], '\0');
+    NAOS_CHECK_UINT_EQ(g_state.live_bytes, bytes + 1);
+    amark_text_free(g_doc, out);
+
+    /* length may be NULL. */
+    out = NULL;
+    NAOS_REQUIRE_INT_EQ(amark_node_text_alloc(g_doc, code, AMARK_TEXT_VALUE,
+                                              &out, NULL),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(out);
+    NAOS_CHECK_INT_EQ(out[0], '\0');
+    NAOS_CHECK_UINT_EQ(g_state.live_bytes, bytes + 1);
+    amark_text_free(g_doc, out);
+    NAOS_CHECK_UINT_EQ(g_state.live_bytes, bytes);
+}
+
+NAOS_TEST(alloc_with_a_null_output_or_document_is_not_available)
+{
+    static const char content[] = "a\n";
+    amark_node_id_t text;
+    char *out = (char *)&g_state;
+    size_t length = 12345;
+    size_t mallocs;
+
+    parse_bytes(content, sizeof content - 1);
+    text = find(AMARK_KIND_TEXT, 0);
+    NAOS_REQUIRE_UINT_NE(text, AMARK_NODE_NONE);
+    mallocs = g_state.malloc_calls;
+
+    NAOS_CHECK_INT_EQ(amark_node_text_alloc(g_doc, text, AMARK_TEXT_VALUE,
+                                            NULL, &length),
+                      AMARK_ERROR_NOT_AVAILABLE);
+    NAOS_CHECK_UINT_EQ(length, 12345);
+    NAOS_CHECK_INT_EQ(amark_node_text_alloc(NULL, text, AMARK_TEXT_VALUE,
+                                            &out, &length),
+                      AMARK_ERROR_NOT_AVAILABLE);
+    NAOS_CHECK_INT_EQ(amark_node_text_alloc(g_doc, AMARK_NODE_NONE,
+                                            AMARK_TEXT_VALUE, &out, &length),
+                      AMARK_ERROR_NOT_AVAILABLE);
+    NAOS_CHECK_PTR_EQ(out, (char *)&g_state);
+    NAOS_CHECK_UINT_EQ(length, 12345);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+}
+
+/*
+ * The one allocation of amark_node_text_alloc fails: NOMEM, the outputs are
+ * unchanged and nothing is left (teardown destroys the document and checks
+ * that no block is live). The next call succeeds.
+ */
+NAOS_TEST(alloc_failure_is_nomem_and_leaves_nothing)
+{
+    static const char content[] = "a *b* `c`\n\n    d\n";
+    amark_node_id_t node;
+    char *out = (char *)&g_state;
+    size_t length = 12345;
+    size_t live;
+    size_t frees;
+
+    parse_bytes(content, sizeof content - 1);
+    node = find(AMARK_KIND_PARAGRAPH, 0);
+    NAOS_REQUIRE_UINT_NE(node, AMARK_NODE_NONE);
+    live = g_state.live;
+    frees = g_state.free_calls;
+
+    g_state.fail_at = g_state.malloc_calls + 1;
+    NAOS_CHECK_INT_EQ(amark_node_text_alloc(g_doc, node, AMARK_TEXT_LOGICAL,
+                                            &out, &length),
+                      AMARK_ERROR_NOMEM);
+    NAOS_CHECK_PTR_EQ(out, (char *)&g_state);
+    NAOS_CHECK_UINT_EQ(length, 12345);
+    NAOS_CHECK_UINT_EQ(g_state.live, live);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees);
+
+    /* Fails for a result of length 0 too. */
+    g_state.fail_at = g_state.malloc_calls + 1;
+    NAOS_CHECK_INT_EQ(amark_node_text_alloc(g_doc,
+                                            find(AMARK_KIND_CODE_SPAN, 0),
+                                            AMARK_TEXT_LOGICAL, &out,
+                                            &length),
+                      AMARK_ERROR_NOMEM);
+    NAOS_CHECK_PTR_EQ(out, (char *)&g_state);
+    NAOS_CHECK_UINT_EQ(g_state.live, live);
+
+    g_state.fail_at = 0;
+    NAOS_REQUIRE_INT_EQ(amark_node_text_alloc(g_doc, node,
+                                              AMARK_TEXT_LOGICAL, &out,
+                                              &length),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_MEM_EQ(out, length, "a *b* `c`", (size_t)9);
+    NAOS_CHECK_UINT_EQ(g_state.live, live + 1);
+    amark_text_free(g_doc, out);
+    NAOS_CHECK_UINT_EQ(g_state.live, live);
+}
+
+NAOS_TEST(alloc_of_a_range_past_the_limit_is_refused)
+{
+    static const char content[] = "a\n";
+    amark_node_t *text;
+    size_t text_end;
+    char *out = (char *)&g_state;
+    size_t length = 12345;
+    size_t mallocs;
+
+    parse_bytes(content, sizeof content - 1);
+    text = (amark_node_t *)amark_array_at(&g_doc->nodes,
+                                          find(AMARK_KIND_TEXT, 0));
+    text_end = text->end;
+    mallocs = g_state.malloc_calls;
+    text->end = text->start + RANGE_LIMIT + 1;
+    NAOS_CHECK_INT_EQ(amark_node_text_alloc(g_doc, find(AMARK_KIND_TEXT, 0),
+                                            AMARK_TEXT_VALUE, &out, &length),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    text->end = text_end;
+    NAOS_CHECK_PTR_EQ(out, (char *)&g_state);
+    NAOS_CHECK_UINT_EQ(length, 12345);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+}
+
+NAOS_TEST(text_free_ignores_null_and_frees_with_the_document_allocator)
+{
+    static const char content[] = "a\n";
+    char *out = NULL;
+    size_t frees;
+
+    parse_bytes(content, sizeof content - 1);
+    frees = g_state.free_calls;
+    amark_text_free(g_doc, NULL);
+    amark_text_free(NULL, NULL);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees);
+
+    NAOS_REQUIRE_INT_EQ(amark_node_text_alloc(g_doc, find(AMARK_KIND_TEXT, 0),
+                                              AMARK_TEXT_VALUE, &out, NULL),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(out);
+    NAOS_CHECK_STR_EQ(out, "a");
+    /* With a NULL document nothing is freed (the string is still live). */
+    amark_text_free(NULL, out);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees);
+    amark_text_free(g_doc, out);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees + 1);
+}
+
+/* Each string is a block of its own, freed apart from the document; the
+   document then frees only its own blocks (teardown checks none is left). */
+NAOS_TEST(strings_are_freed_apart_from_the_document)
+{
+    static const char content[] = "a\n\nb\n";
+    char *first = NULL;
+    char *second = NULL;
+    size_t live;
+
+    parse_bytes(content, sizeof content - 1);
+    live = g_state.live;
+    NAOS_REQUIRE_INT_EQ(amark_node_text_alloc(g_doc,
+                                              find(AMARK_KIND_PARAGRAPH, 0),
+                                              AMARK_TEXT_LOGICAL, &first,
+                                              NULL),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_node_text_alloc(g_doc,
+                                              find(AMARK_KIND_PARAGRAPH, 1),
+                                              AMARK_TEXT_LOGICAL, &second,
+                                              NULL),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(g_state.live, live + 2);
+    NAOS_CHECK_STR_EQ(first, "a");
+    NAOS_CHECK_STR_EQ(second, "b");
+    amark_text_free(g_doc, second);
+    amark_text_free(g_doc, first);
+    NAOS_CHECK_UINT_EQ(g_state.live, live);
+}
+
+NAOS_SUITE(text_alloc,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(alloc_agrees_with_the_buffer_for_every_node_and_part),
+    NAOS_ADD_TEST(alloc_of_length_zero_is_a_one_byte_string),
+    NAOS_ADD_TEST(alloc_with_a_null_output_or_document_is_not_available),
+    NAOS_ADD_TEST(alloc_failure_is_nomem_and_leaves_nothing),
+    NAOS_ADD_TEST(alloc_of_a_range_past_the_limit_is_refused),
+    NAOS_ADD_TEST(text_free_ignores_null_and_frees_with_the_document_allocator),
+    NAOS_ADD_TEST(strings_are_freed_apart_from_the_document)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(text_raw),
     NAOS_ADD_SUITE(text_table),
-    NAOS_ADD_SUITE(text_passing)
+    NAOS_ADD_SUITE(text_passing),
+    NAOS_ADD_SUITE(text_alloc)
 )
