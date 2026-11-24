@@ -12,6 +12,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "array.h"
 #include "document.h"
@@ -63,9 +64,10 @@ bool amark_node_raw(const amark_document_t *doc, amark_node_id_t node,
 
 /*
  * What one call of amark_node_text reads: either the code lines of a code
- * block (code is true; attr is its attributes), or the range [start, end),
- * which starts on first_line, written with rule. first_line is not set for
- * an empty range, which is not read.
+ * block (code is true; attr is its attributes; [start, end) is the node's
+ * range, which holds the code lines and bounds the length of the result),
+ * or the range [start, end), which starts on first_line, written with rule.
+ * first_line is not set for an empty range, which is not read.
  */
 typedef struct text_selection {
     bool code;
@@ -168,6 +170,8 @@ static bool select_value(const amark_document_t *doc, const amark_node_t *n,
     case AMARK_KIND_CODE_BLOCK:
         sel->attr = attr_of(doc, n);
         sel->code = sel->attr != NULL;
+        sel->start = n->start;
+        sel->end = n->end;
         return sel->code;
     default:
         return false;
@@ -242,6 +246,14 @@ static bool select_part(const amark_document_t *doc, const amark_node_t *n,
     }
 }
 
+/*
+ * The longest range that is read (design, "the length limit"). Each byte read
+ * gives at most 3 bytes and code lines may gain one '\n', so the result of a
+ * range of at most this length is at most SIZE_MAX - 1 bytes, and that plus
+ * the terminating NUL of amark_node_text_alloc fits in size_t.
+ */
+#define AMARK_TEXT_RANGE_LIMIT ((SIZE_MAX - 2) / 3)
+
 amark_error_t amark_node_text(const amark_document_t *doc,
                               amark_node_id_t node, amark_text_part_t part,
                               char *buffer, size_t capacity, size_t *length)
@@ -260,6 +272,10 @@ amark_error_t amark_node_text(const amark_document_t *doc,
         !select_part(doc, n, part, &sel)) {
         return AMARK_ERROR_NOT_AVAILABLE;
     }
+    /* Before anything is read or written. */
+    if (sel.end - sel.start > AMARK_TEXT_RANGE_LIMIT) {
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    }
 
     amark_text_sink_init(&sink, (unsigned char *)buffer, capacity);
     if (sel.code) {
@@ -268,10 +284,11 @@ amark_error_t amark_node_text(const amark_document_t *doc,
         amark_text_build_range(doc, sel.start, sel.end, sel.first_line,
                                sel.rule, &sink);
     }
-    /* The sink wrote nothing past its capacity (0 for a NULL buffer). */
+    /* The sink wrote nothing past its capacity (0 for a NULL buffer), and
+       counted the whole length: the size needed, without a NUL. */
+    *length = sink.length;
     if (sink.length > sink.capacity) {
         return AMARK_ERROR_BUFFER_TOO_SMALL;
     }
-    *length = sink.length;
     return AMARK_ERROR_NONE;
 }

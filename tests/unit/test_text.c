@@ -27,6 +27,13 @@
  * definition. Every call that cannot be answered (NULL document or length,
  * an invalid ID or part, a document without parse data) leaves the buffer
  * and *length unchanged and allocates nothing.
+ *
+ * amark_node_text, passing the result: a size-only call (NULL buffer, any
+ * capacity) reports the length; a buffer one byte too small gives
+ * BUFFER_TOO_SMALL with the length and nothing written past its capacity;
+ * calling again with the length reported succeeds; a result of length 0
+ * succeeds; a range longer than (SIZE_MAX - 2) / 3 gives LIMIT_EXCEEDED with
+ * the buffer and *length unchanged; none of these allocates.
  */
 
 #include "document.h"
@@ -39,6 +46,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 
 /*
@@ -1020,7 +1028,234 @@ NAOS_SUITE(text_table,
     NAOS_ADD_TEST(results_that_fit_are_written_without_allocating)
 )
 
+/* --- amark_node_text: passing the result --------------------------------- */
+
+/*
+ * Checks the passing of the result of part of node of g_doc, which is want
+ * (want_length bytes, at least 1): a size-only call (NULL buffer, with
+ * capacity 0 and with a nonzero capacity, which is taken as 0), a buffer one
+ * byte too small (BUFFER_TOO_SMALL with the needed length; sentinel bytes
+ * past the capacity are not written), a buffer of exactly the length
+ * reported (succeeds and writes nothing past it), and a larger buffer. None
+ * of the calls allocates or frees.
+ */
+static void check_passing(amark_node_id_t node, amark_text_part_t part,
+                          const char *want, size_t want_length)
+{
+    char buffer[64];
+    size_t length;
+    size_t needed;
+    size_t mallocs = g_state.malloc_calls;
+    size_t frees = g_state.free_calls;
+    size_t i;
+
+    NAOS_REQUIRE_UINT_NE(node, AMARK_NODE_NONE);
+    NAOS_REQUIRE_TRUE(want_length >= 1 && want_length < sizeof buffer);
+
+    /* Size only. */
+    length = 12345;
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, part, NULL, 0, &length),
+                      AMARK_ERROR_BUFFER_TOO_SMALL);
+    NAOS_CHECK_UINT_EQ(length, want_length);
+    length = 12345;
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, part, NULL,
+                                      sizeof buffer, &length),
+                      AMARK_ERROR_BUFFER_TOO_SMALL);
+    NAOS_CHECK_UINT_EQ(length, want_length);
+    needed = length;
+
+    /* One byte too small: nothing at or past the capacity is written. */
+    memset(buffer, 'S', sizeof buffer);
+    length = 12345;
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, part, buffer, needed - 1,
+                                      &length),
+                      AMARK_ERROR_BUFFER_TOO_SMALL);
+    NAOS_CHECK_UINT_EQ(length, want_length);
+    for (i = needed - 1; i < sizeof buffer; i++) {
+        NAOS_CHECK_INT_EQ(buffer[i], 'S');
+    }
+
+    /* Calling again with the size reported succeeds, writing no more. */
+    memset(buffer, 'S', sizeof buffer);
+    length = 12345;
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, part, buffer, needed,
+                                      &length),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_MEM_EQ(buffer, length, want, want_length);
+    for (i = needed; i < sizeof buffer; i++) {
+        NAOS_CHECK_INT_EQ(buffer[i], 'S');
+    }
+
+    /* A larger buffer. */
+    memset(buffer, 'S', sizeof buffer);
+    length = 12345;
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, part, buffer,
+                                      sizeof buffer, &length),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_MEM_EQ(buffer, length, want, want_length);
+    NAOS_CHECK_INT_EQ(buffer[want_length], 'S');
+
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees);
+}
+
+NAOS_TEST(size_only_too_small_and_exact_buffers)
+{
+    /* U+0000 and ill-formed bytes that become U+FFFD (3 bytes each; in the
+       second paragraph the too-small buffer ends inside one), a decoded
+       reference, and code lines that gain a '\n'. */
+    static const char content[] =
+        "a\0b\xFF" "c &amp; d\n"
+        "\n"
+        "ab\xFF\n"
+        "\n"
+        "    code";
+    amark_node_id_t para;
+    amark_node_id_t code;
+
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    parse_bytes(content, sizeof content - 1);
+    para = find(AMARK_KIND_PARAGRAPH, 0);
+    code = find(AMARK_KIND_CODE_BLOCK, 0);
+    check_passing(para, AMARK_TEXT_LOGICAL,
+                  "a\xEF\xBF\xBD" "b\xEF\xBF\xBD" "c &amp; d", 17);
+    check_passing(find(AMARK_KIND_CHARACTER_REFERENCE, 0), AMARK_TEXT_VALUE,
+                  "&", 1);
+    check_passing(find(AMARK_KIND_PARAGRAPH, 1), AMARK_TEXT_LOGICAL,
+                  "ab\xEF\xBF\xBD", 5);
+    check_passing(code, AMARK_TEXT_VALUE, "code\n", 5);
+}
+
+NAOS_TEST(results_of_length_zero_succeed)
+{
+    static const char content[] = "[a](<> \"\")\n\n```\n```\n";
+    amark_node_id_t link;
+    amark_node_id_t code;
+    char buffer[4];
+    size_t length;
+    size_t mallocs;
+
+    parse_bytes(content, sizeof content - 1);
+    link = find(AMARK_KIND_LINK, 0);
+    code = find(AMARK_KIND_CODE_BLOCK, 0);
+    NAOS_REQUIRE_UINT_NE(link, AMARK_NODE_NONE);
+    NAOS_REQUIRE_UINT_NE(code, AMARK_NODE_NONE);
+    mallocs = g_state.malloc_calls;
+
+    length = 12345;
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, link, AMARK_TEXT_DESTINATION,
+                                      NULL, 0, &length),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(length, 0);
+    length = 12345;
+    memset(buffer, 'S', sizeof buffer);
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, link, AMARK_TEXT_TITLE,
+                                      buffer, 0, &length),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(length, 0);
+    NAOS_CHECK_INT_EQ(buffer[0], 'S');
+    length = 12345;
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, code, AMARK_TEXT_VALUE,
+                                      buffer, sizeof buffer, &length),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(length, 0);
+    NAOS_CHECK_INT_EQ(buffer[0], 'S');
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+}
+
+/*
+ * The largest range length that is read: (SIZE_MAX - 2) / 3 (design, "the
+ * length limit").
+ */
+#define RANGE_LIMIT ((SIZE_MAX - 2) / 3)
+
+/*
+ * Checks that part of node of g_doc is AMARK_ERROR_LIMIT_EXCEEDED, with
+ * nothing written: the buffer and *length are unchanged, also for a
+ * size-only call, and nothing is allocated.
+ */
+static void check_limit(amark_node_id_t node, amark_text_part_t part)
+{
+    char buffer[16];
+    size_t length = 12345;
+    size_t mallocs = g_state.malloc_calls;
+    size_t i;
+
+    memset(buffer, 'S', sizeof buffer);
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, part, buffer,
+                                      sizeof buffer, &length),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_UINT_EQ(length, 12345);
+    for (i = 0; i < sizeof buffer; i++) {
+        NAOS_CHECK_INT_EQ(buffer[i], 'S');
+    }
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, part, NULL, 0, &length),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_UINT_EQ(length, 12345);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+}
+
+/*
+ * A range longer than the limit is refused before anything is read, so a
+ * range that is made that long by hand in a small document (its end far
+ * past the content) is never read. The ranges are put back before the
+ * document is destroyed.
+ */
+NAOS_TEST(ranges_longer_than_the_limit_are_refused_before_writing)
+{
+    static const char content[] = "a [b](/c)\n\n    code\n";
+    amark_node_t *text;
+    amark_node_t *code;
+    amark_node_attr_t *attr;
+    amark_node_t *link;
+    size_t text_end;
+    size_t code_end;
+    size_t dest_end;
+
+    parse_bytes(content, sizeof content - 1);
+    text = (amark_node_t *)amark_array_at(&g_doc->nodes,
+                                          find(AMARK_KIND_TEXT, 0));
+    code = (amark_node_t *)amark_array_at(&g_doc->nodes,
+                                          find(AMARK_KIND_CODE_BLOCK, 0));
+    link = (amark_node_t *)amark_array_at(&g_doc->nodes,
+                                          find(AMARK_KIND_LINK, 0));
+    attr = (amark_node_attr_t *)amark_array_at(&g_doc->attrs, link->attr);
+    text_end = text->end;
+    code_end = code->end;
+    dest_end = attr->link.destination.end;
+
+    /* One past the limit: refused, for the plain range, the code lines
+       (bounded by the node's range) and an attribute's range. */
+    text->end = text->start + RANGE_LIMIT + 1;
+    code->end = code->start + RANGE_LIMIT + 1;
+    attr->link.destination.end = attr->link.destination.start +
+                                 RANGE_LIMIT + 1;
+    check_limit(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_VALUE);
+    check_limit(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_LOGICAL);
+    check_limit(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_VALUE);
+    check_limit(find(AMARK_KIND_LINK, 0), AMARK_TEXT_DESTINATION);
+    /* The largest length representable. */
+    text->end = SIZE_MAX;
+    check_limit(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_VALUE);
+
+    text->end = text_end;
+    code->end = code_end;
+    attr->link.destination.end = dest_end;
+    check_text(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_VALUE, "a ");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_VALUE, "code\n");
+    check_text(find(AMARK_KIND_LINK, 0), AMARK_TEXT_DESTINATION, "/c");
+}
+
+NAOS_SUITE(text_passing,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(size_only_too_small_and_exact_buffers),
+    NAOS_ADD_TEST(results_of_length_zero_succeed),
+    NAOS_ADD_TEST(ranges_longer_than_the_limit_are_refused_before_writing)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(text_raw),
-    NAOS_ADD_SUITE(text_table)
+    NAOS_ADD_SUITE(text_table),
+    NAOS_ADD_SUITE(text_passing)
 )
