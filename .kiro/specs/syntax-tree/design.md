@@ -325,7 +325,7 @@ while (node != AMARK_NODE_NONE) {
 | 9.8 | 上限の超過は判定しない | Config | 検査の規則にない |
 | 9.9 | 確保も変更もしない | Config | 引数は `const`、結果は呼び出した側の変数 |
 | 9.10 | 公開の関数 | Config | `AMARK_API` |
-| 10.1 | 成功と 4 つの失敗 | ErrorKind | `amark_error_t` |
+| 10.1 | 成功と 4 つの失敗、失敗でない 2 つの結果 | ErrorKind | `amark_error_t` |
 | 10.2 | 構文の誤りの値がない | ErrorKind | `amark_error_t` |
 | 10.3 | 値は変えない | ErrorKind | 列挙に値を明示する |
 | 10.4 | 戻り値で伝える | ErrorKind、Config、TreeBuilder | `assert` と `abort` を使わない |
@@ -373,12 +373,12 @@ while (node != AMARK_NODE_NONE) {
 
 | Field | Detail |
 |-------|--------|
-| Intent | 失敗の原因を 4 つの種類で伝える、ライブラリ全体で 1 つのエラーの型 |
+| Intent | 失敗の原因を 4 つの種類で伝える、ライブラリ全体で 1 つのエラーの型。source-text が返す、失敗でない 2 つの結果も持つ |
 | Requirements | 10.1, 10.2, 10.3, 10.4 |
 
 **Responsibilities & Constraints**
 - エラーの型は `amark_error_t` の 1 つだけとする。project-foundation の内部の部品も、この spec の内部 API も、公開の関数も、同じ型で失敗を返す。変換は要らない。
-- project-foundation の `src/error.h` を公開ヘッダ `include/amark/error.h` に移し、値を下の 5 つにする。内部の部品が返していた `AMARK_ERROR_OVERFLOW`（大きさの計算があふれた）は、`AMARK_ERROR_LIMIT_EXCEEDED` に名前を変える。あふれは、実装が表せる大きさを超えたことを意味するので、資源の上限の超過にあたる。
+- project-foundation の `src/error.h` を公開ヘッダ `include/amark/error.h` に移し、値を下の 5 つ（0 から 4）にする。5 と 6 は、source-text の spec で足す。この spec の関数と `amark_parse` は、5 と 6 を返さない。内部の部品が返していた `AMARK_ERROR_OVERFLOW`（大きさの計算があふれた）は、`AMARK_ERROR_LIMIT_EXCEEDED` に名前を変える。あふれは、実装が表せる大きさを超えたことを意味するので、資源の上限の超過にあたる。
 - 内部の部品の動作は変えない。メモリ不足とあふれは、これまでどおり別の値で返る（project-foundation の要件 12.5）。
 
 ##### Service Interface
@@ -389,7 +389,10 @@ typedef enum amark_error {
     AMARK_ERROR_INVALID_INPUT = 1,  /* 入力の制約違反 */
     AMARK_ERROR_INVALID_CONFIG = 2, /* 設定の誤り */
     AMARK_ERROR_LIMIT_EXCEEDED = 3, /* 資源の上限の超過（大きさの計算のあふれを含む） */
-    AMARK_ERROR_NOMEM = 4           /* メモリ不足 */
+    AMARK_ERROR_NOMEM = 4,          /* メモリ不足 */
+    /* 次の 2 つは失敗ではない。source-text の文字列の取り出しだけが返す。 */
+    AMARK_ERROR_NOT_AVAILABLE = 5,    /* 求められたものがない */
+    AMARK_ERROR_BUFFER_TOO_SMALL = 6  /* バッファに収まらない */
 } amark_error_t;
 ```
 - `AMARK_ERROR_NONE` と `AMARK_ERROR_NOMEM` は、名前を変えない。`AMARK_ERROR_NOMEM` の値は 1 から 4 に変わるが、まだ公開していない型なので、互換性の問題はない。
@@ -998,7 +1001,7 @@ struct amark_document {
 どのテストも、`tests/support/` の数える確保関数を使い、終わりに解放されていないブロックがないことを確かめる。
 
 ### 単体テスト：`tests/unit/test_config.c`
-- `amark_error_t` の 5 つの値が、互いに異なり、0 から 4 である（10.1、10.3）。
+- `amark_error_t` の 7 つの値が、互いに異なり、0 から 6 である（10.1、10.3）。5 と 6 は、source-text が足す。
 - `amark_config_resolve` が、既定の設定を「方言なし、`[0, content_length)`、既定の確保関数、エラーにする、上限なし」に解決する。内容の長さが 0 でも、`SIZE_MAX` でも成功する（8.3、8.4、9.2）。
 - `config` が `NULL` のとき、既定の設定と同じ結果になる。
 - 規則 1 から 4 のそれぞれについて、破った設定が `INVALID_CONFIG` になり、`*out` が変わらない（9.3、9.4、9.5、9.7）。境界の値（`start == end`、`end == content_length`、`start == content_length` で `end` が `AMARK_END_OF_CONTENT`）は成功する（9.6）。

@@ -190,15 +190,16 @@
 - **Rationale**: 公開シンボルが少なく、後から部分を足しても互換である。種類ごとの振り分けは、1 つの表になる。
 - **Trade-offs**: 種類に合わない部分を求めても、コンパイルでは分からない（`AMARK_TEXT_NONE` で分かる）。
 
-### Decision: 結果の種類を、`amark_error_t` とは別の列挙にする
-- **Context**: 「答えられない」と「バッファに収まらない」を返す必要がある。`amark_error_t` は、成功と 4 つの失敗に固定されている。
+### Decision: 結果は `amark_error_t` で返し、値を 2 つ足す
+- **Context**: 「答えられない」と「バッファに収まらない」を返す必要がある。`amark_error_t` は、成功と 4 つの失敗だけを持っていた。
 - **Alternatives Considered**:
-  1. `amark_error_t` に 2 つの値を足す
-  2. 長さだけで収まらないことを伝える（`snprintf` の形）
-  3. 別の列挙 `amark_text_status_t` を作る
-- **Selected Approach**: 3。
-- **Rationale**: 「答えられない」は失敗ではない。1 は、syntax-tree の要件 10 と、その見直しの条件に触れる。2 は、確かめ忘れを見つけにくい。
-- **Trade-offs**: メモリ不足と上限の超過が、2 つの列挙に現れる。
+  1. 別の列挙 `amark_text_status_t` を作る（最初の設計）
+  2. `amark_error_t` に 2 つの値を足す
+  3. `amark_error_t` に値を足さず、引数と長さで伝える
+- **Selected Approach**: 2。`AMARK_ERROR_NOT_AVAILABLE = 5` と `AMARK_ERROR_BUFFER_TOO_SMALL = 6` を足す。設計のレビューで決めた。
+- **Rationale**: ライブラリのエラーの型を 1 つに保つ。利用者が覚える型が増えず、メモリ不足と上限の超過が 2 つの列挙に重ならない。
+- **Trade-offs**: 「エラーの種類」に、失敗でない結果が混ざる。syntax-tree の要件 10 と設計を直した。`amark_parse` と既存の関数は、この 2 つを返さない。
+- **Follow-up**: `error.h` の説明に、この 2 つを返す関数を書く。`test_config.c` の値の検査を直す。
 
 ### Decision: バッファには NUL を書かず、必要な大きさは結果の長さとする
 - **Selected Approach**: `amark_node_text` は、ちょうど L バイトを書く。`amark_node_text_alloc` は、L+1 バイトを確保して NUL で終える。

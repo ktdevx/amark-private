@@ -6,7 +6,7 @@
 
 **Users**: 利用者は、`amark_parse` で得た文書とノードの ID を渡して、4 つの公開の関数を呼ぶ。下流の開発者（spec-conformance）は、この値から、テスト用の HTML を作る。
 
-**Impact**: 公開ヘッダ `amark/text.h` と、公開シンボル 4 つが加わる。木と解析の結果は変わらない。文字参照の構文の規則を、inline-parser の `inline_scan.c` から新しい `charref` に移し、両方がそれを使う（動作は変えない）。確保した文字列を利用者が解放する、という形が初めて加わるので、structure.md に例外として書き足す。
+**Impact**: 公開ヘッダ `amark/text.h` と、公開シンボル 4 つが加わる。`amark_error_t` に、失敗でない 2 つの結果（`AMARK_ERROR_NOT_AVAILABLE`、`AMARK_ERROR_BUFFER_TOO_SMALL`）が加わる。`amark_parse` と既存の関数は、この 2 つを返さない。木と解析の結果は変わらない。文字参照の構文の規則を、inline-parser の `inline_scan.c` から新しい `charref` に移し、両方がそれを使う（動作は変えない）。確保した文字列を利用者が解放する、という形が初めて加わるので、structure.md に例外として書き足す。
 
 ### Goals
 - 文字列を作る処理を、1 回の走査で、再帰も確保もなしに行う（確保するのは、確保関数で作る方法の 1 回だけ）。
@@ -25,7 +25,8 @@
 ## Boundary Commitments
 
 ### This Spec Owns
-- 公開ヘッダ `include/amark/text.h` と、その 4 つの関数（`amark_node_raw`、`amark_node_text`、`amark_node_text_alloc`、`amark_text_free`）、2 つの列挙（`amark_text_part_t`、`amark_text_status_t`）
+- 公開ヘッダ `include/amark/text.h` と、その 4 つの関数（`amark_node_raw`、`amark_node_text`、`amark_node_text_alloc`、`amark_text_free`）、列挙 `amark_text_part_t`
+- `amark_error_t` に足す 2 つの値（`AMARK_ERROR_NOT_AVAILABLE`、`AMARK_ERROR_BUFFER_TOO_SMALL`）の意味。型そのものの持ち主は、syntax-tree のままである。
 - 「どの種類のノードの、どの部分が、どの決まりで文字列になるか」の表（「部分と種類の表」）
 - 行をつなぐ決まり：プレフィックスを除く、タブの残りの桁を補う、行末記号を置き換える
 - コードブロックのコードの行を決めること（閉じるフェンスの行の判定を含む）
@@ -52,14 +53,15 @@
 - 依存の向きは次のとおりで、左のものだけが右のものを取り込む。
   - `text → text_build → text_lines`、`text_build → text_sink`、`text_build → charref → entity`
   - `inline_scan → charref`（上流への変更）
-- 上流への変更は、次の 3 つに限る。どれも、既存の関数の契約と動作は変えない。
+- 上流への変更は、次の 4 つに限る。どれも、既存の関数の契約と動作は変えない。
+  - `include/amark/error.h`：`amark_error_t` に 2 つの値（5 と 6）を足す。既存の 5 つの値は変えない。syntax-tree の要件 10 と設計の ErrorKind を、合わせて直す。
   - `src/inline_scan.c`：`amark_inline_scan_entity` の中身を、`amark_charref_scan` の呼び出しにする。
   - `include/amark/allocator.h`：確保関数が同時に呼ばれうることを、説明に書き足す。
   - `include/amark/amark.h`：`text.h` を取り込む。
 
 ### Revalidation Triggers
 次の変更は、下流（spec-conformance、利用者）の見直しを要する。
-- 公開の関数の引数と戻り値、`amark_text_part_t` と `amark_text_status_t` の値の変更
+- 公開の関数の引数と戻り値、`amark_text_part_t` の値と、`amark_error_t` に足した 2 つの値の変更
 - 「部分と種類の表」の変更（どの種類が、どの部分に答えるか）
 - 行末記号、タブ、コードスパンの空白、コードブロックの最後の `\n` の決まりの変更
 - 文字に戻す決まり（不正な数値の文字参照を U+FFFD にすることを含む）と、文字の置き換えの決まりの変更
@@ -77,7 +79,7 @@
 - カーソル（inline-parser）は、行の内容だけを読むが、`pad` を見ず、行末記号で終わる範囲を扱えない。この spec の範囲には、その両方がある（コードブロックの行、改行のノード、最後の行の長さが 0 のブロック）。そのため、行をつなぐ処理は、カーソルとは別に作る。
 - 文書は、UTF-8 の扱いの設定を持たない。「エラーにする」設定で解析した文書は、解析する範囲が正しい UTF-8 なので、常に `amark_utf8_decode_lossy` と同じ読み方で出力すれば、どちらの設定でも同じ決まりになる（9.2、9.5）。
 - コードブロックの属性は、閉じるフェンスの有無を持たない。最後の行の記録から判定できる（「コードの行」の節）。
-- たどる API は `bool` と `*out` で答える。`amark_error_t` は、成功と 4 つの失敗に固定されている（syntax-tree の要件 10）。
+- たどる API は `bool` と `*out` で答える。`amark_error_t` は、これまで、成功と 4 つの失敗だけを持っていた（syntax-tree の要件 10）。この spec は、ライブラリのエラーの型を 1 つに保つために、ここに 2 つの値を足す。
 
 ### Architecture Pattern & Boundary Map
 
@@ -166,6 +168,9 @@ tests/
 
 ### Modified Files
 - `include/amark/amark.h` — `<amark/text.h>` を取り込む。
+- `include/amark/error.h` — `AMARK_ERROR_NOT_AVAILABLE = 5` と `AMARK_ERROR_BUFFER_TOO_SMALL = 6` を足す。説明に、この 2 つは失敗ではなく、文字列の取り出しの関数だけが返すことを書く。
+- `tests/unit/test_config.c` — `amark_error_t` の値の検査を、7 つの値（0 から 6）に直す。
+- `.kiro/specs/syntax-tree/design.md` — ErrorKind の節の列挙に、2 つの値を足す（要件 10 は、設計と合わせて直してある）。
 - `include/amark/allocator.h` — 説明に、「文書を複数のスレッドから同時に読み、`amark_node_text_alloc` と `amark_text_free` を呼ぶなら、確保関数は同時に呼ばれてよいものにする」と書き足す。
 - `src/CMakeLists.txt` — `AMARK_SOURCES` に `charref.c`、`text.c`、`text_build.c`、`text_lines.c`、`text_sink.c` を足す。公開ヘッダのインストールは、ディレクトリごとなので、変えなくてよい。
 - `src/inline_scan.c` — `amark_inline_scan_entity` を、`amark_charref_scan` を呼ぶ形にする。桁の数の定数と、数字の判定のうち、ほかで使わなくなるものを除く。
@@ -184,15 +189,15 @@ tests/
 ```mermaid
 flowchart TB
     Start[amark_node_text] --> Check{doc と node と length は有効か}
-    Check -- いいえ --> None[NONE を返す。何も変えない]
+    Check -- いいえ --> None[NOT_AVAILABLE を返す。何も変えない]
     Check -- はい --> Select{部分と種類の表に組があるか}
     Select -- ない --> None
     Select -- ある --> Limit{範囲の長さは上限以下か}
     Limit -- いいえ --> LimitOut[LIMIT_EXCEEDED を返す。何も書かない]
     Limit -- はい --> Build[TextBuild が TextSink に書く]
     Build --> Fit{数えた長さは capacity 以下か}
-    Fit -- はい --> Ok[length に長さを入れて OK]
-    Fit -- いいえ --> Small[length に長さを入れて TOO_SMALL]
+    Fit -- はい --> Ok[length に長さを入れて NONE 成功]
+    Fit -- いいえ --> Small[length に長さを入れて BUFFER_TOO_SMALL]
 ```
 
 - 「答えられない」は、TextSink に 1 バイトも書く前に決まる（11.4）。
@@ -224,8 +229,8 @@ flowchart TB
 | 10.3, 10.4, 10.5, 10.6, 10.7 | バッファに書く | TextApi、TextSink | `amark_node_text` | 1 回の呼び出し |
 | 10.12 | 大きさのあふれ | TextApi | 「長さの上限」 | 1 回の呼び出し |
 | 10.13 | 文書と内容を変えない | すべて | `const` の引数 | — |
-| 11.1, 11.2, 11.3, 11.4, 11.6 | 答えられない呼び出し | TextApi | `AMARK_TEXT_NONE` | 1 回の呼び出し |
-| 11.5, 11.7, 11.8 | 結果の区別 | TextApi | `amark_text_status_t` | 1 回の呼び出し |
+| 11.1, 11.2, 11.3, 11.4, 11.6 | 答えられない呼び出し | TextApi | `AMARK_ERROR_NOT_AVAILABLE` | 1 回の呼び出し |
+| 11.5, 11.7, 11.8 | 結果の区別 | TextApi | `amark_error_t`（足した 2 つの値を含む） | 1 回の呼び出し |
 | 12.1, 12.2, 12.3 | 時間とスタック | TextLines、TextBuild、TextApi | Performance の節 | — |
 | 12.4, 12.5, 12.6, 12.11 | 状態を持たない、同時に読める | すべて | 「確保した文字列」の節 | — |
 | 12.7 | 規則を設定で変えない | TextApi | 設定を受け取らない | — |
@@ -259,7 +264,7 @@ flowchart TB
 | Requirements | 1.1〜1.7, 2.1, 2.9, 2.10, 2.11, 4.1, 6.1〜6.6, 7.1〜7.7, 7.11, 8.1, 8.4, 9.4, 10.1〜10.13, 11.1〜11.8, 12.2, 12.4〜12.11 |
 
 **Responsibilities & Constraints**
-- ノードの種類と属性から、「読む範囲」「最初の行」「決まり」を選ぶ。選べなければ `AMARK_TEXT_NONE` を返す。文字列の中身の規則は持たない（TextBuild の責任）。
+- ノードの種類と属性から、「読む範囲」「最初の行」「決まり」を選ぶ。選べなければ `AMARK_ERROR_NOT_AVAILABLE` を返す。文字列の中身の規則は持たない（TextBuild の責任）。
 - 文書も内容も変えない。文書のアリーナに何も足さない。
 - 確保するのは、`amark_node_text_alloc` の 1 回だけで、`doc->allocator` を通す。
 
@@ -284,14 +289,13 @@ typedef enum amark_text_part {
     AMARK_TEXT_INFO = 5         /* info の値（要件 8） */
 } amark_text_part_t;
 
-/* 呼び出しの結果。値は版が変わっても変えない。 */
-typedef enum amark_text_status {
-    AMARK_TEXT_OK = 0,             /* 結果を渡した（長さ 0 を含む） */
-    AMARK_TEXT_NONE = 1,           /* 答えられない */
-    AMARK_TEXT_TOO_SMALL = 2,      /* バッファに収まらない。*length が必要な大きさ */
-    AMARK_TEXT_NOMEM = 3,          /* 確保関数が失敗した */
-    AMARK_TEXT_LIMIT_EXCEEDED = 4  /* 大きさが表せる範囲を超える */
-} amark_text_status_t;
+/*
+ * 結果は amark_error_t で返す。include/amark/error.h に、次の 2 つの値を足す。
+ *   AMARK_ERROR_NOT_AVAILABLE = 5     答えられない
+ *   AMARK_ERROR_BUFFER_TOO_SMALL = 6  バッファに収まらない。*length が必要な大きさ
+ * 成功は AMARK_ERROR_NONE（長さ 0 の結果を含む）、確保の失敗は AMARK_ERROR_NOMEM、
+ * 大きさが表せる範囲を超えるときは AMARK_ERROR_LIMIT_EXCEEDED である。
+ */
 
 /* ノードの範囲にあたる、内容の中のバイト列。複製しない。 */
 AMARK_API bool amark_node_raw(const amark_document_t *doc,
@@ -299,14 +303,14 @@ AMARK_API bool amark_node_raw(const amark_document_t *doc,
                               const char **bytes, size_t *length);
 
 /* 結果を buffer に書く。終端の NUL は書かない。 */
-AMARK_API amark_text_status_t amark_node_text(const amark_document_t *doc,
+AMARK_API amark_error_t amark_node_text(const amark_document_t *doc,
                                               amark_node_id_t node,
                                               amark_text_part_t part,
                                               char *buffer, size_t capacity,
                                               size_t *length);
 
 /* 結果を、文書の確保関数で作った、NUL で終わる文字列で返す。 */
-AMARK_API amark_text_status_t amark_node_text_alloc(
+AMARK_API amark_error_t amark_node_text_alloc(
     const amark_document_t *doc, amark_node_id_t node,
     amark_text_part_t part, char **out, size_t *length);
 
@@ -320,16 +324,16 @@ AMARK_API void amark_text_free(const amark_document_t *doc, char *text);
 - 解析データを使わないので、どの文書でも答える。範囲の長さによらない時間で終わる（12.2）。
 
 `amark_node_text`
-- `doc` か `length` が NULL、`node` が無効、`part` が 5 つの値のどれでもない、表に組がない、のどれかなら、`AMARK_TEXT_NONE` を返し、`buffer` と `*length` を変えない（11.1〜11.4）。文書が解析データを持たないとき（内部 API で直接作った文書）も `AMARK_TEXT_NONE` である。
+- `doc` か `length` が NULL、`node` が無効、`part` が 5 つの値のどれでもない、表に組がない、のどれかなら、`AMARK_ERROR_NOT_AVAILABLE` を返し、`buffer` と `*length` を変えない（11.1〜11.4）。文書が解析データを持たないとき（内部 API で直接作った文書）も `AMARK_ERROR_NOT_AVAILABLE` である。
 - `buffer` が NULL のときは、`capacity` を 0 として扱う（大きさだけを尋ねる呼び出し。10.5）。
-- 結果の長さ L を `*length` に入れる。L が `capacity` 以下なら、`buffer[0]` から `buffer[L-1]` に結果を書いて `AMARK_TEXT_OK` を返す。L が `capacity` を超えるなら、`AMARK_TEXT_TOO_SMALL` を返す。このとき、`buffer` の先頭から `capacity` バイトまでは書き換えられていてよいが、その中身は定めない。`capacity` を超えては書かない（10.4）。
-- 「必要な大きさ」は L である。終端の NUL の分は含まない。L バイトのバッファで呼び直せば、必ず `AMARK_TEXT_OK` になる（10.6）。
-- `AMARK_TEXT_NOMEM` は返さない（確保しない。10.7）。
+- 結果の長さ L を `*length` に入れる。L が `capacity` 以下なら、`buffer[0]` から `buffer[L-1]` に結果を書いて `AMARK_ERROR_NONE` を返す。L が `capacity` を超えるなら、`AMARK_ERROR_BUFFER_TOO_SMALL` を返す。このとき、`buffer` の先頭から `capacity` バイトまでは書き換えられていてよいが、その中身は定めない。`capacity` を超えては書かない（10.4）。
+- 「必要な大きさ」は L である。終端の NUL の分は含まない。L バイトのバッファで呼び直せば、必ず `AMARK_ERROR_NONE` になる（10.6）。
+- `AMARK_ERROR_NOMEM` は返さない（確保しない。10.7）。
 
 `amark_node_text_alloc`
-- `out` が NULL のときも `AMARK_TEXT_NONE` である。`length` は NULL でよい（長さが要らないとき）。
-- 成功したら、`*out` に L+1 バイトの文字列（最後は NUL）、`*length` に L を入れて `AMARK_TEXT_OK` を返す。L が 0 でも、1 バイトの文字列を確保する（10.10）。結果は U+0000 を含まないので、C の文字列としてそのまま使える。
-- 成功のほかでは、`*out` と `*length` を変えず、確保したものを残さない（10.11、11.4）。`AMARK_TEXT_TOO_SMALL` は返さない。
+- `out` が NULL のときも `AMARK_ERROR_NOT_AVAILABLE` である。`length` は NULL でよい（長さが要らないとき）。
+- 成功したら、`*out` に L+1 バイトの文字列（最後は NUL）、`*length` に L を入れて `AMARK_ERROR_NONE` を返す。L が 0 でも、1 バイトの文字列を確保する（10.10）。結果は U+0000 を含まないので、C の文字列としてそのまま使える。
+- 成功のほかでは、`*out` と `*length` を変えず、確保したものを残さない（10.11、11.4）。`AMARK_ERROR_BUFFER_TOO_SMALL` は返さない。
 - 文字列は、文書を解放する前に、`amark_text_free` で解放する。文書を解放しても、文字列は解放されない。
 
 `amark_text_free`
@@ -349,14 +353,14 @@ AMARK_API void amark_text_free(const amark_document_t *doc, char *text);
 | DESTINATION、TITLE | リンク参照定義（その部分が書かれている） | 属性の範囲 | 行の索引で引く | DECODED |
 | INFO | フェンスのコードブロック（info が書かれている） | info の範囲 | ノードの開始行 | DECODED |
 
-- 表にない組は、すべて `AMARK_TEXT_NONE` である。コンテナ（文書、ブロッククォート、リスト、リスト項目）の LOGICAL（2.9）、方言の種類のブロックの LOGICAL（2.11）、方言の種類の VALUE、参照の形式のリンクの DESTINATION と TITLE（7.5）、書かれていない部分（7.6、8.4）を含む。
-- 「書かれているが空」は、範囲の長さが 0 で、結果は `AMARK_TEXT_OK` と長さ 0 になる（7.7、7.11）。属性の「書かれている」は、文書が持つ属性の `present` をそのまま使う。
+- 表にない組は、すべて `AMARK_ERROR_NOT_AVAILABLE` である。コンテナ（文書、ブロッククォート、リスト、リスト項目）の LOGICAL（2.9）、方言の種類のブロックの LOGICAL（2.11）、方言の種類の VALUE、参照の形式のリンクの DESTINATION と TITLE（7.5）、書かれていない部分（7.6、8.4）を含む。
+- 「書かれているが空」は、範囲の長さが 0 で、結果は `AMARK_ERROR_NONE` と長さ 0 になる（7.7、7.11）。属性の「書かれている」は、文書が持つ属性の `present` をそのまま使う。
 - コードスパンの n は、範囲の先頭から続く `` ` `` の数である。inline-parser の決まりで、ノードの範囲は開く列の最初から始まり、閉じる列は同じ長さである（4.1）。
 - dest と title の最初の行は、`amark_line_index_line_at` で、範囲の開始のオフセットから引く（行の数の対数に比例する時間。12.1）。長さ 0 の範囲では、行を引かない。
 
 ##### 長さの上限
 - 結果は、読む範囲の 1 バイトにつき、多くても 3 バイトである（U+0000 と不正な 1 バイトが U+FFFD の 3 バイトに、タブ 1 バイトが 3 個のスペースになる場合が最大。文字参照は、もとより長くなっても 5 バイトが 6 バイトで、3 倍より小さい）。コードの行では、行末記号のない最後の行に `\n` を足すので、1 バイト増える。
-- そのため、範囲の長さ R が `(SIZE_MAX - 1) / 3` 以下なら、長さの計算はあふれない。TextApi は、書く前にこれを確かめ、超えていれば `AMARK_TEXT_LIMIT_EXCEEDED` を返す（10.12）。TextSink は、あふれの検査を持たない。
+- そのため、範囲の長さ R が `(SIZE_MAX - 1) / 3` 以下なら、長さの計算はあふれない。TextApi は、書く前にこれを確かめ、超えていれば `AMARK_ERROR_LIMIT_EXCEEDED` を返す（10.12）。TextSink は、あふれの検査を持たない。
 
 ##### 確保した文字列
 - `amark_node_text_alloc` の文字列は、文書のアリーナではなく、`doc->allocator` から直接確保する。アリーナに置くと、文書を変えることになり、同じ文書を同時に読めなくなるからである（12.5、12.6）。
@@ -366,7 +370,7 @@ AMARK_API void amark_text_free(const amark_document_t *doc, char *text);
 **Implementation Notes**
 - Integration: ノードと属性は、`document.h` の構造体から直接読む（`tree.c` の公開の関数を重ねて呼ばない）。無効な ID の判定は、たどる API と同じ条件（0、作られた数より大きい、取り除かれたノード）にする。
 - Validation: `tests/unit/test_text.c` で、表のすべての行と、表にない組を確かめる。
-- Risks: 公開の型と関数は、後から変えにくい。`amark_text_part_t` に値を足すのは互換である（知らない値は `AMARK_TEXT_NONE`）。
+- Risks: 公開の型と関数は、後から変えにくい。`amark_text_part_t` に値を足すのは互換である（知らない値は `AMARK_ERROR_NOT_AVAILABLE`）。
 
 ### 内部
 
@@ -598,19 +602,19 @@ size_t amark_charref_scan(const unsigned char *bytes, size_t length,
 bool amark_test_dump_text(const amark_document_t *doc, char *buffer,
                           size_t size);
 ```
-- 公開の API（たどる API と `amark_node_text`）だけを使う。VALUE、DESTINATION、TITLE、INFO のうち、`AMARK_TEXT_OK` になるものを、文書の順に、`種類の名前:部分=値` の形で並べる。値の中の制御文字、`\`、区切りの文字は、エスケープして書く。
+- 公開の API（たどる API と `amark_node_text`）だけを使う。VALUE、DESTINATION、TITLE、INFO のうち、`AMARK_ERROR_NONE` になるものを、文書の順に、`種類の名前:部分=値` の形で並べる。値の中の制御文字、`\`、区切りの文字は、エスケープして書く。
 - 期待する文字列は、spec.txt の HTML から手で導く（HTML のエスケープとパーセントエンコードを戻した形）。書式は、`tree_dump` の決まり（種類の名前、エスケープ）にならう。
 
 ## Error Handling
 
 ### Error Strategy
-- 結果は、`amark_text_status_t`（`amark_node_raw` は `bool`）だけで伝える。`abort`、`exit`、`longjmp` は使わない（11.8）。
-- `amark_error_t` には値を足さない。「答えられない」と「バッファに収まらない」は失敗ではなく、解析の失敗の 4 種類（syntax-tree の要件 10）に混ぜないためである。`AMARK_TEXT_NOMEM` と `AMARK_TEXT_LIMIT_EXCEEDED` は、`AMARK_ERROR_NOMEM` と `AMARK_ERROR_LIMIT_EXCEEDED` と同じ意味である。
+- 結果は、`amark_error_t`（`amark_node_raw` は `bool`）だけで伝える。`abort`、`exit`、`longjmp` は使わない（11.8）。
+- ライブラリのエラーの型は、`amark_error_t` の 1 つに保つ。「答えられない」と「バッファに収まらない」は失敗ではないが、同じ型の値として返す（`AMARK_ERROR_NOT_AVAILABLE`、`AMARK_ERROR_BUFFER_TOO_SMALL`）。この 2 つを返すのは、`amark_node_text` と `amark_node_text_alloc` だけである。`amark_parse` と、ほかの既存の関数は返さない。
 - 内部の関数（TextBuild、TextLines、TextSink、CharRef）は失敗しない。事前条件は、TextApi が確かめてから呼ぶ。
 
 ### Error Categories and Responses
-- **答えられない**（`NONE`）：無効な引数、表にない組、書かれていない部分、解析データのない文書。何も変えない。
-- **バッファに収まらない**（`TOO_SMALL`）：`*length` の大きさのバッファで呼び直す。
+- **答えられない**（`NOT_AVAILABLE`）：無効な引数、表にない組、書かれていない部分、解析データのない文書。何も変えない。
+- **バッファに収まらない**（`BUFFER_TOO_SMALL`）：`*length` の大きさのバッファで呼び直す。
 - **メモリ不足**（`NOMEM`）：`amark_node_text_alloc` だけ。何も残さない。
 - **資源の上限の超過**（`LIMIT_EXCEEDED`）：範囲の長さが `(SIZE_MAX - 1) / 3` を超えるとき。書く前に返す。
 - Markdown の中身を理由にした失敗はない（11.7）。診断は足さない（12.11）。
@@ -646,12 +650,13 @@ bool amark_test_dump_text(const amark_document_t *doc, char *buffer,
 - コードの行：インデントされたコードブロック（途中の空行、4 桁より深いインデント、タブがインデントの境をまたぐ）、フェンスのコードブロック（閉じるフェンスあり・なし、コードの行が 0、開始のフェンスのインデント 0〜3 とコードの行のインデントの組み合わせ、閉じるフェンスに似たコードの行、コンテナの中、最後の行に行末記号がない、最後の行の長さが 0）（3.1〜3.9）。
 
 ### 単体テスト：`tests/unit/test_text.c`
+- `amark_error_t` の足した 2 つの値が 5 と 6 で、既存の 5 つの値が変わらない（`test_config.c`）。
 - 「部分と種類の表」のすべての行と、表にない組（コンテナの LOGICAL、参照の形式のリンクの dest、インデントされたコードブロックの INFO など）（2.9、6.6、7.5、8.4、13.3）。
 - dest と title の「書かれていない」「書かれているが空」「書かれている」と、参照先の定義から値を得ること（7.6、7.7、7.11、13.6）。
 - 答えられない呼び出しの各条件（NULL の文書、無効な ID、NULL の `length`、無効な `part`、解析データのない文書）で、バッファと `*length` と `*out` が変わらない（11.1〜11.4、13.9）。
 - 受け渡し：大きさだけを尋ねる呼び出し、1 小さいバッファ、ちょうどのバッファ、2 つの方法の一致、長さ 0 の結果（確保した文字列は 1 バイトで NUL）（10.1〜10.6、10.10、13.8）。
 - `amark_node_raw`：すべての種類のノードで、内容の中の範囲と同じ位置と長さ。根は、解析する範囲の全体。長さ 0 の範囲（1.1〜1.7、13.4）。
-- 確保の失敗の注入：`amark_node_text_alloc` の確保を失敗させ、`AMARK_TEXT_NOMEM` と、残りがないことを確かめる。`amark_node_raw` と `amark_node_text` が確保関数を呼ばない（10.7、10.11、13.10、13.11）。
+- 確保の失敗の注入：`amark_node_text_alloc` の確保を失敗させ、`AMARK_ERROR_NOMEM` と、残りがないことを確かめる。`amark_node_raw` と `amark_node_text` が確保関数を呼ばない（10.7、10.11、13.10、13.11）。
 - U+0000 と、2 つの UTF-8 の設定：値が正しい UTF-8 で、`amark_node_raw` は変わらない。正しい UTF-8 の入力では、2 つの設定で同じ値（9.4、9.5、13.7）。
 - 呼び出しの前後で、内容のバイト列と、木の `tree_dump` が変わらない（10.13、12.11、13.14）。
 
