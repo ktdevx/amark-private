@@ -48,10 +48,9 @@
 - unicode-tables：`unicode`（`amark_unicode_is_punctuation`、`amark_unicode_is_whitespace`）、`entity`（`amark_entity_lookup`）
 - C99 の標準ヘッダ：`stdbool.h`、`stddef.h`、`stdint.h`、`string.h`
 - 依存の向きは次のとおりで、左のものだけが右のものを取り込む。
-  - `parse → inline → inline_link → inline_delim → inline_items`
-  - `inline → inline_emit → inline_items`
-  - `inline_link → inline_scan → inline_cursor`
-  - `inline_delim` と `inline_items` は、`inline_cursor` と `inline_scan` を取り込まない。`inline_items` は、木を作る API を取り込まない。
+  - `parse → inline → bracket → delimiter → draft`
+  - `bracket → inline_scan → cursor`
+  - `delimiter` と `draft` は、`cursor` と `inline_scan` を取り込まない。木を作る API（`tree_internal`）を取り込むのは `draft` だけである。
 - 上流への変更は、次の 2 つに限る。どちらも、既存の関数の契約は変えない。
   - `src/array.h`・`src/array.c`：`amark_array_clear` を足す。
   - `src/parse.c`：`amark_inline_parse` の呼び出しを足す。
@@ -62,7 +61,7 @@
 - テキストをまとめる決まり、改行のノードの範囲の決まりの変更
 - 参照を解決する順（インライン、完全参照、省略参照、ショートカット）と、ラベルとして認める条件の変更
 - 入れ子の深さとノードの数の数え方の変更
-- 起動文字の表、区切りの種類の表、項目の木（`amark_inline_item_t`）の形の変更（dialect-extension だけ）
+- 起動文字の表、区切りの種類の表、項目の木（`amark_draft_item_t`）の形の変更（dialect-extension だけ）
 - ノードの ID の付く順（内容ごとに、文書の順）の変更
 
 ## Architecture
@@ -90,12 +89,12 @@ graph TB
     end
     subgraph InlineParser_spec
         InlineParser[InlineParser]
-        InlineLink[InlineLink]
-        InlineDelim[InlineDelim]
+        Bracket[Bracket]
+        Delimiter[Delimiter]
         InlineScan[InlineScan]
-        InlineCursor[InlineCursor]
-        InlineItems[InlineItems]
-        InlineEmit[InlineEmit]
+        Cursor[Cursor]
+        Draft[Draft]
+        DraftEmit[DraftEmit]
     end
     subgraph Upstream
         ParseData[ParseData]
@@ -114,34 +113,34 @@ graph TB
     end
     ParseEntry --> InlineParser
     InlineParser --> ParseData
-    InlineParser --> InlineCursor
+    InlineParser --> Cursor
     InlineParser --> InlineScan
-    InlineParser --> InlineDelim
-    InlineParser --> InlineLink
-    InlineParser --> InlineItems
-    InlineParser --> InlineEmit
-    InlineLink --> InlineScan
-    InlineLink --> InlineDelim
-    InlineLink --> InlineItems
-    InlineLink --> DefinitionTable
-    InlineDelim --> InlineItems
-    InlineDelim --> Unicode
-    InlineScan --> InlineCursor
+    InlineParser --> Delimiter
+    InlineParser --> Bracket
+    InlineParser --> Draft
+    InlineParser --> DraftEmit
+    Bracket --> InlineScan
+    Bracket --> Delimiter
+    Bracket --> Draft
+    Bracket --> DefinitionTable
+    Delimiter --> Draft
+    Delimiter --> Unicode
+    InlineScan --> Cursor
     InlineScan --> Entity
-    InlineCursor --> LineRecords
-    InlineCursor --> Utf8
-    InlineEmit --> InlineItems
-    InlineEmit --> TreeBuilder
-    InlineItems --> Parts
+    Cursor --> LineRecords
+    Cursor --> Utf8
+    DraftEmit --> Draft
+    DraftEmit --> TreeBuilder
+    Draft --> Parts
     Dialect --> InlineParser
-    Dialect --> InlineDelim
+    Dialect --> Delimiter
     SourceText --> TreeBuilder
     Conformance --> ParseEntry
 ```
 
 **Architecture Integration**:
 - Selected pattern：区切りのスタックと括弧のスタック（cmark と同じ規則）を、作業用の項目の木の上で動かし、決まった結果だけを木へ書き出す。
-- Domain/feature boundaries：読む（InlineCursor、InlineScan）、対応を決める（InlineDelim、InlineLink）、持つ（InlineItems）、木に書く（InlineEmit）、順に動かす（InlineParser）を分ける。木を作る API に触れるのは InlineEmit だけである。
+- Domain/feature boundaries：読む（Cursor、InlineScan）、対応を決める（Delimiter、Bracket）、持つ（Draft）、木に書く（DraftEmit）、順に動かす（InlineParser）を分ける。木を作る API に触れるのは DraftEmit（`draft.c` の `amark_draft_emit`）だけである。
 - Existing patterns preserved：2 段階の解析、作業用のアリーナ、文書が資源の持ち主、再帰なし、失敗は戻り値、`switch` による振り分け。
 - New components rationale：下の「Components and Interfaces」の各節に書く。
 - Steering compliance：規則は設定で変えられない。グローバルな状態を持たない。原文を複製しない。
@@ -173,41 +172,39 @@ graph TB
 src/
 ├── inline.h                # InlineParser：amark_inline_parse
 ├── inline.c                #   内容ごとの繰り返し、起動文字の振り分け、テキストと改行
-├── inline_cursor.h         # InlineCursor：行の内容を順に読む位置と、前後の文字
-├── inline_cursor.c
 ├── inline_scan.h           # InlineScan：構文の形を読む関数（木も項目も作らない）
 ├── inline_scan.c           #   コードスパン、文字参照、オートリンク、生の HTML、リンクの丸括弧の部分
-├── inline_items.h          # InlineItems：作業用の項目の木
-├── inline_items.c
-├── inline_delim.h          # InlineDelim：区切りの種類、開閉の判定、区切りのスタック、強調の対応
-├── inline_delim.c
-├── inline_link.h           # InlineLink：括弧のスタック、`]` の処理、参照の解決
-├── inline_link.c
-├── inline_emit.h           # InlineEmit：項目の木を、文書の木へ書き出す
-└── inline_emit.c
+├── cursor.h                # Cursor：行の内容を順に読む位置と、前後の文字
+├── cursor.c
+├── draft.h                 # Draft：作業用の項目の木（下書き）と、文書の木への書き出し
+├── draft.c
+├── delimiter.h             # Delimiter：区切りの種類、開閉の判定、区切りのスタック、強調の対応
+├── delimiter.c
+├── bracket.h               # Bracket：括弧のスタック、`]` の処理、参照の解決
+└── bracket.c
 tests/
 ├── support/
 │   ├── tree_dump.h         # amark_test_dump_tree を足す
 │   └── tree_dump.c
 └── unit/
-    ├── test_inline_cursor.c   # InlineCursor
+    ├── test_cursor.c          # Cursor
     ├── test_inline_scan.c     # InlineScan
-    ├── test_inline_items.c    # InlineItems
-    ├── test_inline_delim.c    # 開閉の判定と、強調の対応
-    ├── test_inline_emit.c     # 書き出し、テキストのまとめ、上限
+    ├── test_draft.c           # 項目の木の操作、書き出し、テキストのまとめ、上限
+    ├── test_delimiter.c       # 開閉の判定と、強調の対応
+    ├── test_bracket.c         # リンクと画像、参照の解決（amark_parse を通す）
     ├── test_inline.c          # 種類ごとの範囲と属性（amark_parse を通す）
-    ├── test_inline_link.c     # リンクと画像、参照の解決
     ├── test_inline_limits.c   # 上限、深い入れ子、病的な入力、確保の失敗の注入
     ├── test_spec_inline.c     # spec.txt の例：強調とリンクと画像を除く 9 つの節
     ├── test_spec_emphasis.c   # spec.txt の例：Emphasis and strong emphasis
     └── test_spec_links.c      # spec.txt の例：Links、Images
 ```
 
+- 名前は、既存の `block.c`、`scan.c`、`refdef.c`、`definition.c`、`line.c` にならい、扱うものを 1 語で表す。`inline.c` は `block.c` と対になる。`scan.c` はブロックの判定で使われているので、インラインの走査は `inline_scan.c` とする（`tree.c` と `tree_check.c` の形）。関数と型の名前は、ファイルの名前を前に付ける（`amark_cursor_*`、`amark_draft_*`、`amark_delimiter_*`、`amark_bracket_*`、`amark_inline_scan_*`）。リンクの処理を `link.c` としないのは、公開の `amark_link_*`（属性の読み出し）と名前が紛れるからである。
 - どのファイルも 600 行前後までに収める見込みである。`inline_scan.c` は生の HTML の文法を持つので、いちばん大きくなる。
 
 ### Modified Files
 - `src/parse.c` — `amark_block_parse` の後で、作業用のアリーナを作り直し、`amark_inline_parse` を呼ぶ。
-- `src/CMakeLists.txt` — `AMARK_SOURCES` に 7 つの `.c` を足す。
+- `src/CMakeLists.txt` — `AMARK_SOURCES` に 6 つの `.c`（`bracket.c`、`cursor.c`、`delimiter.c`、`draft.c`、`inline.c`、`inline_scan.c`）を足す。
 - `src/array.h`、`src/array.c` — `amark_array_clear`（長さを 0 に戻す。確保した場所は保つ）を足す。
 - `tests/unit/test_array.c` — `amark_array_clear` のテストを足す。
 - `tests/support/tree_dump.h`、`tests/support/tree_dump.c` — `amark_test_dump_tree` を足す。`amark_test_dump_blocks` は変えない。
@@ -230,9 +227,9 @@ tests/
 sequenceDiagram
     participant P as ParseEntry
     participant I as InlineParser
-    participant T as InlineItems
-    participant D as InlineDelim
-    participant E as InlineEmit
+    participant T as Draft
+    participant D as Delimiter
+    participant E as DraftEmit
     P->>P: amark_block_parse
     P->>P: 作業用のアリーナを作り直す
     P->>I: amark_inline_parse
@@ -308,31 +305,31 @@ flowchart TD
 | Requirement | Summary | Components | Interfaces | Flows |
 |-------------|---------|------------|------------|-------|
 | 1.1, 1.2, 1.3, 1.4, 1.5, 1.6 | 入口への統合、解析する対象 | ParseEntry、InlineParser | `amark_inline_parse`、`amark_inline_content_at` | 解析の入口 |
-| 1.7, 1.8, 1.9, 1.10 | 失敗しない、不変条件、たどる API、複製しない | InlineParser、InlineEmit | `amark_tree_append`、属性の設定 | 解析の入口 |
-| 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7 | 範囲の決まり | InlineItems、InlineEmit、InlineParser | 「範囲の決まり」の表 | 走査の 1 歩 |
+| 1.7, 1.8, 1.9, 1.10 | 失敗しない、不変条件、たどる API、複製しない | InlineParser、DraftEmit | `amark_tree_append`、属性の設定 | 解析の入口 |
+| 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7 | 範囲の決まり | Draft、DraftEmit、InlineParser | 「範囲の決まり」の表 | 走査の 1 歩 |
 | 3.1, 3.2, 3.4, 3.5, 3.7 | テキスト | InlineParser | 走査の振り分け | 走査の 1 歩 |
-| 3.3, 3.6 | テキストをまとめる、長さ 0 を作らない | InlineEmit、InlineItems | `amark_inline_emit`、`amark_inline_items_remove` | — |
+| 3.3, 3.6 | テキストをまとめる、長さ 0 を作らない | DraftEmit、Draft | `amark_draft_emit`、`amark_draft_remove` | — |
 | 4.1, 4.2, 4.3, 4.4, 4.5 | エスケープ | InlineParser | 走査の振り分け | 走査の 1 歩 |
 | 4.6 | dest と title の中のエスケープ | InlineScan | `amark_inline_scan_link_tail` | `]` の処理 |
 | 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7 | 文字参照 | InlineScan、InlineParser | `amark_inline_scan_entity` | 走査の 1 歩 |
 | 5.8 | dest と title の中の文字参照 | InlineScan | `amark_inline_scan_link_tail` | — |
 | 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7 | コードスパン | InlineScan、InlineParser | `amark_inline_scan_code_span` | 走査の 1 歩 |
-| 7.1, 7.2, 7.3 | 開閉の判定 | InlineCursor、InlineDelim | `amark_inline_cursor_char_before`、`amark_inline_cursor_char_at`、`amark_inline_delim_classify` | 走査の 1 歩 |
-| 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 7.10 | 強調の対応 | InlineDelim、InlineItems | `amark_inline_delims_process`、`amark_inline_items_wrap` | — |
-| 7.11 | リンクの境をまたがない | InlineLink、InlineDelim | `amark_inline_delims_process` の下限 | `]` の処理 |
-| 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7 | インラインの形式 | InlineScan、InlineLink | `amark_inline_scan_link_tail` | `]` の処理 |
-| 8.8, 8.9, 8.10 | 合わないとき、角括弧の対応、リンクの中のリンク | InlineLink | `amark_inline_link_close`、リンクの下限 | `]` の処理 |
-| 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11, 9.12, 9.13 | 参照の形式と解決 | InlineLink | `amark_label_scan`、`amark_definitions_find` | `]` の処理 |
-| 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7 | 画像 | InlineLink、InlineParser | `amark_inline_brackets_push`、`amark_inline_link_close` | `]` の処理 |
+| 7.1, 7.2, 7.3 | 開閉の判定 | Cursor、Delimiter | `amark_cursor_char_before`、`amark_cursor_char_at`、`amark_delimiter_classify` | 走査の 1 歩 |
+| 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 7.10 | 強調の対応 | Delimiter、Draft | `amark_delimiters_process`、`amark_draft_wrap` | — |
+| 7.11 | リンクの境をまたがない | Bracket、Delimiter | `amark_delimiters_process` の下限 | `]` の処理 |
+| 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7 | インラインの形式 | InlineScan、Bracket | `amark_inline_scan_link_tail` | `]` の処理 |
+| 8.8, 8.9, 8.10 | 合わないとき、角括弧の対応、リンクの中のリンク | Bracket | `amark_bracket_close`、リンクの下限 | `]` の処理 |
+| 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11, 9.12, 9.13 | 参照の形式と解決 | Bracket | `amark_label_scan`、`amark_definitions_find` | `]` の処理 |
+| 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7 | 画像 | Bracket、InlineParser | `amark_brackets_push`、`amark_bracket_close` | `]` の処理 |
 | 11.1, 11.2, 11.3, 11.4, 11.5 | オートリンク | InlineScan | `amark_inline_scan_autolink` | 走査の 1 歩 |
 | 12.1, 12.2, 12.3, 12.4, 12.5, 12.6 | 生の HTML | InlineScan | `amark_inline_scan_html` | 走査の 1 歩 |
-| 13.1, 13.2, 13.3, 13.4, 13.5, 13.6, 13.7, 13.8, 13.9 | 改行 | InlineParser、InlineCursor | `amark_inline_cursor_line_break_end`、`amark_inline_cursor_next_line` | 走査の 1 歩 |
-| 14.1, 14.2, 14.3, 14.4 | 優先の順 | InlineParser、InlineLink | 走査の順、`]` の処理 | 走査の 1 歩 |
-| 15.1, 15.2, 15.3 | 行の内容だけを読む | InlineCursor | `amark_inline_cursor_*` | — |
-| 15.4, 15.5, 15.6, 15.7, 15.8 | 不正なバイト列と U+0000 | InlineCursor、DefinitionTable | `amark_utf8_decode_lossy` | — |
-| 16.1, 16.2, 16.3, 16.4, 16.5 | 深さとノードの数 | InlineEmit、InlineItems | `amark_inline_emit` | 解析の入口 |
+| 13.1, 13.2, 13.3, 13.4, 13.5, 13.6, 13.7, 13.8, 13.9 | 改行 | InlineParser、Cursor | `amark_cursor_line_break_end`、`amark_cursor_next_line` | 走査の 1 歩 |
+| 14.1, 14.2, 14.3, 14.4 | 優先の順 | InlineParser、Bracket | 走査の順、`]` の処理 | 走査の 1 歩 |
+| 15.1, 15.2, 15.3 | 行の内容だけを読む | Cursor | `amark_cursor_*` | — |
+| 15.4, 15.5, 15.6, 15.7, 15.8 | 不正なバイト列と U+0000 | Cursor、DefinitionTable | `amark_utf8_decode_lossy` | — |
+| 16.1, 16.2, 16.3, 16.4, 16.5 | 深さとノードの数 | DraftEmit、Draft | `amark_draft_emit` | 解析の入口 |
 | 16.6, 16.7, 16.8, 16.9, 16.10 | 失敗の扱いとメモリ | ParseEntry、InlineParser | `amark_inline_parse` | 解析の入口 |
-| 17.1, 17.2, 17.3, 17.4, 17.5, 17.6 | 方言の箇所 | InlineParser、InlineDelim、InlineItems | `special` の表、`amark_inline_delim_kind_t`、項目の `kind` | 走査の 1 歩 |
+| 17.1, 17.2, 17.3, 17.4, 17.5, 17.6 | 方言の箇所 | InlineParser、Delimiter、Draft | `special` の表、`amark_delimiter_kind_t`、項目の `kind` | 走査の 1 歩 |
 | 18.1, 18.2, 18.3 | 時間、メモリ、再帰なし | すべて | 「Performance & Scalability」 | — |
 | 18.4, 18.5, 18.6, 18.7 | 状態なし、決定性、並行、公開シンボル | すべて | リポジトリの検査 | — |
 | 19.1, 19.2, 19.3, 19.4, 19.5, 19.6, 19.7, 19.8, 19.9, 19.10, 19.11 | 単体テスト | TreeDump、各テスト | `amark_test_dump_tree` | 「Testing Strategy」 |
@@ -342,12 +339,12 @@ flowchart TD
 | Component | Domain/Layer | Intent | Req Coverage | Key Dependencies (P0/P1) | Contracts |
 |-----------|--------------|--------|--------------|--------------------------|-----------|
 | InlineParser | 内部 | 内容ごとに走査し、項目を作り、書き出す | 1, 3, 4, 13, 14, 16.6〜16.10, 17.1, 17.4, 17.5, 17.6 | すべての Inline の部品、ParseData (P0) | Service、State |
-| InlineCursor | 内部 | 行の内容を順に読む位置と、前後の文字 | 7.1, 7.2, 13.5, 15 | LineRecords、Utf8 (P0) | Service |
-| InlineScan | 内部 | 構文の形を読む | 4.6, 5, 6, 8.1〜8.7, 11, 12 | InlineCursor、Entity (P0) | Service、State |
-| InlineItems | 内部 | 作業用の項目の木 | 2, 3.6, 17.3 | Arena、Array (P0) | Service、State |
-| InlineDelim | 内部 | 区切りの開閉と、強調の対応 | 7, 17.2 | InlineItems、Unicode (P0) | Service、State |
-| InlineLink | 内部 | 括弧の対応と、参照の解決 | 8.8〜8.10, 9, 10 | InlineScan、InlineDelim、InlineItems、DefinitionTable (P0) | Service、State |
-| InlineEmit | 内部 | 項目の木を、文書の木へ書き出す | 1.8, 1.9, 2, 3.3, 16.1〜16.5 | InlineItems、TreeBuilder (P0) | Service |
+| Cursor | 内部 | 行の内容を順に読む位置と、前後の文字 | 7.1, 7.2, 13.5, 15 | LineRecords、Utf8 (P0) | Service |
+| InlineScan | 内部 | 構文の形を読む | 4.6, 5, 6, 8.1〜8.7, 11, 12 | Cursor、Entity (P0) | Service、State |
+| Draft | 内部 | 作業用の項目の木 | 2, 3.6, 17.3 | Arena、Array (P0) | Service、State |
+| Delimiter | 内部 | 区切りの開閉と、強調の対応 | 7, 17.2 | Draft、Unicode (P0) | Service、State |
+| Bracket | 内部 | 括弧の対応と、参照の解決 | 8.8〜8.10, 9, 10 | InlineScan、Delimiter、Draft、DefinitionTable (P0) | Service、State |
+| DraftEmit | 内部（`draft.c`） | 項目の木を、文書の木へ書き出す | 1.8, 1.9, 2, 3.3, 16.1〜16.5 | Draft、TreeBuilder (P0) | Service |
 | 上流への追加 | 内部 | 配列を空にする関数、入口の呼び出し | 1.1, 18.2 | — | Service |
 | TreeDump | テストの支援 | 木の全体を 1 行の文字列にする | 19.1 | 公開のたどる API (P0) | Service |
 
@@ -379,7 +376,7 @@ flowchart TD
 
 ### 内部：読む
 
-#### InlineCursor
+#### Cursor
 
 | Field | Detail |
 |-------|--------|
@@ -399,8 +396,8 @@ flowchart TD
 
 ##### Service Interface
 ```c
-/* src/inline_cursor.h */
-typedef struct amark_inline_cursor {
+/* src/cursor.h */
+typedef struct amark_cursor {
     const amark_document_t *doc;
     const unsigned char *bytes; /* 内容 */
     size_t limit;      /* 内容の範囲の終わり */
@@ -408,31 +405,31 @@ typedef struct amark_inline_cursor {
     size_t line;       /* pos のある行の番号 */
     size_t line_start; /* その行の内容の始まり（最初の行では範囲の始まり） */
     size_t line_end;   /* その行の内容の終わり。最後の行では limit */
-} amark_inline_cursor_t;
+} amark_cursor_t;
 
-void amark_inline_cursor_init(amark_inline_cursor_t *cursor,
+void amark_cursor_init(amark_cursor_t *cursor,
                               const amark_document_t *doc,
                               size_t start, size_t limit);
 
 /* pos == limit */
-bool amark_inline_cursor_at_end(const amark_inline_cursor_t *cursor);
+bool amark_cursor_at_end(const amark_cursor_t *cursor);
 /* pos == line_end。at_end でなければ、行末記号が続く */
-bool amark_inline_cursor_at_line_end(const amark_inline_cursor_t *cursor);
+bool amark_cursor_at_line_end(const amark_cursor_t *cursor);
 
 /* 今の行の行末記号の直後（次の行の最初のバイト）の位置 */
-size_t amark_inline_cursor_line_break_end(const amark_inline_cursor_t *cursor);
+size_t amark_cursor_line_break_end(const amark_cursor_t *cursor);
 
 /* 次の行の内容の始まりへ進む。at_line_end で、at_end でないこと */
-void amark_inline_cursor_next_line(amark_inline_cursor_t *cursor);
+void amark_cursor_next_line(amark_cursor_t *cursor);
 
 /* 今の位置以降の pos へ進む。pos は、ある行の内容の中か終わりで、limit 以下 */
-void amark_inline_cursor_seek(amark_inline_cursor_t *cursor, size_t pos);
+void amark_cursor_seek(amark_cursor_t *cursor, size_t pos);
 
 /* pos の直前の文字。pos が行の内容の始まりなら U+000A */
-uint32_t amark_inline_cursor_char_before(const amark_inline_cursor_t *cursor,
+uint32_t amark_cursor_char_before(const amark_cursor_t *cursor,
                                          size_t pos);
 /* pos にある文字。pos が行の内容の終わりなら U+000A */
-uint32_t amark_inline_cursor_char_at(const amark_inline_cursor_t *cursor,
+uint32_t amark_cursor_char_at(const amark_cursor_t *cursor,
                                      size_t pos);
 ```
 - Preconditions: `start <= limit`。`[start, limit)` は、block-parser が用意した内容の範囲で、その行の記録は書かれている。`char_before` と `char_at` の `pos` は、今の行の `line_start` 以上 `line_end` 以下である。
@@ -457,8 +454,8 @@ uint32_t amark_inline_cursor_char_at(const amark_inline_cursor_t *cursor,
 - 時間を線形に保つための記録（`amark_inline_scan_memo_t`）を持つ。記録は、内容ごとに初期化する。
 
 **Dependencies**
-- Inbound: InlineParser、InlineLink (P0)
-- Outbound: InlineCursor (P0)、Entity — `amark_entity_lookup` (P0)
+- Inbound: InlineParser、Bracket (P0)
+- Outbound: Cursor (P0)、Entity — `amark_entity_lookup` (P0)
 
 **Contracts**: Service [x] / State [x]
 
@@ -479,34 +476,34 @@ void amark_inline_scan_memo_begin(amark_inline_scan_memo_t *memo);
 /* カーソルは開く列の最初。open_length は列の長さ。
    *found が true なら、カーソルは閉じる列の直後。false なら動かない。
    失敗するのは、記録の配列を伸ばせなかったときだけ */
-amark_error_t amark_inline_scan_code_span(amark_inline_cursor_t *cursor,
+amark_error_t amark_inline_scan_code_span(amark_cursor_t *cursor,
                                           amark_inline_scan_memo_t *memo,
                                           size_t open_length, bool *found);
 
 /* `&` から `;` まで。1 行の中だけ */
-bool amark_inline_scan_entity(amark_inline_cursor_t *cursor);
+bool amark_inline_scan_entity(amark_cursor_t *cursor);
 
 /* `<` から `>` まで。1 行の中だけ */
-bool amark_inline_scan_autolink(amark_inline_cursor_t *cursor,
+bool amark_inline_scan_autolink(amark_cursor_t *cursor,
                                 amark_autolink_type_t *type);
 
 /* `<` から最後の `>` まで。6.6 節の 6 つの形 */
-bool amark_inline_scan_html(amark_inline_cursor_t *cursor,
+bool amark_inline_scan_html(amark_cursor_t *cursor,
                             amark_inline_scan_memo_t *memo);
 
-typedef struct amark_inline_link_tail {
+typedef struct amark_link_tail {
     bool has_destination;
     amark_range_t destination;
     bool has_title;
     amark_range_t title;
-} amark_inline_link_tail_t;
+} amark_link_tail_t;
 
 /* `(` から `)` まで */
-bool amark_inline_scan_link_tail(amark_inline_cursor_t *cursor,
-                                 amark_inline_link_tail_t *out);
+bool amark_inline_scan_link_tail(amark_cursor_t *cursor,
+                                 amark_link_tail_t *out);
 
 /* dest の丸括弧の入れ子の上限 */
-#define AMARK_INLINE_DEST_PAREN_MAX 32
+#define AMARK_LINK_DEST_PAREN_MAX 32
 ```
 
 - **コードスパン**：閉じる列は、前後がバッククォートでない、同じ長さの列である。探しながら、見た列の長さごとに、その開始位置を `backticks` に書く。`backticks_complete` が立っていて、`backticks[open_length]` が今の位置以下なら、探さずに「ない」と答える。内容の終わりまで探して見つからなかったら、`backticks_complete` を立てる。
@@ -519,7 +516,7 @@ bool amark_inline_scan_link_tail(amark_inline_cursor_t *cursor,
   - タグの名前、属性の名前、引用符のない属性の値は、`<` を含められない。引用符で囲んだ値は、次の同じ引用符で終わる。そのため、合わないタグを読む長さは、次の `<` か、次の次の引用符までで抑えられる。
 - **リンクの丸括弧の部分**：`(`、空白（スペース、タブ、行末記号）、省略できる dest、省略できる title（前に空白が要る）、空白、`)`。
   - 山括弧の dest は、行末記号と、エスケープされていない `<` を含まない。
-  - 山括弧のない dest は、スペースと ASCII の制御文字（行末記号を含む）で終わる。エスケープされていない丸括弧は、対応していなければならない。開く丸括弧が `AMARK_INLINE_DEST_PAREN_MAX` を超えて入れ子になったら、「合わない」と答える（8.6）。対応する相手のない `)` は、dest を終える。
+  - 山括弧のない dest は、スペースと ASCII の制御文字（行末記号を含む）で終わる。エスケープされていない丸括弧は、対応していなければならない。開く丸括弧が `AMARK_LINK_DEST_PAREN_MAX` を超えて入れ子になったら、「合わない」と答える（8.6）。対応する相手のない `)` は、dest を終える。
   - title は、`"…"`、`'…'`、`(…)` のどれかで、エスケープされていない閉じる区切りで終わる。`(…)` は、エスケープされていない `(` を含まない。行をまたげる。
   - エスケープ（`\` と ASCII の句読点）は、区切りの対応の判定にだけ使う（4.6）。文字参照は解釈しない（5.8）。
   - 段落の中に空行はないので、「行末記号は 1 つまで」の決まりは、空白と行末記号をまとめて飛ばすことで満たされる。
@@ -530,7 +527,7 @@ bool amark_inline_scan_link_tail(amark_inline_cursor_t *cursor,
 
 ### 内部：持つ
 
-#### InlineItems
+#### Draft
 
 | Field | Detail |
 |-------|--------|
@@ -541,95 +538,95 @@ bool amark_inline_scan_link_tail(amark_inline_cursor_t *cursor,
 - 項目は、配列の要素で、添字（ID）でつなぐ。ID 0 は「ない」、ID 1 は根（段落か見出しにあたる）である。
 - 走査が足す項目は、いつも根の最後の子になる。強調とリンクは、根の子の並びの一部を包んで作る。
 - 項目の木は、文書の木の不変条件（子は親の内側、兄弟は重ならず原文の順）を、書き出す時点で満たす。走査の途中は、区切りの項目が縮むことがある。
-- 木を作る API を知らない。
+- 木を作る API を使うのは、書き出しの関数 `amark_draft_emit`（次の DraftEmit の節）だけである。項目を足す、包む、取り除く関数は、文書に触れない。
 
 **Dependencies**
-- Inbound: InlineParser、InlineDelim、InlineLink、InlineEmit (P0)
+- Inbound: InlineParser、Delimiter、Bracket、DraftEmit (P0)
 - Outbound: Arena、Array (P0)
 
 **Contracts**: Service [x] / State [x]
 
 ##### Service Interface
 ```c
-/* src/inline_items.h */
-typedef uint32_t amark_inline_item_id_t;
-#define AMARK_INLINE_ITEM_NONE ((amark_inline_item_id_t)0)
-#define AMARK_INLINE_ITEM_ROOT ((amark_inline_item_id_t)1)
+/* src/draft.h */
+typedef uint32_t amark_draft_id_t;
+#define AMARK_DRAFT_NONE ((amark_draft_id_t)0)
+#define AMARK_DRAFT_ROOT ((amark_draft_id_t)1)
 
-typedef struct amark_inline_link_attr {
+typedef struct amark_draft_link {
     amark_link_form_t form;
     bool has_destination;
     amark_range_t destination;
     bool has_title;
     amark_range_t title;
     amark_node_id_t definition; /* 参照の形式だけ。ほかは AMARK_NODE_NONE */
-} amark_inline_link_attr_t;
+} amark_draft_link_t;
 
-typedef struct amark_inline_item {
+typedef struct amark_draft_item {
     amark_kind_t kind;               /* インラインの種類の ID。根は AMARK_KIND_NONE */
-    amark_inline_item_id_t parent;
-    amark_inline_item_id_t first_child;
-    amark_inline_item_id_t last_child;
-    amark_inline_item_id_t prev;
-    amark_inline_item_id_t next;
+    amark_draft_id_t parent;
+    amark_draft_id_t first_child;
+    amark_draft_id_t last_child;
+    amark_draft_id_t prev;
+    amark_draft_id_t next;
     size_t start;
     size_t end;
     uint32_t attr;                   /* リンクと画像：links の添字に 1 を足した値。
                                         オートリンク：種別に 1 を足した値。なければ 0 */
-    amark_node_id_t node;            /* 書き出したノード。InlineEmit だけが書く */
-} amark_inline_item_t;
+    amark_node_id_t node;            /* 書き出したノード。DraftEmit だけが書く */
+} amark_draft_item_t;
 
-typedef struct amark_inline_items {
-    amark_array_t items; /* amark_inline_item_t。0 は使わない。1 は根 */
-    amark_array_t links; /* amark_inline_link_attr_t */
-} amark_inline_items_t;
+typedef struct amark_draft {
+    amark_array_t items; /* amark_draft_item_t。0 は使わない。1 は根 */
+    amark_array_t links; /* amark_draft_link_t */
+} amark_draft_t;
 
-void amark_inline_items_init(amark_inline_items_t *items, amark_arena_t *scratch);
+void amark_draft_init(amark_draft_t *draft, amark_arena_t *scratch);
 
 /* 空にして、根だけにする */
-amark_error_t amark_inline_items_reset(amark_inline_items_t *items);
+amark_error_t amark_draft_reset(amark_draft_t *draft);
 
 /* 根の最後の子として足す */
-amark_error_t amark_inline_items_append(amark_inline_items_t *items,
+amark_error_t amark_draft_append(amark_draft_t *draft,
                                         amark_kind_t kind, size_t start,
                                         size_t end,
-                                        amark_inline_item_id_t *out);
+                                        amark_draft_id_t *out);
 
 /* after の次から before の前まで（before が NONE なら最後まで）の兄弟を、
    新しい項目の子に移し、新しい項目を after の次に置く。間が空でもよい */
-amark_error_t amark_inline_items_wrap(amark_inline_items_t *items,
-                                      amark_inline_item_id_t after,
-                                      amark_inline_item_id_t before,
+amark_error_t amark_draft_wrap(amark_draft_t *draft,
+                                      amark_draft_id_t after,
+                                      amark_draft_id_t before,
                                       amark_kind_t kind, size_t start,
                                       size_t end,
-                                      amark_inline_item_id_t *out);
+                                      amark_draft_id_t *out);
 
-void amark_inline_items_remove(amark_inline_items_t *items,
-                               amark_inline_item_id_t id);
-void amark_inline_items_set_range(amark_inline_items_t *items,
-                                  amark_inline_item_id_t id,
+void amark_draft_remove(amark_draft_t *draft,
+                               amark_draft_id_t id);
+void amark_draft_set_range(amark_draft_t *draft,
+                                  amark_draft_id_t id,
                                   size_t start, size_t end);
-amark_error_t amark_inline_items_set_link(amark_inline_items_t *items,
-                                          amark_inline_item_id_t id,
-                                          const amark_inline_link_attr_t *attr);
-void amark_inline_items_set_autolink(amark_inline_items_t *items,
-                                     amark_inline_item_id_t id,
+amark_error_t amark_draft_set_link(amark_draft_t *draft,
+                                          amark_draft_id_t id,
+                                          const amark_draft_link_t *attr);
+void amark_draft_set_autolink(amark_draft_t *draft,
+                                     amark_draft_id_t id,
                                      amark_autolink_type_t type);
-const amark_inline_item_t *amark_inline_items_get(
-    const amark_inline_items_t *items, amark_inline_item_id_t id);
+const amark_draft_item_t *amark_draft_get(
+    const amark_draft_t *draft, amark_draft_id_t id);
 ```
 - Preconditions: `after` と `before` は根の子で、`after` は `before` より前にある（強調もリンクも、根の子の並びの上で作る）。`id` は、足した項目で、取り除かれていない。
 - Postconditions: `wrap` は、移す兄弟の数に比例する時間で終わる（1 つの繰り返しで、各兄弟の `parent` を書き換える）。失敗したら、何も動いていない。`remove` は、項目を並びから外すだけで、要素は残る（`reset` まで再利用しない）。
 - 項目の数が `UINT32_MAX - 1` に達したら、`AMARK_ERROR_LIMIT_EXCEEDED` を返す。
-- `amark_inline_items_get` が返すポインタは、次に項目を足すまで有効である。
+- `amark_draft_get` が返すポインタは、次に項目を足すまで有効である。
 
 **Implementation Notes**
-- Integration: 方言の種類の項目は、`kind` に方言の ID を入れるだけで、同じ流れで扱える（17.3）。InlineEmit が、ID の範囲を見て、ノードの別（インライン）を指定する。
+- Integration: 方言の種類の項目は、`kind` に方言の ID を入れるだけで、同じ流れで扱える（17.3）。DraftEmit が、ID の範囲を見て、ノードの別（インライン）を指定する。
 - Risks: 1 つの項目は、兄弟として移されるのが 1 回だけである（包まれた後は、包んだ項目の子になり、根の子の並びから外れる）。そのため、`wrap` の時間の合計は、項目の数に比例する。
 
 ### 内部：対応を決める
 
-#### InlineDelim
+#### Delimiter
 
 | Field | Detail |
 |-------|--------|
@@ -643,70 +640,70 @@ const amark_inline_item_t *amark_inline_items_get(
 - カーソルも走査も知らない。前後の文字は、呼ぶ側がコードポイントで渡す。
 
 **Dependencies**
-- Inbound: InlineParser、InlineLink (P0)
-- Outbound: InlineItems (P0)、Unicode — 句読点と空白の判定 (P0)
+- Inbound: InlineParser、Bracket (P0)
+- Outbound: Draft (P0)、Unicode — 句読点と空白の判定 (P0)
 
 **Contracts**: Service [x] / State [x]
 
 ##### Service Interface
 ```c
-/* src/inline_delim.h */
-#define AMARK_INLINE_DELIM_KIND_MAX 8
+/* src/delimiter.h */
+#define AMARK_DELIMITER_KIND_MAX 8
 
-typedef struct amark_inline_delim_kind {
+typedef struct amark_delimiter_kind {
     unsigned char ch;       /* 区切りの文字 */
     bool intraword_limited; /* true：語の中で開閉しない（`_` の規則） */
     amark_kind_t single;    /* 区切り 1 つずつで作る種類 */
     amark_kind_t pair;      /* 区切り 2 つずつで作る種類 */
-} amark_inline_delim_kind_t;
+} amark_delimiter_kind_t;
 
-typedef struct amark_inline_delims {
-    amark_inline_delim_kind_t kinds[AMARK_INLINE_DELIM_KIND_MAX];
+typedef struct amark_delimiters {
+    amark_delimiter_kind_t kinds[AMARK_DELIMITER_KIND_MAX];
     size_t kind_count;      /* この spec では 2（`*` と `_`） */
     amark_array_t stack;    /* 区切りのスタックの要素 */
     uint32_t top;           /* 一番上の要素。0 は空 */
-} amark_inline_delims_t;
+} amark_delimiters_t;
 
 /* kinds を CommonMark の 2 つにする */
-void amark_inline_delims_init(amark_inline_delims_t *delims,
+void amark_delimiters_init(amark_delimiters_t *delims,
                               amark_arena_t *scratch);
-void amark_inline_delims_reset(amark_inline_delims_t *delims);
+void amark_delimiters_reset(amark_delimiters_t *delims);
 
 /* 区切りの文字から種類の添字を引く。なければ kind_count */
-size_t amark_inline_delims_kind_of(const amark_inline_delims_t *delims,
+size_t amark_delimiters_kind_of(const amark_delimiters_t *delims,
                                    unsigned char ch);
 
 /* 前後の文字から、開けるか、閉じられるかを決める（6.2 節） */
-void amark_inline_delim_classify(const amark_inline_delim_kind_t *kind,
+void amark_delimiter_classify(const amark_delimiter_kind_t *kind,
                                  uint32_t before, uint32_t after,
                                  bool *can_open, bool *can_close);
 
 /* 開けることも閉じることもできない列は、積まなくてよい */
-amark_error_t amark_inline_delims_push(amark_inline_delims_t *delims,
-                                       amark_inline_item_id_t item,
+amark_error_t amark_delimiters_push(amark_delimiters_t *delims,
+                                       amark_draft_id_t item,
                                        size_t kind, bool can_open,
                                        bool can_close);
 
 /* 項目の開始が bottom 以上の区切りについて、強調の対応を決め、
    それらをスタックから外す */
-amark_error_t amark_inline_delims_process(amark_inline_delims_t *delims,
-                                          amark_inline_items_t *items,
+amark_error_t amark_delimiters_process(amark_delimiters_t *delims,
+                                          amark_draft_t *draft,
                                           size_t bottom);
 ```
 - `classify`：`before` と `after` が Unicode の空白か句読点かを `amark_unicode_is_whitespace` と `amark_unicode_is_punctuation` で調べ、left-flanking と right-flanking を決める。`intraword_limited` が偽なら、開けるのは left-flanking、閉じられるのは right-flanking である。真なら、開けるのは「left-flanking で、right-flanking でないか、直前が句読点」、閉じられるのは「right-flanking で、left-flanking でないか、直後が句読点」である（7.3）。
 - `process`：閉じられる区切りを前から順に見て、それぞれについて、後ろ向きに、同じ種類の開ける区切りを探す。
   - 「3 の倍数の規則」に当たる組は飛ばす（7.5）。
   - 開く側と閉じる側の長さがともに 2 以上なら 2 つずつ、そうでなければ 1 つずつ使う（7.6）。
-  - 対応したら、間の区切りをスタックから外し、`amark_inline_items_wrap` で間の項目を包む。新しい項目の範囲は、`[開く項目の end - 使った数, 閉じる項目の start + 使った数)` である。開く項目の `end` と閉じる項目の `start` を、使った数だけ縮める。長さが 0 になった項目は取り除き、スタックからも外す（3.6、7.8）。
+  - 対応したら、間の区切りをスタックから外し、`amark_draft_wrap` で間の項目を包む。新しい項目の範囲は、`[開く項目の end - 使った数, 閉じる項目の start + 使った数)` である。開く項目の `end` と閉じる項目の `start` を、使った数だけ縮める。長さが 0 になった項目は取り除き、スタックからも外す（3.6、7.8）。
   - 開く区切りが見つからなかったら、その閉じる区切りの位置を、下限の表に書く。下限の表は、「種類 × 開けるかどうか × 長さを 3 で割った余り」ごとに 1 つの位置を持つ（種類 1 つにつき 6 個）。次に同じ組を探すときは、下限より前を見ない。開けない区切りは、ここでスタックから外す。
-- 下限の表は、`process` の呼び出しごとの局所の配列（`AMARK_INLINE_DELIM_KIND_MAX * 6` 個）である。
+- 下限の表は、`process` の呼び出しごとの局所の配列（`AMARK_DELIMITER_KIND_MAX * 6` 個）である。
 
 **Implementation Notes**
 - Integration: dialect-extension は、`kinds` に要素を足すことで、方言の区切りを同じ流れに乗せる（17.2）。この spec は、足す手段（公開 API）を持たない。
 - Validation: `classify` は、仕様の 6.2 節の例の前後の文字の組で、表として確かめる。`process` は、項目を手で並べた入力で確かめる。
 - Risks: 下限の表を「長さを 3 で割った余り」と「開けるかどうか」で分けないと、対応を取りこぼす（cmark の issue 389 の入力）。テストに含める。
 
-#### InlineLink
+#### Bracket
 
 | Field | Detail |
 |-------|--------|
@@ -721,41 +718,41 @@ amark_error_t amark_inline_delims_process(amark_inline_delims_t *delims,
 
 **Dependencies**
 - Inbound: InlineParser (P0)
-- Outbound: InlineScan — `amark_inline_scan_link_tail` (P0)、InlineDelim — `amark_inline_delims_process` (P0)、InlineItems (P0)、DefinitionTable (P0)
+- Outbound: InlineScan — `amark_inline_scan_link_tail` (P0)、Delimiter — `amark_delimiters_process` (P0)、Draft (P0)、DefinitionTable (P0)
 
 **Contracts**: Service [x] / State [x]
 
 ##### Service Interface
 ```c
-/* src/inline_link.h */
-typedef struct amark_inline_brackets {
+/* src/bracket.h */
+typedef struct amark_brackets {
     amark_array_t stack; /* 括弧のスタックの要素 */
     size_t link_floor;   /* 高さがこれより下のリンクの括弧は無効 */
-} amark_inline_brackets_t;
+} amark_brackets_t;
 
-void amark_inline_brackets_init(amark_inline_brackets_t *brackets,
+void amark_brackets_init(amark_brackets_t *brackets,
                                 amark_arena_t *scratch);
-void amark_inline_brackets_reset(amark_inline_brackets_t *brackets);
+void amark_brackets_reset(amark_brackets_t *brackets);
 
 /* item は `[` か `![` のテキストの項目。open は `[` の位置 */
-amark_error_t amark_inline_brackets_push(amark_inline_brackets_t *brackets,
-                                         amark_inline_item_id_t item,
+amark_error_t amark_brackets_push(amark_brackets_t *brackets,
+                                         amark_draft_id_t item,
                                          bool image, size_t open);
 
 /* カーソルは `]` にある。リンクか画像を作ったら *made を true にし、
    カーソルをその直後へ進める。作らなかったら *made を false にし、
    カーソルは動かさない（呼ぶ側が `]` をテキストにして 1 つ進む） */
-amark_error_t amark_inline_link_close(amark_inline_brackets_t *brackets,
-                                      amark_inline_items_t *items,
-                                      amark_inline_delims_t *delims,
-                                      amark_inline_cursor_t *cursor,
+amark_error_t amark_bracket_close(amark_brackets_t *brackets,
+                                      amark_draft_t *draft,
+                                      amark_delimiters_t *delims,
+                                      amark_cursor_t *cursor,
                                       bool *made);
 ```
 - Preconditions: カーソルの位置のバイトは `]` である。
 - Postconditions: 開く括弧があれば、作っても作らなくても、スタックから 1 つ外れている。リンクを作ったら、`link_floor` は今のスタックの高さである。
 - 完全参照のラベルは、`]` の直後の `[` から `amark_label_scan(doc, open, limit, …)` で読む（行をまたげる。9.12）。直後が `[` でなければ、ラベルは続かない（空白と行末記号を間に認めない。9.11）。
 - 定義は、`amark_definitions_find` が返すノード（原文で最初の定義）を使う。文書のどこにある定義でも引ける（9.5、9.6）。
-- 属性は、`amark_inline_items_set_link` で項目に持たせる。参照の形式では、dest と title を「なし」にし、定義のノードを入れる（9.4）。
+- 属性は、`amark_draft_set_link` で項目に持たせる。参照の形式では、dest と title を「なし」にし、定義のノードを入れる（9.4）。
 
 **Implementation Notes**
 - Integration: 画像は、括弧のスタックの印が違うだけで、同じ流れである。項目の範囲の開始が `!` になる（10.1）。
@@ -763,7 +760,7 @@ amark_error_t amark_inline_link_close(amark_inline_brackets_t *brackets,
 
 ### 内部：木に書く
 
-#### InlineEmit
+#### DraftEmit
 
 | Field | Detail |
 |-------|--------|
@@ -772,11 +769,11 @@ amark_error_t amark_inline_link_close(amark_inline_brackets_t *brackets,
 
 ##### Service Interface
 ```c
-/* src/inline_emit.h */
+/* src/draft.h（Draft と同じファイル） */
 /* parent は段落か見出し。parent_depth はその深さ（max_depth が 0 なら使わない）。
    max_depth と max_nodes は、0 なら上限なし */
-amark_error_t amark_inline_emit(amark_document_t *doc,
-                                amark_inline_items_t *items,
+amark_error_t amark_draft_emit(amark_document_t *doc,
+                                amark_draft_t *draft,
                                 amark_node_id_t parent, size_t parent_depth,
                                 size_t max_depth, size_t max_nodes);
 ```
@@ -808,8 +805,8 @@ amark_error_t amark_inline_parse(amark_document_t *doc,
 - 内容の一覧にあるのは、段落と見出しだけである。ほかの種類のブロックには触れない（1.3）。
 
 ##### State Management
-- 解析の状態は、`amark_inline_parse` の局所の構造体 1 つである。文書、設定の 2 つの上限、`special` の表（256 バイト）、InlineItems、InlineDelims、InlineBrackets、InlineScan の記録、「改行の開始」を持つ。呼び出しの外に状態を残さない（18.4）。
-- `special` の表は、CommonMark の起動文字（`` \ ` & < * _ [ ] ! ``）に印を付けた const の表を、初めに写したものである。区切りの文字の印は、InlineDelims の `kinds` から付ける。dialect-extension は、この表と `kinds` に足す（17.1、17.2）。
+- 解析の状態は、`amark_inline_parse` の局所の構造体 1 つである。文書、設定の 2 つの上限、`special` の表（256 バイト）、Draft、Delimiter、Bracket、InlineScan の記録、「改行の開始」を持つ。呼び出しの外に状態を残さない（18.4）。
+- `special` の表は、CommonMark の起動文字（`` \ ` & < * _ [ ] ! ``）に印を付けた const の表を、初めに写したものである。区切りの文字の印は、Delimiter の `kinds` から付ける。dialect-extension は、この表と `kinds` に足す（17.1、17.2）。
 
 **Implementation Notes**
 - **優先の順**：コードスパン、オートリンク、生の HTML は、起動文字に着いた時点で読み切るので、その中の `]`、`*`、`_` は走査されない（14.1、14.3）。エスケープも、`\` に着いた時点で 2 バイトを 1 つの項目にするので、エスケープされた文字は起動文字にならない（4.2、14.4）。文字参照も同じである（5.6）。
@@ -894,7 +891,7 @@ size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
 - 内部の関数の誤用（事前条件の違反）は検査しない。事前条件は関数の説明に書き、テストで確かめる。
 
 ### Error Categories and Responses
-- **資源の上限の超過**（`LIMIT_EXCEEDED`）：インラインのノードの深さ、ノードの数（InlineEmit）。項目の数、ノードの数、属性の数が表せる範囲を超えたとき。大きさの計算があふれたとき。
+- **資源の上限の超過**（`LIMIT_EXCEEDED`）：インラインのノードの深さ、ノードの数（DraftEmit）。項目の数、ノードの数、属性の数が表せる範囲を超えたとき。大きさの計算があふれたとき。
 - **メモリ不足**（`NOMEM`）：作業用のアリーナか文書のアリーナの確保が失敗したとき。
 - 入力の制約違反と設定の誤りは、この spec からは返らない（`amark_parse` が先に検査する）。診断は足さない。
 
@@ -905,7 +902,7 @@ size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
 
 `amark_parse` を通すテストは、できた文書を `amark_tree_check` に通す（19.6）。
 
-### 単体テスト：`tests/unit/test_inline_cursor.c`
+### 単体テスト：`tests/unit/test_cursor.c`
 - 1 行の内容、複数の行の内容、ブロッククォートとリスト項目の中の内容、遅延継続行で、`next_line` と `seek` が行の内容だけを通る（15.1、15.2、15.3）。3 種類の行末記号で `line_break_end` が正しい（13.8）。
 - `char_before` と `char_at`：ASCII、2〜4 バイトの文字、行の内容の始まりと終わり（U+000A）、不正なバイト列（途中で切れた列、継続バイトだけ、長すぎる形）が U+FFFD、U+0000 が U+FFFD（15.4、15.5）。
 - 内容の範囲の中の行の記録で、`pad` が 0 である。
@@ -917,11 +914,11 @@ size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
 - 生の HTML：6 つの形の合う例と合わない例、`<!-->` と `<!--->`、属性の間と値の中の改行、閉じない 4 つの形で印が立つ（12.1〜12.3、12.5）。
 - リンクの丸括弧の部分：`()`、`(<>)`、dest だけ、title の 3 つの区切り、空の title、行をまたぐ title、エスケープされた括弧、丸括弧の入れ子の 32 段と 33 段、dest と title の間に空白がない（8.1〜8.7、4.6）。`refdef.c` と同じ dest と title の例を通す。
 
-### 単体テスト：`tests/unit/test_inline_items.c`、`test_inline_delim.c`、`test_inline_emit.c`
-- InlineItems：`append`、`wrap`（間が 1 つ、複数、空、最後まで）、`remove`、`reset` の後の再利用。確保の失敗で何も動かない。
-- `amark_inline_delim_classify`：6.2 節の left-flanking と right-flanking の例、`_` の語の中の規則、Unicode の句読点と空白（U+00A0、全角の句読点、通貨記号）（7.1、7.3）。
-- `amark_inline_delims_process`：規則 9 と 10（3 の倍数）、規則 11 から 17 の例、列の一部だけを使う場合の範囲、下限より前の区切りに触れない（7.4〜7.8、7.11）。
-- InlineEmit：テキストをまとめる（隣り合う、離れている、間に改行がある）、ノードの ID が文書の順、深さの上限の境、ノードの数の上限の境、方言の ID の項目がインラインのノードになる（3.3、16.1〜16.4、17.3）。
+### 単体テスト：`tests/unit/test_draft.c`、`test_delimiter.c`
+- Draft：`append`、`wrap`（間が 1 つ、複数、空、最後まで）、`remove`、`reset` の後の再利用。確保の失敗で何も動かない。
+- `amark_delimiter_classify`：6.2 節の left-flanking と right-flanking の例、`_` の語の中の規則、Unicode の句読点と空白（U+00A0、全角の句読点、通貨記号）（7.1、7.3）。
+- `amark_delimiters_process`：規則 9 と 10（3 の倍数）、規則 11 から 17 の例、列の一部だけを使う場合の範囲、下限より前の区切りに触れない（7.4〜7.8、7.11）。
+- DraftEmit：テキストをまとめる（隣り合う、離れている、間に改行がある）、ノードの ID が文書の順、深さの上限の境、ノードの数の上限の境、方言の ID の項目がインラインのノードになる（3.3、16.1〜16.4、17.3）。
 
 ### 単体テスト：`tests/unit/test_inline.c`
 - 「範囲の決まり」の表の各行を、ノードと属性の範囲と行番号の数値で確かめる。LF、CR、CRLF、複数の行にわたる構造、ブロッククォートとリスト項目の中、遅延継続行を含める（19.2、2.1〜2.7）。
@@ -931,7 +928,7 @@ size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
 - 不正な UTF-8 の 2 つの設定と U+0000：区切りの前後で句読点として働く、範囲が元のオフセット、正しい入力では同じ木（19.4、15.4〜15.7）。
 - 解析する範囲が 0 から始まらないとき、範囲の外をインラインとして読まない（1.5）。
 
-### 単体テスト：`tests/unit/test_inline_link.c`
+### 単体テスト：`tests/unit/test_bracket.c`
 - 4 つの形式の属性。dest と title の「なし」と「空」（8.2〜8.5、9.4）。
 - 参照の解決：重なるラベルで最初の定義、リンクより後ろの定義、コンテナの中の定義、一致しないラベル、999 文字と 1,000 文字、case folding、行をまたぐラベル、エスケープを戻さない比較（19.3、9.5〜9.9、9.12）。
 - 優先の順：`[a](b)` と定義 `[a]`、`[a][b]` で `b` に定義がない、`[a][]`、`[a] []`、`[a][ ]`（9.7、9.10、9.11）。
