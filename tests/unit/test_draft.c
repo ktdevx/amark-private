@@ -598,7 +598,7 @@ NAOS_TEST(append_failure_changes_nothing)
         amark_draft_id_t id = 12345;
         amark_error_t err;
 
-        strcpy(before, shape(&g_draft));
+        memcpy(before, shape(&g_draft), SHAPE_SIZE);
         len = amark_array_len(&g_draft.items);
         g_state.fail_at = g_state.malloc_calls + 1;
         err = amark_draft_append(&g_draft, AMARK_KIND_TEXT, i, i + 1, &id);
@@ -633,7 +633,7 @@ NAOS_TEST(wrap_failure_changes_nothing)
         amark_draft_id_t id = 12345;
         amark_error_t err;
 
-        strcpy(before, shape(&g_draft));
+        memcpy(before, shape(&g_draft), SHAPE_SIZE);
         len = amark_array_len(&g_draft.items);
         g_state.fail_at = g_state.malloc_calls + 1;
         err = amark_draft_wrap(&g_draft, 2, AMARK_DRAFT_NONE,
