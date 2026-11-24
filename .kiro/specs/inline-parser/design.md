@@ -102,6 +102,7 @@ graph TB
         DefinitionTable[DefinitionTable]
         TreeBuilder[TreeBuilder]
         Unicode[Unicode]
+        CharRef[CharRef]
         Entity[Entity]
         Utf8[Utf8]
         Parts[Arena Array]
@@ -126,7 +127,8 @@ graph TB
     Delimiter --> Draft
     Delimiter --> Unicode
     InlineScan --> Cursor
-    InlineScan --> Entity
+    InlineScan --> CharRef
+    CharRef --> Entity
     Cursor --> LineRecords
     Cursor --> Utf8
     DraftEmit --> Draft
@@ -339,7 +341,7 @@ flowchart TD
 |-----------|--------------|--------|--------------|--------------------------|-----------|
 | InlineParser | 内部 | 内容ごとに走査し、項目を作り、書き出す | 1, 3, 4, 13, 14, 16.6〜16.10, 17.1, 17.4, 17.5, 17.6 | すべての Inline の部品、ParseData (P0) | Service、State |
 | Cursor | 内部 | 行の内容を順に読む位置と、前後の文字 | 7.1, 7.2, 13.5, 15 | LineRecords、Utf8 (P0) | Service |
-| InlineScan | 内部 | 構文の形を読む | 4.6, 5, 6, 8.1〜8.7, 11, 12 | Cursor、Entity (P0) | Service、State |
+| InlineScan | 内部 | 構文の形を読む | 4.6, 5, 6, 8.1〜8.7, 11, 12 | Cursor、CharRef (P0) | Service、State |
 | Draft | 内部 | 作業用の項目の木 | 2, 3.6, 17.3 | Arena、Array (P0) | Service、State |
 | Delimiter | 内部 | 区切りの開閉と、強調の対応 | 7, 17.2 | Draft、Unicode (P0) | Service、State |
 | Bracket | 内部 | 括弧の対応と、参照の解決 | 8.8〜8.10, 9, 10 | InlineScan、Delimiter、Draft、DefinitionTable (P0) | Service、State |
@@ -454,7 +456,7 @@ uint32_t amark_cursor_char_at(const amark_cursor_t *cursor,
 
 **Dependencies**
 - Inbound: InlineParser、Bracket (P0)
-- Outbound: Cursor (P0)、Entity — `amark_entity_lookup` (P0)
+- Outbound: Cursor (P0)、CharRef — `amark_charref_scan` (P0)（source-text で加わった共有の部品。`amark_entity_lookup` は CharRef が使う）
 
 **Contracts**: Service [x] / State [x]
 
@@ -510,6 +512,7 @@ bool amark_inline_scan_link_tail(amark_cursor_t *cursor,
   - `backticks` は、長さを添字とする配列で、必要な長さまで伸ばす（伸ばした分は 0 で埋める）。列の長さに上限は置かない（6.1）。配列の大きさは、内容のバイト数以下である。
   - `backticks` は、内容が変わっても空にしない。位置は内容の先頭から数えたオフセットで、内容は文書の順に処理するので、前の内容の値は、今の位置より必ず小さい。「今の位置以下なら、ない」の判定で、古い値は自然に無視される。
 - **文字参照**：`&#` と 1〜7 桁の 10 進の数字と `;`、`&#x`（`&#X`）と 1〜6 桁の 16 進の数字と `;`、`&` と ASCII の英数字の並びと `;` で、並びが `amark_entity_lookup` で見つかるもの。数値は、値が有効かどうかを見ない（5.4）。英数字の並びは、英数字でないバイトで止まるので、`&` ごとに読む長さは、その並びの長さで抑えられる。
+  - この構文は、共有の部品 `charref`（`src/charref.h` の `amark_charref_scan`、source-text の CharRef）が持つ。`amark_inline_scan_entity` は、`amark_charref_scan(p + pos, line_end - pos, NULL)` を呼び、0 でなければカーソルをその長さだけ進めるだけで、構文を自分では持たない。文字列の取り出しも同じ部品を使うので、ノードになる文字参照には必ず値がある。
 - **オートリンク**：`<`、絶対 URI（ASCII の英字で始まり、英数字と `+`、`.`、`-` が続く、2〜32 文字のスキーム、`:`、空白と `<` と `>` と ASCII の制御文字を含まない並び）、`>`。または、`<`、メールアドレス（仕様の正規表現のとおり）、`>`。URI を先に試す。
 - **生の HTML**：開始タグ、終了タグ、コメント（`<!-->`、`<!--->`、`<!--` から最初の `-->` まで）、処理命令（`<?` から最初の `?>` まで）、宣言（`<!` と ASCII の英字から、最初の `>` まで）、CDATA セクション（`<![CDATA[` から最初の `]]>` まで）。タグの中の空白は、スペース、タブ、行末記号である。引用符で囲んだ属性の値は、行をまたげる。
   - コメント、処理命令、宣言、CDATA は、内容の終わりまで探して終わりがなかったら、`html_no_end` のその種類の印を立てる。印が立っている種類は、探さずに「合わない」と答える。
