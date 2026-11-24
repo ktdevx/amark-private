@@ -19,7 +19,7 @@
 - 木を自由に作る・書き換える公開 API。規則ができるのは、結果を返すことと、後処理の 5 つの操作を求めることだけである。
 - 規則の中の時間を本体が制限すること。
 - 継続のプレフィックスを桁の単位で（タブの途中まで）消費すること。消費はバイトの範囲で表す（Risks を参照）。
-- スレッドを使った並行性のテスト（spec-conformance が行う）。
+- スレッドを使った並行性のテスト。spec-conformance が、テスト用の方言を指定した解析を含めて行う（スレッドの作り方を 1 か所に置くため。spec-conformance の brief に書き足した）。この spec は、並行性の前提（可変の静的データがない、状態が解析ごとに分かれる）を確かめる。
 
 ## Boundary Commitments
 
@@ -304,7 +304,7 @@ flowchart TD
 | 8.9 | 上限の公開 | DialectApi | `AMARK_DIALECT_DELIMITER_MAX`、`AMARK_DIALECT_DELIMITER_LENGTH_MAX` | — |
 | 9.1, 9.2 | 後処理を呼ぶ | DialectEdit、ParseEntry | `amark_dialect_postprocess`、`amark_dialect_post_t` | 解析 1 回 |
 | 9.3, 9.4, 9.5, 9.7, 9.8 | 操作 | DialectEdit | `amark_dialect_edit_*`（5 つ） | — |
-| 9.6 | 操作の検査 | DialectEdit | 理由 `NODE`、`PROTECTED`、`KIND`、`NESTING`、`PARENT`、`ORDER`、`TEXT`、`ATTRIBUTE` | — |
+| 9.6 | 操作の検査 | DialectEdit | 理由 `NODE`、`PROTECTED`、`KIND`、`NESTING`、`PARENT`、`ORDER`、`TEXT`、「持てる子の別」の表 | — |
 | 9.9、10.5 | 返す文書は不変条件を満たす | DialectReply、DialectEdit、InlineParser | 入れる前の検査 | — |
 | 9.10、10.11 | 資源の上限 | DialectReply、DialectEdit、BlockParser、Draft | ノードを作る直前の検査 | — |
 | 10.1, 10.2, 10.3, 10.6, 10.7 | 検査してから反映する | DialectDef、DialectReply、DialectEdit、BlockParser、InlineParser | `amark_dialect_reject` | 各フロー |
@@ -316,7 +316,7 @@ flowchart TD
 | 11.8, 11.9 | 診断を足さない場合 | DialectDef | `run` が `NULL` のとき呼ばれない | — |
 | 12.1, 12.2 | 読み取り専用と写し | DialectApi、DialectReply、Draft | 入力は `const`。結果は呼び出しの中で写す | — |
 | 12.3, 12.4, 12.5, 12.6, 12.7 | 文書ごとの状態 | DialectDef、ParseEntry | `amark_dialect_run_begin`、`amark_dialect_run_end` | 解析 1 回 |
-| 12.8、12.10、13.8、13.9 | 並行性と決定性 | すべて | 可変の静的データなし（`checks.objects`）。呼ぶ順は内容と定義だけで決まる | — |
+| 12.8、12.10、13.8、13.9 | 並行性と決定性 | すべて | 可変の静的データなし（`checks.objects`）。呼ぶ順は内容と定義だけで決まる。スレッドを使うテストは spec-conformance | — |
 | 12.9 | 作者が守る決まり | DialectApi | 公開ヘッダの説明 | — |
 | 13.1, 13.2, 13.3 | 方言なしで変わらない | Config、ParseEntry、BlockParser、InlineParser | `run == NULL` の経路 | — |
 | 13.4, 13.5 | 呼ぶ回数 | BlockParser、InlineParser、DialectEdit | Performance & Scalability | — |
@@ -605,6 +605,8 @@ void amark_dialect_run_end(amark_dialect_run_t *run);
 
 const amark_dialect_kind_t *amark_dialect_find_kind(
     const amark_dialect_extension_t *ext, amark_kind_t id);
+const amark_dialect_kind_t *amark_dialect_find_kind_any(
+    const amark_dialect_t *dialect, amark_kind_t id);
 
 typedef enum amark_dialect_hook {
     AMARK_DIALECT_HOOK_BLOCK_START, AMARK_DIALECT_HOOK_BLOCK_CONTINUE,
@@ -628,7 +630,8 @@ amark_error_t amark_dialect_reject(amark_dialect_run_t *run, size_t extension,
   8. `state_new` と `state_free` が、両方あるか、どちらもない（3.9）。
 - `amark_dialect_run_begin`：`run` を初期化し、`arena` から状態の表を取り、拡張の順に `state_new` を呼ぶ（12.3、12.5）。`state_new` が `AMARK_ERROR_NONE` 以外を返すか、表の確保が失敗したら、それまでに作った状態を `state_free` で捨て、アリーナを解放して `AMARK_ERROR_NOMEM` を返す（12.6）。`state_new` が `*state` を書かずに成功を返したときの状態は `NULL` である。
 - `amark_dialect_run_end`：`state_new` が成功した拡張の `state_free` を、作った順に 1 回ずつ呼び、アリーナを解放する（12.4）。`run_begin` が失敗した `run` では呼ばない。
-- `amark_dialect_find_kind`：その拡張の種類を、配列の順に探す。なければ `NULL`。種類の数は定数とみなす。
+- `amark_dialect_find_kind`：その拡張の種類を、配列の順に探す。なければ `NULL`。種類の数は定数とみなす。規則が使ってよい種類かどうかを見るのに使う。
+- `amark_dialect_find_kind_any`：方言の全体から探す。木にあるノードの種類の別（コンテナかリーフか）を知るのに使う。ほかの拡張が作ったノードにも答えられる。
 - `amark_dialect_reject`：文面を 160 バイトのスタックのバッファに組み立て、`amark_document_add_diagnostic` で、重大度「エラー」として足す（11.1、11.3）。確保は、診断の追加だけである。
 
 **診断の文面**（11.4）：`dialect "<name>": <hook>: <reason>`。`<name>` は先頭の 64 バイトまでを写す。
@@ -657,9 +660,8 @@ amark_error_t amark_dialect_reject(amark_dialect_run_t *run, size_t extension,
 | PREFIX | `range ends inside a line prefix` | 7.7、インラインとして解析する範囲の両端 |
 | PARAGRAPH | `paragraph part does not cover whole lines` | 6.10 |
 | NODE | `not a node of this document` | 9.6 |
-| PROTECTED | `node cannot be changed` | 9.6（文書のノード、リンク参照定義） |
+| PROTECTED | `node cannot be changed` | 9.6（文書のノード、リンク参照定義。`shrink` では、テキストでも、その拡張の種類でもないノード） |
 | TEXT | `not a text node, or a bad split position` | 9.6 |
-| ATTRIBUTE | `attribute range leaves the node` | 9.6（縮めると dest・title・info が外に出る） |
 
 **Implementation Notes**
 - Integration: 文字列は `switch` で返す（ポインタの表を置かない）。`run` が `NULL` の解析では、このモジュールの関数は `amark_dialect_validate` も含めて呼ばれない（13.2、11.8）。
@@ -881,15 +883,27 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 
 **操作の検査と適用**（どれも、対象のノードと、その親・前後の兄弟・最初と最後の子だけを読む。10.9）
 
-すべての操作に共通：`node`（または `parent`）は、1 以上で、作ったノードの数以下の ID で、取り除かれていない（`NODE`）。`set_kind` と `shrink` の対象は、文書のノードでもリンク参照定義でもない（`PROTECTED`）。
+すべての操作に共通：`node`（または `parent`）は、1 以上で、作ったノードの数以下の ID で、取り除かれていない（`NODE`）。`set_kind` の対象は、文書のノードでもリンク参照定義でもない（`PROTECTED`）。`shrink` の対象は、テキストのノードか、その拡張が登録した種類のノードである（`PROTECTED`）。CommonMark のブロックと、属性に範囲を持つノード（リンク、画像、コードブロック）は縮められないので、source-text が読む印（フェンス、`#`、dest など）がノードの範囲の外に出ることはない。
 
 | 操作 | 条件（破ったときの理由） | 適用 |
 |------|--------------------------|------|
-| `set_kind(node, kind)` | `kind` はその拡張の種類（`KIND`）。ノードがブロックなら `kind` もブロック、インラインならインライン（`NESTING`）。ノードがブロックの子を持つなら、`kind` は `CONTAINER`（`NESTING`） | `amark_tree_set_kind`。属性は「なし」になる |
+| `set_kind(node, kind)` | `kind` はその拡張の種類（`KIND`）。ノードがブロックなら `kind` もブロック、インラインならインライン（`NESTING`）。ノードが子を持つなら、`kind` は、その子の別を持てる種類（下の表。`NESTING`） | `amark_tree_set_kind`。属性は「なし」になる |
 | `set_data(node, data, size)` | ノードの種類は、その拡張が登録した種類（`KIND`） | `amark_tree_set_dialect_data` |
-| `shrink(node, range)` | `range` はいまの範囲の内側で `start <= end`（`PARENT`）。最初の子の開始と最後の子の終わりが `range` の内側（`PARENT`）。インラインの形式のリンクと画像の dest と title、フェンスのコードブロックの info が `range` の内側（`ATTRIBUTE`） | `amark_tree_set_range` |
-| `add_child(parent, hint, kind, range, data, size)` | `kind` はその拡張の種類（`KIND`）。親がインラインなら `kind` もインライン。親が文書なら `kind` はブロック。親が方言のリーフの種類なら `kind` はインライン（`NESTING`）。`hint` は `AMARK_NODE_NONE` か、`parent` の子（`NODE`）。`range` は `start <= end <= content_length`（`BOUNDS`）で、親の範囲の内側（`PARENT`）。置く位置の前の兄弟の終わり `<= range.start`、かつ `range.end <=` 次の兄弟の開始（`ORDER`） | `amark_tree_insert_before`（次の兄弟があるとき）か `amark_tree_append`。値があれば `amark_tree_set_dialect_data` |
+| `shrink(node, range)` | `range` はいまの範囲の内側で `start <= end`（`PARENT`）。最初の子の開始と最後の子の終わりが `range` の内側（`PARENT`） | `amark_tree_set_range` |
+| `add_child(parent, hint, kind, range, data, size)` | `kind` はその拡張の種類（`KIND`）。`kind` の別は、親が持てる子の別である（下の表。`NESTING`）。`hint` は `AMARK_NODE_NONE` か、`parent` の子（`NODE`）。`range` は `start <= end <= content_length`（`BOUNDS`）で、親の範囲の内側（`PARENT`）。置く位置の前の兄弟の終わり `<= range.start`、かつ `range.end <=` 次の兄弟の開始（`ORDER`） | `amark_tree_insert_before`（次の兄弟があるとき）か `amark_tree_append`。値があれば `amark_tree_set_dialect_data` |
 | `split_text(node, at)` | ノードはテキスト。`start < at < end`。`at` のバイトが UTF-8 の続きのバイト（`10xxxxxx`）でない（`TEXT`） | `amark_tree_set_range` で `[start, at)` に縮め、`[at, end)` のテキストを次の兄弟として足す |
+
+**持てる子の別**（`add_child` の親と、`set_kind` の新しい種類に使う。2.8）
+
+| 種類 | 持てる子 |
+|------|----------|
+| 文書、ブロッククォート、リスト項目、方言のコンテナ | ブロック |
+| 段落、見出し、方言のリーフ、強調、強い強調、リンク、画像、方言のインライン | インライン |
+| リスト | なし（子はリスト項目だけで、後処理では足せない） |
+| そのほか（テーマの区切り、コードブロック、HTML ブロック、リンク参照定義、テキスト、コードスパン、オートリンク、生の HTML、改行、エスケープ、文字参照） | なし |
+
+- 方言の種類の別は、`amark_dialect_find_kind_any` で引く。
+- `set_kind` は、ノードがいま持つ子の別（最初の子がブロックかインラインか）を見て、新しい種類がそれを持てるかを確かめる。子がなければ、どの別の種類にも変えられる（ブロックからブロック、インラインからインラインの範囲で）。
 
 - `add_child` の置く位置：`hint`（なければ最初の子）から後ろへ、`range.start` 以上で始まる最初の兄弟を探す。その前が置く位置である（9.5）。`hint` より前には戻らない。`hint` の終わりが `range.start` より後ろなら `ORDER` とする。左から右へ進む規則は、直前に見たノードを `hint` に渡せば、1 回が O(1) になる。
 - ノードを足す操作（`add_child`、`split_text`）は、足す前に `max_nodes` を確かめる。超えていれば、`AMARK_ERROR_LIMIT_EXCEEDED` を返し、残る失敗にする（9.10）。`add_child` は、`max_depth` が 0 でないときに限り、親の深さを親をたどって数え、親の深さ + 1 が上限を超えれば、同じく `LIMIT_EXCEEDED` にする。`split_text` と、ほかの 3 つの操作は、どのノードの深さも変えない。
@@ -945,8 +959,8 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 | LINES | `amark_tree_append` が範囲から決める | 出力が決める | `amark_tree_set_range` が決め直す |
 | PARENT_RANGE | 足すときの 4。閉じるブロックの範囲は親の内側 | 内容の範囲はブロックの内側 | `PARENT` |
 | SIBLING_ORDER | 足すときの 5 | 走査は前から後ろへ進む | `ORDER`、`shrink` は内側へだけ |
-| NESTING | 足すときの 2 と 3、`set_inline` はリーフだけ | 種類はインライン（定義の検査） | `NESTING` |
-| ATTRIBUTE | 方言の属性は検査しない | 同じ | `shrink` の `ATTRIBUTE`、`PROTECTED` |
+| NESTING | 足すときの 2 と 3、`set_inline` はリーフだけ | 種類はインライン（定義の検査） | 「持てる子の別」の表 |
+| ATTRIBUTE | 方言の属性は検査しない | 同じ | `shrink` は、属性に範囲を持つノードに使えない（`PROTECTED`）。リンク参照定義は変えられない |
 | LINK、ROOT | 木を作る API が保つ | 同じ | 同じ |
 
 ## Error Handling
@@ -998,13 +1012,14 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 
 ### 単体テスト：`tests/unit/test_dialect_edit.c`
 - CHECK と TASK：テキストが分かれ、CHECK が段落の最初の子になり、リスト項目が TASK になり、属性が読める。兄弟が原文の順である（9.3、9.5、15.3）。
-- 操作ごとの不採用：`NODE`、`PROTECTED`、`KIND`、`NESTING`、`PARENT`、`ORDER`、`BOUNDS`、`TEXT`、`ATTRIBUTE`。不採用の前に適用した操作が残り、後の操作が適用される（9.6、9.7、15.4）。
+- 操作ごとの不採用：`NODE`、`PROTECTED`（文書のノード、リンク参照定義、`shrink` でのコードブロックとリンク）、`KIND`、`NESTING`（「持てる子の別」の表の行ごとに、`add_child` と `set_kind` の両方）、`PARENT`、`ORDER`、`BOUNDS`、`TEXT`。不採用の前に適用した操作が残り、後の操作が適用される（9.6、9.7、15.4）。
 - 後処理の後の木が `amark_tree_check` を通る（9.9）。
 
 ### 単体テスト：`tests/unit/test_dialect_limits.c`
 - 確保の失敗の注入：テスト用の方言を指定した解析を、失敗させる回を 1 から順に変えて繰り返す。どの回でも、解放されないメモリが残らず、`state_free` の回数が `state_new` の成功の回数と等しい（15.8、13.7）。
 - ノードの数の上限：不正な結果を返し続ける入力で、返す木のノードの数が上限以下なら成功する。方言のノードで上限を超えると `LIMIT_EXCEEDED`。深さの上限も同じ（10.11、10.12、15.12、9.10）。
 - 方言なし、拡張が 0 個の方言、すべて「いいえ」と答える方言で、木のダンプが同じになる。方言なしと拡張が 0 個の方言で、確保の回数が等しい（13.1、13.2、13.3、15.6、15.7）。
+- 確保の回数の基準：解析器に手を入れる前に、決まった入力（空、段落 1 つ、入れ子のリストと強調を含む文書）を方言なしで解析したときの確保の回数を測り、テストに定数として書く。実装の後も同じ値であることを確かめる（13.2、15.7）。
 - 同じ方言で 2 回解析して、木のダンプと診断が同じになる。TASK の属性の数え上げが、2 回目も 1 回目と同じ値である（11.6、12.7、13.8、15.9）。
 - BOX を 10 万段に入れ子にした入力、NOTE を深く入れ子にして空行を大量に並べた入力、`~` を大量に並べた入力で、解析、`amark_tree_check`、解放が終わる（13.5、13.6、15.10）。
 - 規則を呼んだ回数（文書ごとの状態で数える）が、入力の行の数と起動文字の数に対して、13.4 の上限以下である。
