@@ -157,7 +157,7 @@
   - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10, 9.11, 9.12, 9.13, 13.7, 19.3_
 
 - [ ] 7. spec.txt の例
-- [ ] 7.1 (P) エスケープ、文字参照、コードスパン、オートリンク、生の HTML、改行、テキストの例を確かめる
+- [x] 7.1 (P) エスケープ、文字参照、コードスパン、オートリンク、生の HTML、改行、テキストの例を確かめる
   - spec.txt のインラインの単体テスト（`tests/unit/test_spec_inline.c`）を作って登録し、Backslash escapes、Entity and numeric character references、Inlines、Code spans、Autolinks、Raw HTML、Hard line breaks、Soft line breaks、Textual content の例を、例の番号、入力、仕様の HTML から書き起こした木の文字列の表で確かめる。先頭に例の出どころ（CC BY-SA 4.0）を書く
   - 完了の状態：9 つの節の 112 個の例がすべて通る
   - CMake の一覧（ライブラリのソースとテストの登録）への追加は 1 行ずつで、並行するほかのタスクと同じファイルに足す
