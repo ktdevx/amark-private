@@ -44,11 +44,27 @@
  * document is destroyed; a range past the limit is refused without
  * allocating; amark_text_free ignores NULL and frees with the document's
  * allocator.
+ *
+ * Characters: with AMARK_UTF8_REPLACE, input holding U+0000 and invalid
+ * sequences of each shape gives, for every node and part, values that are
+ * well-formed UTF-8 without U+0000 (each U+0000 and each maximal subpart
+ * one U+FFFD), while amark_node_raw gives the bytes unchanged. The strict
+ * mode refuses invalid UTF-8 in the parsed range, so its documents are
+ * checked with U+0000 (and with invalid bytes outside the parsed range);
+ * they give the same values as the replace mode, as does well-formed input
+ * without U+0000, whose characters are written as they are.
+ *
+ * The document left unchanged: calling every function every way on every
+ * node and part leaves the content bytes, the tree string (tree_dump), the
+ * kinds, ranges, lines and links of the nodes and the diagnostics as they
+ * were, and the same node and part give the same result every time.
  */
 
 #include "document.h"
 #include "test_alloc.h"
+#include "tree_dump.h"
 #include "tree_internal.h"
+#include "utf8.h"
 
 #include <amark/amark.h>
 
@@ -1565,9 +1581,424 @@ NAOS_SUITE(text_alloc,
     NAOS_ADD_TEST(strings_are_freed_apart_from_the_document)
 )
 
+/* --- Characters, and the document left unchanged -------------------------- */
+
+/* U+FFFD, the replacement character. */
+#define R "\xEF\xBF\xBD"
+
+/* The five parts, for the loops below. */
+static const amark_text_part_t k_parts[] = {
+    AMARK_TEXT_LOGICAL, AMARK_TEXT_VALUE, AMARK_TEXT_DESTINATION,
+    AMARK_TEXT_TITLE, AMARK_TEXT_INFO
+};
+
+#define PART_COUNT (sizeof k_parts / sizeof k_parts[0])
+
+/* Appends the length bytes at bytes to out (of capacity cap) at *used. */
+static void append(char *out, size_t cap, size_t *used, const void *bytes,
+                   size_t length)
+{
+    NAOS_REQUIRE_TRUE(length <= cap - *used);
+    memcpy(out + *used, bytes, length);
+    *used += length;
+}
+
+/*
+ * Writes, for every node of g_doc in document order and every part, the
+ * node, its kind, the part, the result and, when there is one, the value,
+ * to out; returns the length written. Every value must be well-formed
+ * UTF-8 without U+0000, must be the same with both ways of passing it, and
+ * amark_node_raw must give the range of the node in content.
+ */
+static size_t values_of(const char *content, char *out, size_t cap)
+{
+    amark_node_id_t node = amark_document_root(g_doc);
+    size_t used = 0;
+    size_t i;
+
+    while (node != AMARK_NODE_NONE) {
+        amark_kind_t kind = amark_node_kind(g_doc, node);
+
+        check_raw(content, node);
+        for (i = 0; i < PART_COUNT; i++) {
+            char buffer[512];
+            size_t length = 0;
+            size_t error_offset = 0;
+            amark_error_t error;
+
+            error = amark_node_text(g_doc, node, k_parts[i], buffer,
+                                    sizeof buffer, &length);
+            NAOS_REQUIRE_TRUE(error == AMARK_ERROR_NONE ||
+                              error == AMARK_ERROR_NOT_AVAILABLE);
+            (void)check_both_ways(node, k_parts[i]);
+            append(out, cap, &used, &node, sizeof node);
+            append(out, cap, &used, &kind, sizeof kind);
+            append(out, cap, &used, &k_parts[i], sizeof k_parts[i]);
+            append(out, cap, &used, &error, sizeof error);
+            if (error != AMARK_ERROR_NONE) {
+                continue;
+            }
+            NAOS_CHECK_TRUE(amark_utf8_validate((const unsigned char *)buffer,
+                                                length, &error_offset));
+            NAOS_CHECK_NULL(memchr(buffer, '\0', length));
+            append(out, cap, &used, &length, sizeof length);
+            append(out, cap, &used, buffer, length);
+        }
+        node = next_in_order(node);
+    }
+    return used;
+}
+
+/*
+ * U+0000 and invalid sequences of each shape, in every part: a paragraph,
+ * a heading, emphasis, a code span, an inline link (destination, title), an
+ * autolink, an escape that is not one, a character reference of 0, a fenced
+ * code block (info, code), an indented code block and a definition.
+ */
+static const char k_dirty[] =
+    "# h\0\xFF\n"
+    "a\0b\x80" "c *d\xE2\x82* `e\0\xC0\xAF` [f](/g\xFF \"t\0\xF0\x80\x80\")\n"
+    "<http://x\xFFy> \\\xFF &#0; &am\xFFp;\n"
+    "\n"
+    "```in\0fo\xFE\n"
+    "x\0\xED\xA0\x80\n"
+    "```\n"
+    "\n"
+    "    i\0\xF4\x90\x80\x80\n"
+    "[r]: /u\xFF 'v\xFF'\n"
+    "\n"
+    "[w\xFF][r]\n";
+
+NAOS_TEST(replace_mode_values_are_utf8_and_raw_is_unchanged)
+{
+    char values[16384];
+
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    parse_bytes(k_dirty, sizeof k_dirty - 1);
+    (void)values_of(k_dirty, values, sizeof values);
+
+    /* U+0000 and each maximal subpart become one U+FFFD (9.1, 9.2). */
+    check_text_n(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_VALUE,
+                 "h" R R, 7);
+    check_text(find(AMARK_KIND_HEADING, 0), AMARK_TEXT_LOGICAL,
+               "# h" R R);
+    check_text(find(AMARK_KIND_TEXT, 1), AMARK_TEXT_VALUE,
+               "a" R "b" R "c ");
+    check_text(find(AMARK_KIND_EMPHASIS, 0), AMARK_TEXT_LOGICAL,
+               "*d" R "*");
+    check_text(find(AMARK_KIND_CODE_SPAN, 0), AMARK_TEXT_VALUE,
+               "e" R R R);
+    check_text(find(AMARK_KIND_LINK, 0), AMARK_TEXT_DESTINATION, "/g" R);
+    check_text(find(AMARK_KIND_LINK, 0), AMARK_TEXT_TITLE, "t" R R R R);
+    check_text(find(AMARK_KIND_CHARACTER_REFERENCE, 0), AMARK_TEXT_VALUE, R);
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_INFO,
+               "in" R "fo" R);
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_VALUE,
+               "x" R R R R "\n");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 1), AMARK_TEXT_VALUE,
+               "i" R R R R R "\n");
+    check_text(find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0),
+               AMARK_TEXT_DESTINATION, "/u" R);
+    check_text(find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0),
+               AMARK_TEXT_TITLE, "v" R);
+    check_text(find(AMARK_KIND_LINK, 1), AMARK_TEXT_LOGICAL,
+               "[w" R "][r]");
+}
+
+/*
+ * The strict mode refuses a parsed range that is not well-formed, so its
+ * documents hold only U+0000 to replace: the values are well-formed and
+ * equal to those of the replace mode, and raw is unchanged (9.1, 9.4, 9.5).
+ */
+NAOS_TEST(strict_mode_replaces_nul_and_refuses_invalid_input)
+{
+    static const char nul[] =
+        "# h\0\n"
+        "a\0b *d\0* `e\0` [f](/g \"t\0\")\n"
+        "```in\0fo\n"
+        "x\0\n"
+        "```\n";
+    char strict[16384];
+    char replace[16384];
+    size_t strict_length;
+    size_t replace_length;
+    amark_document_t *refused = NULL;
+
+    parse_bytes(nul, sizeof nul - 1); /* the default is strict */
+    strict_length = values_of(nul, strict, sizeof strict);
+    check_text(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_VALUE, "h" R);
+    check_text(find(AMARK_KIND_CODE_SPAN, 0), AMARK_TEXT_VALUE, "e" R);
+    check_text(find(AMARK_KIND_LINK, 0), AMARK_TEXT_TITLE, "t" R);
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_INFO,
+               "in" R "fo");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_VALUE,
+               "x" R "\n");
+
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    parse_bytes(nul, sizeof nul - 1);
+    replace_length = values_of(nul, replace, sizeof replace);
+    NAOS_CHECK_MEM_EQ(strict, strict_length, replace, replace_length);
+
+    /* Invalid UTF-8 in the parsed range gives no document at all. */
+    g_config.utf8_mode = AMARK_UTF8_STRICT;
+    NAOS_CHECK_INT_EQ(amark_parse(k_dirty, sizeof k_dirty - 1, &g_config,
+                                  &refused),
+                      AMARK_ERROR_INVALID_INPUT);
+    NAOS_CHECK_NULL(refused);
+}
+
+/*
+ * Invalid bytes outside the parsed range are not read by the strict mode;
+ * the values of nodes inside it are the same in both modes, and raw still
+ * points into the caller's content.
+ */
+NAOS_TEST(strict_mode_with_invalid_bytes_outside_the_range)
+{
+    static const char content[] = "\xFF\xFE" "a\0b *c* `d`\n" "\xC0";
+    char strict[8192];
+    char replace[8192];
+    size_t strict_length;
+    size_t replace_length;
+    const char *bytes = NULL;
+    size_t length = 0;
+
+    g_config.start = 2;
+    g_config.end = sizeof content - 2;
+    parse_bytes(content, sizeof content - 1);
+    strict_length = values_of(content, strict, sizeof strict);
+    NAOS_REQUIRE_TRUE(amark_node_raw(g_doc, amark_document_root(g_doc),
+                                     &bytes, &length));
+    NAOS_CHECK_PTR_EQ(bytes, content + 2);
+    NAOS_CHECK_MEM_EQ(bytes, length, "a\0b *c* `d`\n", (size_t)12);
+    check_text(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_VALUE, "a" R "b ");
+
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    parse_bytes(content, sizeof content - 1);
+    replace_length = values_of(content, replace, sizeof replace);
+    NAOS_CHECK_MEM_EQ(strict, strict_length, replace, replace_length);
+}
+
+/*
+ * Well-formed input without U+0000 gives the same result for every node
+ * and part in both modes, and characters outside ASCII, control characters
+ * and U+FEFF are not changed (9.5, 9.6).
+ */
+NAOS_TEST(valid_input_gives_the_same_values_in_both_modes)
+{
+    static const char *const inputs[] = {
+        "",
+        "# \xC3\xA9t\xC3\xA9 \xE2\x82\xAC\n"
+        "\xEF\xBB\xBF" "a\x01" "b\x7F *\xF0\x9F\x98\x80* `\xE6\x97\xA5 `\n"
+        "[\xC3\xA9](/\xC3\xA9 \"\xE2\x82\xAC\") <http://\xC3\xA9> "
+        "\\\xC3\xA9 &eacute; &#x1F600;\n",
+        "> - ```\xC3\xA9 x\n"
+        ">   \xE6\x97\xA5\t\x01\n"
+        ">   ```\n"
+        "\n"
+        "    \xEF\xBB\xBF\xF4\x8F\xBF\xBF\n"
+        "\n"
+        "[\xC3\xA9]: </\xE2\x82\xAC> '\xC3\xA9'\n"
+        "\n"
+        "![\xC3\xA9][\xC3\xA9]\r\n",
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        char strict[16384];
+        char replace[16384];
+        size_t strict_length;
+        size_t replace_length;
+        size_t length = strlen(inputs[i]);
+
+        g_config.utf8_mode = AMARK_UTF8_STRICT;
+        parse_bytes(inputs[i], length);
+        strict_length = values_of(inputs[i], strict, sizeof strict);
+        g_config.utf8_mode = AMARK_UTF8_REPLACE;
+        parse_bytes(inputs[i], length);
+        replace_length = values_of(inputs[i], replace, sizeof replace);
+        NAOS_CHECK_MEM_EQ(strict, strict_length, replace, replace_length);
+    }
+
+    /* Characters are written as they are (the last input). */
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_VALUE,
+               "\xE6\x97\xA5\t\x01\n");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 1), AMARK_TEXT_VALUE,
+               "\xEF\xBB\xBF\xF4\x8F\xBF\xBF\n");
+    check_text(find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0),
+               AMARK_TEXT_DESTINATION, "/\xE2\x82\xAC");
+}
+
+NAOS_SUITE(text_chars,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(replace_mode_values_are_utf8_and_raw_is_unchanged),
+    NAOS_ADD_TEST(strict_mode_replaces_nul_and_refuses_invalid_input),
+    NAOS_ADD_TEST(strict_mode_with_invalid_bytes_outside_the_range),
+    NAOS_ADD_TEST(valid_input_gives_the_same_values_in_both_modes)
+)
+
+/*
+ * A snapshot of what a parse gave: the tree string (kinds and attributes,
+ * blocks and inlines), the node count, for every node its kind, range,
+ * lines and links, and the diagnostics.
+ */
+typedef struct snapshot {
+    char dump[8192];
+    size_t dump_length;
+    char nodes[16384];
+    size_t nodes_length;
+} snapshot_t;
+
+static void take_snapshot(snapshot_t *s)
+{
+    size_t count = amark_document_node_count(g_doc);
+    size_t diagnostics = amark_document_diagnostic_count(g_doc);
+    amark_node_id_t node;
+    size_t i;
+
+    s->dump_length = amark_test_dump_tree(g_doc, s->dump, sizeof s->dump);
+    NAOS_REQUIRE_TRUE(s->dump_length < sizeof s->dump);
+    s->nodes_length = 0;
+    append(s->nodes, sizeof s->nodes, &s->nodes_length, &count, sizeof count);
+    for (node = 1; node <= (amark_node_id_t)count; node++) {
+        amark_kind_t kind = amark_node_kind(g_doc, node);
+        amark_node_id_t links[3];
+        size_t lines[2];
+        amark_range_t range = { 0, 0 };
+
+        (void)amark_node_range(g_doc, node, &range);
+        links[0] = amark_node_parent(g_doc, node);
+        links[1] = amark_node_first_child(g_doc, node);
+        links[2] = amark_node_next_sibling(g_doc, node);
+        lines[0] = amark_node_start_line(g_doc, node);
+        lines[1] = amark_node_end_line(g_doc, node);
+        append(s->nodes, sizeof s->nodes, &s->nodes_length, &kind,
+               sizeof kind);
+        append(s->nodes, sizeof s->nodes, &s->nodes_length, &range,
+               sizeof range);
+        append(s->nodes, sizeof s->nodes, &s->nodes_length, links,
+               sizeof links);
+        append(s->nodes, sizeof s->nodes, &s->nodes_length, lines,
+               sizeof lines);
+    }
+    append(s->nodes, sizeof s->nodes, &s->nodes_length, &diagnostics,
+           sizeof diagnostics);
+    for (i = 0; i < diagnostics; i++) {
+        amark_diagnostic_t d;
+
+        NAOS_REQUIRE_TRUE(amark_document_diagnostic(g_doc, i, &d));
+        append(s->nodes, sizeof s->nodes, &s->nodes_length, &d.offset,
+               sizeof d.offset);
+        append(s->nodes, sizeof s->nodes, &s->nodes_length, &d.line,
+               sizeof d.line);
+        append(s->nodes, sizeof s->nodes, &s->nodes_length, d.message,
+               strlen(d.message) + 1);
+    }
+}
+
+/* Calls every function, every way, on every node and part of g_doc. */
+static void call_everything(void)
+{
+    size_t count = amark_document_node_count(g_doc);
+    amark_node_id_t node;
+    size_t i;
+
+    for (node = 0; node <= (amark_node_id_t)count + 1; node++) {
+        const char *bytes;
+        size_t length;
+
+        (void)amark_node_raw(g_doc, node, &bytes, &length);
+        for (i = 0; i < PART_COUNT; i++) {
+            char buffer[512];
+            char small[1];
+            char *out = NULL;
+
+            (void)amark_node_text(g_doc, node, k_parts[i], NULL, 0, &length);
+            (void)amark_node_text(g_doc, node, k_parts[i], small, 0, &length);
+            (void)amark_node_text(g_doc, node, k_parts[i], small,
+                                  sizeof small, &length);
+            (void)amark_node_text(g_doc, node, k_parts[i], buffer,
+                                  sizeof buffer, &length);
+            if (amark_node_text_alloc(g_doc, node, k_parts[i], &out,
+                                      &length) == AMARK_ERROR_NONE) {
+                amark_text_free(g_doc, out);
+            }
+        }
+    }
+}
+
+/* Mixed content: containers, every inline kind, invalid UTF-8, a NUL. */
+static const char k_mixed[] =
+    "> # a *b* **c** `d`\n"
+    "> - [e](/f \"g\") ![h][i] <j@k.l> <m>\n"
+    ">   \\* &amp; n\0\xFF  \n"
+    ">   o\n"
+    "\n"
+    "[i]: /p 'q'\n"
+    "\n"
+    "```r\n"
+    "s\n"
+    "```\n"
+    "\n"
+    "    t\n"
+    "<div>\n"
+    "\n"
+    "---\n"
+    "u\n"
+    "===\n";
+
+NAOS_TEST(calls_leave_the_content_and_the_tree_unchanged)
+{
+    char content[sizeof k_mixed];
+    snapshot_t before;
+    snapshot_t after;
+
+    memcpy(content, k_mixed, sizeof k_mixed);
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    g_config.filename = "mixed.md";
+    parse_bytes(content, sizeof content - 1);
+    take_snapshot(&before);
+
+    call_everything();
+    call_everything();
+
+    take_snapshot(&after);
+    NAOS_CHECK_MEM_EQ(content, sizeof content, k_mixed, sizeof k_mixed);
+    NAOS_CHECK_MEM_EQ(after.dump, after.dump_length, before.dump,
+                      before.dump_length);
+    NAOS_CHECK_MEM_EQ(after.nodes, after.nodes_length, before.nodes,
+                      before.nodes_length);
+}
+
+NAOS_TEST(the_same_node_gives_the_same_result_every_time)
+{
+    char first[16384];
+    char again[16384];
+    size_t first_length;
+    size_t again_length;
+
+    g_config.utf8_mode = AMARK_UTF8_REPLACE;
+    parse_bytes(k_mixed, sizeof k_mixed - 1);
+    first_length = values_of(k_mixed, first, sizeof first);
+    call_everything();
+    again_length = values_of(k_mixed, again, sizeof again);
+    NAOS_CHECK_MEM_EQ(again, again_length, first, first_length);
+    again_length = values_of(k_mixed, again, sizeof again);
+    NAOS_CHECK_MEM_EQ(again, again_length, first, first_length);
+}
+
+NAOS_SUITE(text_unchanged,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(calls_leave_the_content_and_the_tree_unchanged),
+    NAOS_ADD_TEST(the_same_node_gives_the_same_result_every_time)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(text_raw),
     NAOS_ADD_SUITE(text_table),
     NAOS_ADD_SUITE(text_passing),
-    NAOS_ADD_SUITE(text_alloc)
+    NAOS_ADD_SUITE(text_alloc),
+    NAOS_ADD_SUITE(text_chars),
+    NAOS_ADD_SUITE(text_unchanged)
 )
