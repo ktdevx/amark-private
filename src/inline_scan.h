@@ -154,4 +154,56 @@ bool amark_inline_scan_autolink(amark_cursor_t *cursor,
 bool amark_inline_scan_html(amark_cursor_t *cursor,
                             amark_inline_scan_memo_t *memo);
 
+/*
+ * The part of an inline link or image after its "]": the ranges of its
+ * destination and title. A range is an offset range in the document's
+ * content; one that is absent (has_destination or has_title false) is
+ * {0, 0}.
+ */
+typedef struct amark_link_tail {
+    bool has_destination;
+    amark_range_t destination; /* the inside of <...>, or the whole raw
+                                  destination; empty for "<>" */
+    bool has_title;
+    amark_range_t title;       /* the inside of the delimiters; empty for an
+                                  empty title */
+} amark_link_tail_t;
+
+/*
+ * Reads the part of an inline link after its "]" (CommonMark 0.31.2,
+ * section 6.3): '(', optional white space, an optional destination, an
+ * optional title that must follow white space, optional white space, and
+ * ')'. White space is spaces, tabs and at most one line ending.
+ *
+ *   - Right after the '(' and its white space, a ')' means neither a
+ *     destination nor a title. Anything else is read as a destination, so
+ *     in "(\"t\")" the "\"t\"" is a destination, not a title.
+ *   - A destination is '<', bytes other than a line ending and an
+ *     unescaped '<', and '>'; or a nonempty run, not starting with '<', of
+ *     bytes other than the space and the ASCII control characters (line
+ *     endings included) whose unescaped parentheses balance, nested at most
+ *     AMARK_LINK_DEST_PAREN_MAX deep. An unmatched ')' ends it.
+ *   - A title is "...", '...' or (...), up to the first unescaped closing
+ *     delimiter; (...) holds no unescaped '('. It may cross lines.
+ *
+ * A backslash before an ASCII punctuation character only keeps that
+ * character from counting as a delimiter; character references are not
+ * read. The rules of the destination and the title are those of the link
+ * reference definitions (read_destination and read_title in src/refdef.c);
+ * when one of them changes, change both.
+ *
+ * The cursor is on the '('. Only the content of the lines is read. On a
+ * match, writes *out, moves the cursor right after the ')' and returns
+ * true; otherwise returns false and changes neither. An angle-bracketed
+ * destination is read no further than the next '<' or line ending, a raw one
+ * no further than its line or the AMARK_LINK_DEST_PAREN_MAX + 1st nested
+ * '(', and a title no further than its next closing delimiter (or '(' for
+ * a (...) title).
+ */
+bool amark_inline_scan_link_tail(amark_cursor_t *cursor,
+                                 amark_link_tail_t *out);
+
+/* The deepest nesting of parentheses in a raw link destination. */
+#define AMARK_LINK_DEST_PAREN_MAX 32
+
 #endif /* AMARK_INLINE_SCAN_H */

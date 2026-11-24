@@ -29,6 +29,15 @@
  * endings between attributes and in values, bytes outside the content of
  * the lines, and the bit each of the four unclosed kinds sets in the memo.
  *
+ * Link tails: "()", "(<>)", a destination alone, the three delimiters of a
+ * title, an empty title, a title across lines, escaped delimiters, 32 and
+ * 33 levels of nested parentheses, no white space between the destination
+ * and the title, "(\"t\")" read as a destination, white space with one
+ * line ending, and bytes outside the content of the lines. The same
+ * destinations and titles go through amark_refdef_parse, which reads them
+ * by the same rules; 33 levels, which only the link tail rejects, are
+ * checked on each side.
+ *
  * Whenever a scan does not match, the cursor must not move.
  */
 
@@ -40,6 +49,7 @@
 #include "document.h"
 #include "inline_scan.h"
 #include "parse_data.h"
+#include "refdef.h"
 #include "test_alloc.h"
 
 #include <amark/amark.h>
@@ -1499,6 +1509,492 @@ NAOS_TEST(html_does_not_change_the_content)
     NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), input, sizeof(copy));
 }
 
+/* ---- link tails --------------------------------------------------------- */
+
+/* An absent range in the expectations of check_tail. */
+#define ABSENT ((size_t)-1)
+
+/*
+ * Scans a link tail at pos of the content at index. Returns the position
+ * right after it and writes *tail, or returns 0 if it does not match; then
+ * checks that the cursor and *tail did not change. On a match, checks that
+ * the cursor's line records are those of its position and that the absent
+ * ranges are {0, 0}. Checks that nothing was allocated.
+ */
+static size_t tail_end(size_t index, size_t pos, amark_link_tail_t *tail)
+{
+    amark_cursor_t cursor;
+    amark_cursor_t saved;
+    amark_link_tail_t before;
+    size_t calls = g_state.malloc_calls;
+
+    memset(tail, 0xA5, sizeof(*tail));
+    memcpy(&before, tail, sizeof(before));
+    cursor_at(&cursor, index, pos);
+    saved = cursor;
+    if (!amark_inline_scan_link_tail(&cursor, tail)) {
+        check_unmoved(&cursor, &saved);
+        NAOS_CHECK_TRUE(memcmp(tail, &before, sizeof(before)) == 0);
+        NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+        return 0;
+    }
+    check_placed(&cursor, index);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+    if (!tail->has_destination) {
+        NAOS_CHECK_UINT_EQ(tail->destination.start, 0);
+        NAOS_CHECK_UINT_EQ(tail->destination.end, 0);
+    }
+    if (!tail->has_title) {
+        NAOS_CHECK_UINT_EQ(tail->title.start, 0);
+        NAOS_CHECK_UINT_EQ(tail->title.end, 0);
+    }
+    return cursor.pos;
+}
+
+/* Subtracts base from both ends of a range. */
+static void shift_range(amark_range_t *range, size_t base)
+{
+    NAOS_REQUIRE_UINT_LE(base, range->start);
+    range->start -= base;
+    range->end -= base;
+}
+
+/*
+ * Parses "x " and the length bytes of s, so that s is inside a paragraph,
+ * and returns the length of the link tail at the start of s, or 0 if there
+ * is none. On a match, writes *tail with its present ranges as offsets in
+ * s.
+ */
+static size_t tail_in(const char *s, size_t length, amark_link_tail_t *tail)
+{
+    size_t end;
+
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE - 2);
+    g_buffer[0] = 'x';
+    g_buffer[1] = ' ';
+    memcpy(g_buffer + 2, s, length);
+    parse_buffer(length + 2);
+    end = tail_end(0, 2, tail);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    if (end == 0) {
+        return 0;
+    }
+    if (tail->has_destination) {
+        shift_range(&tail->destination, 2);
+    }
+    if (tail->has_title) {
+        shift_range(&tail->title, 2);
+    }
+    return end - 2;
+}
+
+/*
+ * Checks that s (a string literal) starts with a link tail of length bytes
+ * (0 for none) with the destination and the title at the given offsets in
+ * s, ABSENT for an absent one.
+ */
+static void check_tail(const char *s, size_t s_length, size_t length,
+                       size_t dest_start, size_t dest_end,
+                       size_t title_start, size_t title_end)
+{
+    amark_link_tail_t tail;
+
+    NAOS_CHECK_UINT_EQ(tail_in(s, s_length, &tail), length);
+    if (length == 0) {
+        return;
+    }
+    NAOS_CHECK_INT_EQ(tail.has_destination, dest_start != ABSENT);
+    if (tail.has_destination && dest_start != ABSENT) {
+        NAOS_CHECK_UINT_EQ(tail.destination.start, dest_start);
+        NAOS_CHECK_UINT_EQ(tail.destination.end, dest_end);
+    }
+    NAOS_CHECK_INT_EQ(tail.has_title, title_start != ABSENT);
+    if (tail.has_title && title_start != ABSENT) {
+        NAOS_CHECK_UINT_EQ(tail.title.start, title_start);
+        NAOS_CHECK_UINT_EQ(tail.title.end, title_end);
+    }
+}
+
+#define TAIL(s, length, ds, de, ts, te) \
+    check_tail((s), sizeof(s) - 1, (length), (ds), (de), (ts), (te))
+#define TAIL_NONE(s) \
+    check_tail((s), sizeof(s) - 1, 0, ABSENT, ABSENT, ABSENT, ABSENT)
+
+NAOS_TEST(link_tail_empty)
+{
+    TAIL("()", 2, ABSENT, ABSENT, ABSENT, ABSENT);
+    TAIL("( )", 3, ABSENT, ABSENT, ABSENT, ABSENT);
+    TAIL("(\t)", 3, ABSENT, ABSENT, ABSENT, ABSENT);
+    TAIL("(\n)", 3, ABSENT, ABSENT, ABSENT, ABSENT);
+    /* "<>" is a destination, present and empty. */
+    TAIL("(<>)", 4, 2, 2, ABSENT, ABSENT);
+    TAIL("( <> )", 6, 3, 3, ABSENT, ABSENT);
+    /* What follows the ')' does not matter. */
+    TAIL("()x", 2, ABSENT, ABSENT, ABSENT, ABSENT);
+    TAIL("())", 2, ABSENT, ABSENT, ABSENT, ABSENT);
+    /* No ')'. */
+    TAIL_NONE("(");
+    TAIL_NONE("( ");
+    TAIL_NONE("(<>");
+}
+
+NAOS_TEST(link_tail_destination_only)
+{
+    TAIL("(/uri)", 6, 1, 5, ABSENT, ABSENT);
+    TAIL("( /uri )", 8, 2, 6, ABSENT, ABSENT);
+    TAIL("(<my uri>)", 10, 2, 8, ABSENT, ABSENT);
+    TAIL("(<b)c>)", 7, 2, 5, ABSENT, ABSENT);
+    TAIL("(foo(and(bar)))", 15, 1, 14, ABSENT, ABSENT);
+    TAIL("(<foo(and(bar)>)", 16, 2, 14, ABSENT, ABSENT);
+    TAIL("(#fragment)", 11, 1, 10, ABSENT, ABSENT);
+    TAIL("(\xC3\xA4\xFF)", 5, 1, 4, ABSENT, ABSENT);
+    /* An unmatched ')' ends a raw destination. */
+    TAIL("(a)b)", 3, 1, 2, ABSENT, ABSENT);
+    /* A space in a raw destination. */
+    TAIL_NONE("(/my uri)");
+    /* A line ending or an unescaped '<' in an angle-bracketed one. */
+    TAIL_NONE("(<foo\nbar>)");
+    TAIL_NONE("(<a<b>)");
+    TAIL_NONE("(<a)");
+    /* Unbalanced parentheses. */
+    TAIL_NONE("(foo(and(bar))");
+    /* An ASCII control character ends a raw destination. */
+    TAIL_NONE("(a\x01b)");
+    TAIL_NONE("(a\x7F)");
+    TAIL_NONE("(\x01)");
+    /* What does not end with '>' is not angle-bracketed, and is no raw one. */
+    TAIL_NONE("(<a>b)");
+}
+
+NAOS_TEST(link_tail_title_delimiters)
+{
+    TAIL("(/url \"title\")", 14, 1, 5, 7, 12);
+    TAIL("(/url 'title')", 14, 1, 5, 7, 12);
+    TAIL("(/url (title))", 14, 1, 5, 7, 12);
+    TAIL("(<a> \"t\")", 9, 2, 3, 6, 7);
+    TAIL("( a\t\"t\"\t)", 9, 2, 3, 5, 6);
+    /* Other delimiters of the other kinds inside. */
+    TAIL("(a \"t 'u' (v)\")", 15, 1, 2, 4, 13);
+    TAIL("(a 't \"u\" )')", 13, 1, 2, 4, 11);
+    TAIL("(a (t \"u\" 'v'))", 15, 1, 2, 4, 13);
+    /* A (...) title holds no unescaped '('. */
+    TAIL_NONE("(a (t (u)))");
+    TAIL_NONE("(a (t(u))");
+    /* An unclosed title. */
+    TAIL_NONE("(a \"t)");
+    TAIL_NONE("(a 't)");
+    TAIL_NONE("(a (t");
+    /* Only white space after the title. */
+    TAIL_NONE("(a \"t\" x)");
+    TAIL_NONE("(a \"t\" \"u\")");
+}
+
+NAOS_TEST(link_tail_empty_title)
+{
+    TAIL("(a \"\")", 6, 1, 2, 4, 4);
+    TAIL("(a '')", 6, 1, 2, 4, 4);
+    TAIL("(a ())", 6, 1, 2, 4, 4);
+    TAIL("(<> \"\")", 7, 2, 2, 5, 5);
+}
+
+NAOS_TEST(link_tail_title_across_lines)
+{
+    TAIL("(a \"t\nu\")", 9, 1, 2, 4, 7);
+    TAIL("(a 't\r\nu')", 10, 1, 2, 4, 8);
+    TAIL("(a (t\ru))", 9, 1, 2, 4, 7);
+    TAIL("(a \"t\nu\nv\")", 11, 1, 2, 4, 9);
+    /* White space with a line ending around the destination and title. */
+    TAIL("(\na\n\"t\"\n)", 9, 2, 3, 5, 6);
+    TAIL("( \n a \n \"t\" \n )", 15, 4, 5, 9, 10);
+    /* A title that is not closed before the end of the content. */
+    TAIL_NONE("(a \"t\nu)");
+}
+
+NAOS_TEST(link_tail_escapes)
+{
+    /* Escaped parentheses do not count. */
+    TAIL("(\\(foo\\))", 9, 1, 8, ABSENT, ABSENT);
+    TAIL("(a\\)b)", 6, 1, 5, ABSENT, ABSENT);
+    TAIL("(a\\(b)", 6, 1, 5, ABSENT, ABSENT);
+    TAIL_NONE("(a(\\))");
+    /* Escapes of '<' and '>' in an angle-bracketed destination. */
+    TAIL("(<a\\<b>)", 8, 2, 6, ABSENT, ABSENT);
+    TAIL("(<a\\>b>)", 8, 2, 6, ABSENT, ABSENT);
+    TAIL_NONE("(<a\\\\<b>)");
+    /* Escaped closing delimiters and '(' in a title. */
+    TAIL("(a \"t\\\"u\")", 10, 1, 2, 4, 8);
+    TAIL("(a 't\\'u')", 10, 1, 2, 4, 8);
+    TAIL("(a (t\\)u))", 10, 1, 2, 4, 8);
+    TAIL("(a (t\\(u))", 10, 1, 2, 4, 8);
+    /* An escaped backslash does not escape what follows. */
+    TAIL("(a \"t\\\\\")", 9, 1, 2, 4, 7);
+    TAIL("(a\\\\)", 5, 1, 4, ABSENT, ABSENT);
+    /* A backslash before a letter or a space escapes nothing. */
+    TAIL("(a\\b)", 5, 1, 4, ABSENT, ABSENT);
+    TAIL_NONE("(a\\ b)");
+    /* A backslash at the end of a title's line escapes nothing. */
+    TAIL("(a \"t\\\n\")", 9, 1, 2, 4, 7);
+    /* Character references are not read. */
+    TAIL("(&#40; \"&quot;\")", 16, 1, 6, 8, 14);
+}
+
+/*
+ * Writes to g_buffer from *length: count '(' when open, ')' otherwise,
+ * each preceded by 'a'.
+ */
+static void fill_parens(size_t *length, char paren, size_t count)
+{
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        fill(length, 'a', 1);
+        fill(length, paren, 1);
+    }
+}
+
+/*
+ * Parses "x (" + levels nested parentheses + ")" and returns the length of
+ * the link tail at the '(' (0 if none).
+ */
+static size_t nested_tail_length(size_t levels)
+{
+    amark_link_tail_t tail;
+    size_t length = 0;
+    size_t end;
+
+    fill(&length, 'x', 1);
+    fill(&length, ' ', 1);
+    fill(&length, '(', 1);
+    fill_parens(&length, '(', levels);
+    fill_parens(&length, ')', levels);
+    fill(&length, ')', 1);
+    parse_buffer(length);
+    end = tail_end(0, 2, &tail);
+    if (end != 0) {
+        NAOS_CHECK_TRUE(tail.has_destination);
+        NAOS_CHECK_UINT_EQ(tail.destination.start, 3);
+        NAOS_CHECK_UINT_EQ(tail.destination.end, length - 1);
+        NAOS_CHECK_FALSE(tail.has_title);
+    }
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    return end == 0 ? 0 : end - 2;
+}
+
+NAOS_TEST(link_tail_nested_parentheses)
+{
+    NAOS_CHECK_UINT_EQ(AMARK_LINK_DEST_PAREN_MAX, 32);
+    NAOS_CHECK_UINT_EQ(nested_tail_length(1), 2 + 4);
+    NAOS_CHECK_UINT_EQ(nested_tail_length(31), 2 + 31 * 4);
+    NAOS_CHECK_UINT_EQ(nested_tail_length(32), 2 + 32 * 4);
+    NAOS_CHECK_UINT_EQ(nested_tail_length(33), 0);
+    NAOS_CHECK_UINT_EQ(nested_tail_length(1000), 0);
+    /* Escaped parentheses are not nested. */
+    TAIL("(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\("
+         "\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\(\\()",
+         68, 1, 67, ABSENT, ABSENT);
+}
+
+NAOS_TEST(link_tail_without_space_before_the_title)
+{
+    /* A quote belongs to a raw destination. */
+    TAIL("(/url\"title\")", 13, 1, 12, ABSENT, ABSENT);
+    TAIL("(/url'title')", 13, 1, 12, ABSENT, ABSENT);
+    /* A '(' nests in it. */
+    TAIL("(/url(title))", 13, 1, 12, ABSENT, ABSENT);
+    /* After an angle-bracketed destination, nothing may follow directly. */
+    TAIL_NONE("(<a>\"t\")");
+    TAIL_NONE("(<a>'t')");
+    TAIL_NONE("(<a>(t))");
+    TAIL_NONE("(<a>b)");
+}
+
+NAOS_TEST(link_tail_quoted_text_alone_is_a_destination)
+{
+    /* CommonMark 0.31.2, example 504. */
+    TAIL("(\"title\")", 9, 1, 8, ABSENT, ABSENT);
+    TAIL("( 'title' )", 11, 2, 9, ABSENT, ABSENT);
+    /* A '(' after the opening one nests in a destination. */
+    TAIL("((title))", 9, 1, 8, ABSENT, ABSENT);
+    TAIL_NONE("(\"a b\")");
+}
+
+NAOS_TEST(link_tail_one_line_ending)
+{
+    /* White space holds at most one line ending: two need a blank line. */
+    TAIL_NONE("(\n\n)");
+    TAIL_NONE("(a\n\n\"t\")");
+    /* A line ending in a raw destination ends it. */
+    TAIL_NONE("(a\nb)");
+    /* At the end of the content. */
+    TAIL_NONE("(a   \n");
+}
+
+NAOS_TEST(link_tail_reads_only_the_content)
+{
+    amark_link_tail_t tail;
+
+    /* A block quote: the second line's prefix is "> ". */
+    PARSE("> x (a\n> \"t\")");
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 13);
+    NAOS_CHECK_UINT_EQ(tail.title.start, 10);
+    NAOS_CHECK_UINT_EQ(tail.title.end, 11);
+    /* The prefix turned into ')' behind the parser's back is no content. */
+    g_buffer[7] = ')';
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 13);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* A title across lines whose closing quote would be in the prefix. */
+    PARSE("> x (a 't\n> u')");
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 15);
+    NAOS_CHECK_UINT_EQ(tail.title.start, 8);
+    NAOS_CHECK_UINT_EQ(tail.title.end, 13);
+    g_buffer[10] = '\'';
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 15);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* A list item's indentation. */
+    PARSE("- x (a\n  )");
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 10);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* A lazy continuation line. */
+    PARSE("> x (a\n'b')");
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 11);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* The content ends: a blank line, another block, a heading. */
+    PARSE("x (a\n\n)");
+    NAOS_CHECK_UINT_EQ(tail_end(0, 2, &tail), 0);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    PARSE("x (a 't\n\nu')");
+    NAOS_CHECK_UINT_EQ(tail_end(0, 2, &tail), 0);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    PARSE("# x (a\n)");
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 0);
+}
+
+/*
+ * Reads "[l]: " + s (a string literal) with amark_refdef_parse and "x (" +
+ * s + ")" with amark_inline_scan_link_tail, and checks that both match with
+ * the same destination and title, at the same offsets in s.
+ */
+static void check_same_as_refdef(const char *s, size_t length)
+{
+    amark_refdef_t def;
+    amark_link_tail_t tail;
+    size_t total;
+
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE - 5);
+    memcpy(g_buffer, "[l]: ", 5);
+    memcpy(g_buffer + 5, s, length);
+    parse_buffer(length + 5);
+    NAOS_REQUIRE_TRUE(amark_refdef_parse(g_doc, 0, g_length, &def));
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    shift_range(&def.destination, 5);
+    if (def.has_title) {
+        shift_range(&def.title, 5);
+    }
+
+    total = 0;
+    fill(&total, 'x', 1);
+    fill(&total, ' ', 1);
+    fill(&total, '(', 1);
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE - total - 1);
+    memcpy(g_buffer + total, s, length);
+    total += length;
+    fill(&total, ')', 1);
+    parse_buffer(total);
+    NAOS_CHECK_UINT_EQ(tail_end(0, 2, &tail), total);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_REQUIRE_TRUE(tail.has_destination);
+    shift_range(&tail.destination, 3);
+    NAOS_CHECK_UINT_EQ(tail.destination.start, def.destination.start);
+    NAOS_CHECK_UINT_EQ(tail.destination.end, def.destination.end);
+    NAOS_CHECK_INT_EQ(tail.has_title, def.has_title);
+    if (tail.has_title && def.has_title) {
+        shift_range(&tail.title, 3);
+        NAOS_CHECK_UINT_EQ(tail.title.start, def.title.start);
+        NAOS_CHECK_UINT_EQ(tail.title.end, def.title.end);
+    }
+}
+
+#define SAME_AS_REFDEF(s) check_same_as_refdef((s), sizeof(s) - 1)
+
+NAOS_TEST(link_tail_agrees_with_refdef)
+{
+    SAME_AS_REFDEF("/url");
+    SAME_AS_REFDEF("<>");
+    SAME_AS_REFDEF("<my url>");
+    SAME_AS_REFDEF("<a\\<b\\>c>");
+    SAME_AS_REFDEF("foo(and(bar))");
+    SAME_AS_REFDEF("\\(foo\\)");
+    SAME_AS_REFDEF("a\\\\b");
+    SAME_AS_REFDEF("\"title\"");
+    SAME_AS_REFDEF("/url \"title\"");
+    SAME_AS_REFDEF("/url 'title'");
+    SAME_AS_REFDEF("/url (title)");
+    SAME_AS_REFDEF("<a b> \"t\"");
+    SAME_AS_REFDEF("/url \"\"");
+    SAME_AS_REFDEF("/url \"t\\\"u\"");
+    SAME_AS_REFDEF("/url (t\\(u\\))");
+    SAME_AS_REFDEF("/url \"t 'u' (v)\"");
+    SAME_AS_REFDEF("/url\n'title\nline'");
+    SAME_AS_REFDEF("/url\r\n\"t\r\nu\"");
+    SAME_AS_REFDEF("&#40; \"&quot;\"");
+    SAME_AS_REFDEF("\xC3\xA4 '\xC3\xB6'");
+}
+
+/*
+ * 33 levels of nested parentheses: amark_refdef_parse has no limit and
+ * reads the definition; the link tail rejects it. 32 levels: both read it.
+ */
+NAOS_TEST(link_tail_33_levels_differ_from_refdef)
+{
+    amark_refdef_t def;
+    size_t length;
+    size_t levels;
+
+    for (levels = 32; levels <= 33; levels++) {
+        length = 0;
+        fill(&length, '[', 1);
+        fill(&length, 'l', 1);
+        fill(&length, ']', 1);
+        fill(&length, ':', 1);
+        fill(&length, ' ', 1);
+        fill_parens(&length, '(', levels);
+        fill_parens(&length, ')', levels);
+        parse_buffer(length);
+        NAOS_CHECK_TRUE(amark_refdef_parse(g_doc, 0, g_length, &def));
+        NAOS_CHECK_UINT_EQ(def.destination.start, 5);
+        NAOS_CHECK_UINT_EQ(def.destination.end, length);
+        NAOS_CHECK_FALSE(def.has_title);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+    }
+    NAOS_CHECK_UINT_EQ(nested_tail_length(32), 2 + 32 * 4);
+    NAOS_CHECK_UINT_EQ(nested_tail_length(33), 0);
+}
+
+NAOS_TEST(link_tail_does_not_change_the_content)
+{
+    static const char input[] = "> x (a 'b\n> c') (d";
+    unsigned char copy[sizeof(input) - 1];
+    amark_link_tail_t tail;
+
+    PARSE("> x (a 'b\n> c') (d");
+    memcpy(copy, g_buffer, sizeof(copy));
+    NAOS_CHECK_UINT_EQ(tail_end(0, 4, &tail), 15);
+    NAOS_CHECK_UINT_EQ(tail_end(0, 16, &tail), 0);
+    NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), copy, sizeof(copy));
+    NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), input, sizeof(copy));
+}
+
 NAOS_SUITE(code_span,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -1575,10 +2071,30 @@ NAOS_SUITE(html,
     NAOS_ADD_TEST(html_does_not_change_the_content)
 )
 
+NAOS_SUITE(link_tail,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(link_tail_empty),
+    NAOS_ADD_TEST(link_tail_destination_only),
+    NAOS_ADD_TEST(link_tail_title_delimiters),
+    NAOS_ADD_TEST(link_tail_empty_title),
+    NAOS_ADD_TEST(link_tail_title_across_lines),
+    NAOS_ADD_TEST(link_tail_escapes),
+    NAOS_ADD_TEST(link_tail_nested_parentheses),
+    NAOS_ADD_TEST(link_tail_without_space_before_the_title),
+    NAOS_ADD_TEST(link_tail_quoted_text_alone_is_a_destination),
+    NAOS_ADD_TEST(link_tail_one_line_ending),
+    NAOS_ADD_TEST(link_tail_reads_only_the_content),
+    NAOS_ADD_TEST(link_tail_agrees_with_refdef),
+    NAOS_ADD_TEST(link_tail_33_levels_differ_from_refdef),
+    NAOS_ADD_TEST(link_tail_does_not_change_the_content)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(code_span),
     NAOS_ADD_SUITE(memo),
     NAOS_ADD_SUITE(entity),
     NAOS_ADD_SUITE(autolink),
-    NAOS_ADD_SUITE(html)
+    NAOS_ADD_SUITE(html),
+    NAOS_ADD_SUITE(link_tail)
 )

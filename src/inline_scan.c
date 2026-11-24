@@ -331,10 +331,10 @@ static bool looking_at(const amark_cursor_t *cursor, const char *s,
 }
 
 /*
- * Skips the white space of a tag: spaces, tabs and at most one line ending.
- * Returns true if it skipped any.
+ * Skips the white space of a tag or a link tail: spaces, tabs and at most
+ * one line ending. Returns true if it skipped any.
  */
-static bool skip_tag_space(amark_cursor_t *cursor)
+static bool skip_white_space(amark_cursor_t *cursor)
 {
     size_t pos = cursor->pos;
     size_t line = cursor->line;
@@ -460,22 +460,22 @@ static bool scan_open_tag(amark_cursor_t *scan)
         amark_cursor_t attribute = *scan;
         amark_cursor_t value;
 
-        if (!skip_tag_space(&attribute) || !skip_attribute_name(&attribute)) {
+        if (!skip_white_space(&attribute) || !skip_attribute_name(&attribute)) {
             break;
         }
         *scan = attribute;
         value = attribute;
-        skip_tag_space(&value);
+        skip_white_space(&value);
         if (byte_at(&value) == '=') {
             value.pos++;
-            skip_tag_space(&value);
+            skip_white_space(&value);
             if (!skip_attribute_value(&value)) {
                 return false;
             }
             *scan = value;
         }
     }
-    skip_tag_space(scan);
+    skip_white_space(scan);
     if (byte_at(scan) == '/') {
         scan->pos++;
     }
@@ -492,7 +492,7 @@ static bool scan_closing_tag(amark_cursor_t *scan)
     if (!skip_tag_name(scan)) {
         return false;
     }
-    skip_tag_space(scan);
+    skip_white_space(scan);
     if (byte_at(scan) != '>') {
         return false;
     }
@@ -596,4 +596,162 @@ bool amark_inline_scan_html(amark_cursor_t *cursor,
         *cursor = scan;
     }
     return found;
+}
+
+/* ---- link tails --------------------------------------------------------- */
+
+/* ASCII punctuation as CommonMark defines it: what a backslash escapes. */
+static bool is_ascii_punctuation(unsigned char c)
+{
+    return (c >= 0x21 && c <= 0x2F) || (c >= 0x3A && c <= 0x40) ||
+           (c >= 0x5B && c <= 0x60) || (c >= 0x7B && c <= 0x7E);
+}
+
+/*
+ * Whether the byte at the cursor, which is within the line, is a backslash
+ * escaping the next byte of the line.
+ */
+static bool at_escape(const amark_cursor_t *cursor)
+{
+    return cursor->bytes[cursor->pos] == '\\' &&
+           cursor->pos + 1 < cursor->line_end &&
+           is_ascii_punctuation(cursor->bytes[cursor->pos + 1]);
+}
+
+/*
+ * The destination and the title of a link tail. Their rules are those of
+ * the link reference definitions, read_destination and read_title in
+ * src/refdef.c; when one of them changes, change both. Here a raw
+ * destination nests its parentheses at most AMARK_LINK_DEST_PAREN_MAX deep,
+ * and a title needs no check for a blank line (an inline content has
+ * none).
+ *
+ * Each reads from a copy of the cursor at its first byte and, on a match,
+ * writes the range and leaves the copy right after it. Returns false
+ * otherwise; the copy may then have moved.
+ */
+static bool read_link_destination(amark_cursor_t *scan, amark_range_t *out)
+{
+    const unsigned char *p = scan->bytes;
+    size_t start = scan->pos;
+    size_t depth = 0;
+
+    if (byte_at(scan) == '<') {
+        scan->pos++;
+        while (scan->pos < scan->line_end) {
+            unsigned char c = p[scan->pos];
+
+            if (c == '>') {
+                out->start = start + 1;
+                out->end = scan->pos;
+                scan->pos++;
+                return true;
+            }
+            if (c == '<') {
+                return false;
+            }
+            scan->pos += at_escape(scan) ? 2 : 1;
+        }
+        return false; /* a line ending or the end of the content */
+    }
+    while (scan->pos < scan->line_end) {
+        unsigned char c = p[scan->pos];
+
+        if (c <= 0x20 || c == 0x7F) {
+            break;
+        }
+        if (at_escape(scan)) {
+            scan->pos += 2;
+            continue;
+        }
+        if (c == '(') {
+            if (++depth > AMARK_LINK_DEST_PAREN_MAX) {
+                return false;
+            }
+        } else if (c == ')') {
+            if (depth == 0) {
+                break;
+            }
+            depth--;
+        }
+        scan->pos++;
+    }
+    if (scan->pos == start || depth != 0) {
+        return false;
+    }
+    out->start = start;
+    out->end = scan->pos;
+    return true;
+}
+
+static bool read_link_title(amark_cursor_t *scan, amark_range_t *out)
+{
+    const unsigned char *p = scan->bytes;
+    unsigned char open = p[scan->pos];
+    unsigned char close = open == '(' ? ')' : open;
+    size_t start = scan->pos + 1;
+
+    scan->pos++;
+    for (;;) {
+        while (scan->pos < scan->line_end) {
+            unsigned char c = p[scan->pos];
+
+            if (c == close) {
+                out->start = start;
+                out->end = scan->pos;
+                scan->pos++;
+                return true;
+            }
+            if (open == '(' && c == '(') {
+                return false;
+            }
+            scan->pos += at_escape(scan) ? 2 : 1;
+        }
+        if (amark_cursor_at_end(scan)) {
+            return false;
+        }
+        amark_cursor_next_line(scan);
+    }
+}
+
+bool amark_inline_scan_link_tail(amark_cursor_t *cursor,
+                                 amark_link_tail_t *out)
+{
+    amark_cursor_t scan = *cursor;
+    amark_link_tail_t tail;
+    int c;
+
+    tail.has_destination = false;
+    tail.destination.start = 0;
+    tail.destination.end = 0;
+    tail.has_title = false;
+    tail.title.start = 0;
+    tail.title.end = 0;
+
+    scan.pos++; /* the '(' */
+    skip_white_space(&scan);
+    if (byte_at(&scan) != ')') {
+        if (!read_link_destination(&scan, &tail.destination)) {
+            return false;
+        }
+        tail.has_destination = true;
+        /* A title only follows white space. */
+        if (skip_white_space(&scan)) {
+            c = byte_at(&scan);
+            if (c == '"' || c == '\'' || c == '(') {
+                if (!read_link_title(&scan, &tail.title)) {
+                    return false;
+                }
+                tail.has_title = true;
+                skip_white_space(&scan);
+            }
+        }
+        if (byte_at(&scan) != ')') {
+            return false;
+        }
+    }
+    scan.pos++; /* the ')', within this line */
+    *cursor = scan;
+    *out = tail;
+    return true;
 }
