@@ -16,8 +16,14 @@
  * a title that make no line break, line breaks inside the link text as
  * children of the link, brackets inside the link text, the precedence of a
  * code span over the brackets, and a bracket stack that starts empty for
- * every content. Every tree passes the tree check and has no link inside a
- * link.
+ * every content. The reference forms: the full, collapsed and shortcut forms
+ * of links and images with their definition, the first of the definitions
+ * with the same label, definitions after the link and inside containers,
+ * labels without a definition, labels of 999 and 1000 characters, case
+ * folding, labels across lines, labels compared as written, and the order of
+ * the forms ("[a](b)" with a definition of a, "[a][b]" without one of b,
+ * "[a][]", "[a] []" and "[a][ ]"). Every tree passes the tree check and has
+ * no link inside a link.
  */
 
 #include "test_alloc.h"
@@ -597,6 +603,385 @@ NAOS_TEST(line_breaks_inside_the_link_text_are_children_of_the_link)
     check_node(child_at(link, 2), AMARK_KIND_TEXT, 7, 8, 2, 2);
 }
 
+/* ---- Reference forms ---- */
+
+/* The block at index (from 0) among the children of the root. */
+static amark_node_id_t block_at(size_t index)
+{
+    return child_at(amark_document_root(g_doc), index);
+}
+
+/*
+ * Checks that node, a link or an image, has the reference form form, the
+ * definition def, and neither a destination nor a title.
+ */
+static void check_reference(amark_node_id_t node, amark_link_form_t form,
+                            amark_node_id_t def)
+{
+    amark_range_t range;
+
+    NAOS_CHECK_INT_EQ(amark_link_form(g_doc, node), form);
+    NAOS_CHECK_UINT_EQ(amark_link_definition(g_doc, node), def);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, def),
+                       AMARK_KIND_LINK_REFERENCE_DEFINITION);
+    NAOS_CHECK_FALSE(amark_link_destination(g_doc, node, &range));
+    NAOS_CHECK_FALSE(amark_link_title(g_doc, node, &range));
+}
+
+NAOS_TEST(the_three_reference_forms_of_links)
+{
+    amark_node_id_t link;
+
+    /* Full: from the '[' to right after the label's ']'. */
+    CHECK_TREE("[x][a]\n\n[a]: /u",
+               "(doc (p (link full def=\"a\" (text \"x\"))) (def))");
+    link = child_at(paragraph(), 0);
+    NAOS_CHECK_UINT_EQ(child_count(paragraph()), 1);
+    check_node(link, AMARK_KIND_LINK, 0, 6, 1, 1);
+    check_reference(link, AMARK_LINK_FULL, block_at(1));
+    NAOS_CHECK_UINT_EQ(child_count(link), 1);
+    check_node(child_at(link, 0), AMARK_KIND_TEXT, 1, 2, 1, 1);
+
+    /* Collapsed: to right after the "[]". */
+    CHECK_TREE("[a][]\n\n[a]: /u",
+               "(doc (p (link collapsed def=\"a\" (text \"a\"))) (def))");
+    link = child_at(paragraph(), 0);
+    NAOS_CHECK_UINT_EQ(child_count(paragraph()), 1);
+    check_node(link, AMARK_KIND_LINK, 0, 5, 1, 1);
+    check_reference(link, AMARK_LINK_COLLAPSED, block_at(1));
+    check_node(child_at(link, 0), AMARK_KIND_TEXT, 1, 2, 1, 1);
+
+    /* Shortcut: to right after the ']'. */
+    CHECK_TREE("[a] b\n\n[a]: /u",
+               "(doc (p (link shortcut def=\"a\" (text \"a\")) "
+               "(text \" b\")) (def))");
+    link = child_at(paragraph(), 0);
+    check_node(link, AMARK_KIND_LINK, 0, 3, 1, 1);
+    check_reference(link, AMARK_LINK_SHORTCUT, block_at(1));
+    check_node(child_at(paragraph(), 1), AMARK_KIND_TEXT, 3, 5, 1, 1);
+
+    /* The inlines of the link text are children of the link (9.13). */
+    CHECK_TREE("[*a* `b`][c]\n\n[c]: /u",
+               "(doc (p (link full def=\"c\" (em (text \"a\")) (text \" \") "
+               "(code \"`b`\"))) (def))");
+    check_node(child_at(paragraph(), 0), AMARK_KIND_LINK, 0, 12, 1, 1);
+}
+
+NAOS_TEST(the_three_reference_forms_of_images)
+{
+    amark_node_id_t image;
+
+    CHECK_TREE("![x][a]\n\n[a]: /u",
+               "(doc (p (image full def=\"a\" (text \"x\"))) (def))");
+    image = child_at(paragraph(), 0);
+    check_node(image, AMARK_KIND_IMAGE, 0, 7, 1, 1);
+    check_reference(image, AMARK_LINK_FULL, block_at(1));
+    check_node(child_at(image, 0), AMARK_KIND_TEXT, 2, 3, 1, 1);
+
+    CHECK_TREE("![a][]\n\n[a]: /u",
+               "(doc (p (image collapsed def=\"a\" (text \"a\"))) (def))");
+    image = child_at(paragraph(), 0);
+    check_node(image, AMARK_KIND_IMAGE, 0, 6, 1, 1);
+    check_reference(image, AMARK_LINK_COLLAPSED, block_at(1));
+
+    CHECK_TREE("x![a]\n\n[a]: /u",
+               "(doc (p (text \"x\") (image shortcut def=\"a\" "
+               "(text \"a\"))) (def))");
+    image = child_at(paragraph(), 1);
+    check_node(image, AMARK_KIND_IMAGE, 1, 5, 1, 1);
+    check_reference(image, AMARK_LINK_SHORTCUT, block_at(1));
+
+    /* A reference link inside a reference image. */
+    CHECK_TREE("![[a]][b]\n\n[a]: /1\n[b]: /2",
+               "(doc (p (image full def=\"b\" (link shortcut def=\"a\" "
+               "(text \"a\")))) (def) (def))");
+    image = child_at(paragraph(), 0);
+    check_node(image, AMARK_KIND_IMAGE, 0, 9, 1, 1);
+    check_reference(image, AMARK_LINK_FULL, block_at(2));
+    check_node(child_at(image, 0), AMARK_KIND_LINK, 2, 5, 1, 1);
+    check_reference(child_at(image, 0), AMARK_LINK_SHORTCUT, block_at(1));
+
+    /* No definition: both bytes of "![" are text. */
+    CHECK_TREE("![b]\n\n[a]: /u", "(doc (p (text \"![b]\")) (def))");
+}
+
+/* ---- Resolving a reference ---- */
+
+NAOS_TEST(the_first_of_the_definitions_with_the_same_label)
+{
+    CHECK_TREE("[A]: /1\n[a]: /2\n\n[a]",
+               "(doc (def) (def) (p (link shortcut def=\"A\" "
+               "(text \"a\"))))");
+    check_reference(child_at(block_at(2), 0), AMARK_LINK_SHORTCUT,
+                    block_at(0));
+    /* The same when the link comes before both. */
+    CHECK_TREE("[x][ a ]\n\n[a]: /1\n[ A]: /2",
+               "(doc (p (link full def=\"a\" (text \"x\"))) (def) (def))");
+    check_reference(child_at(paragraph(), 0), AMARK_LINK_FULL, block_at(1));
+}
+
+NAOS_TEST(definitions_anywhere_in_the_document)
+{
+    amark_node_id_t quote;
+
+    /* After the link, inside a block quote. */
+    CHECK_TREE("[a]\n\n> [a]: /u",
+               "(doc (p (link shortcut def=\"a\" (text \"a\"))) "
+               "(bq (def)))");
+    quote = block_at(1);
+    check_reference(child_at(paragraph(), 0), AMARK_LINK_SHORTCUT,
+                    child_at(quote, 0));
+
+    /* Inside a list item, and the link inside a block quote. */
+    CHECK_TREE("> [x][a]\n\n- [a]: /u",
+               "(doc (bq (p (link full def=\"a\" (text \"x\")))) "
+               "(ul - tight (li (def))))");
+    check_node(child_at(child_at(block_at(0), 0), 0), AMARK_KIND_LINK, 2, 8,
+               1, 1);
+    check_reference(child_at(child_at(block_at(0), 0), 0), AMARK_LINK_FULL,
+                    child_at(child_at(block_at(1), 0), 0));
+}
+
+NAOS_TEST(a_label_without_a_definition)
+{
+    /* Shortcut and collapsed: the brackets are text. */
+    CHECK_TREE("[b]\n\n[a]: /u", "(doc (p (text \"[b]\")) (def))");
+    CHECK_TREE("[b][]\n\n[a]: /u", "(doc (p (text \"[b][]\")) (def))");
+    /* Full: the brackets are text, and the label is no shortcut either. */
+    CHECK_TREE("[x][b]\n\n[a]: /u", "(doc (p (text \"[x][b]\")) (def))");
+    /* No definition at all in the document. */
+    CHECK_TREE("[a] [b][c] [d][]", "(doc (p (text \"[a] [b][c] [d][]\")))");
+}
+
+/* Parses "[" + count characters 'a' + "]" + tail, then a blank line and a
+ * definition with the same label. */
+static void parse_long_label(size_t count, const char *tail)
+{
+    static char buffer[2 * 1000 + 64];
+    size_t length = 0;
+    size_t i;
+    size_t tail_length = strlen(tail);
+
+    buffer[length++] = '[';
+    for (i = 0; i < count; i++) {
+        buffer[length++] = 'a';
+    }
+    buffer[length++] = ']';
+    memcpy(buffer + length, tail, tail_length);
+    length += tail_length;
+    memcpy(buffer + length, "\n\n[", 3);
+    length += 3;
+    for (i = 0; i < count; i++) {
+        buffer[length++] = 'a';
+    }
+    memcpy(buffer + length, "]: /u", 5);
+    length += 5;
+    parse_bytes(buffer, length);
+}
+
+NAOS_TEST(labels_of_999_and_1000_characters)
+{
+    amark_node_id_t link;
+
+    /* 999 characters: a definition, and a shortcut link to it. */
+    parse_long_label(999, "");
+    NAOS_REQUIRE_UINT_EQ(child_count(amark_document_root(g_doc)), 2);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, block_at(1)),
+                       AMARK_KIND_LINK_REFERENCE_DEFINITION);
+    link = child_at(paragraph(), 0);
+    NAOS_CHECK_UINT_EQ(child_count(paragraph()), 1);
+    check_node(link, AMARK_KIND_LINK, 0, 1001, 1, 1);
+    check_reference(link, AMARK_LINK_SHORTCUT, block_at(1));
+
+    /* And a collapsed one. */
+    parse_long_label(999, "[]");
+    link = child_at(paragraph(), 0);
+    check_node(link, AMARK_KIND_LINK, 0, 1003, 1, 1);
+    check_reference(link, AMARK_LINK_COLLAPSED, block_at(1));
+
+    /* 1000 characters: no definition and no link. */
+    parse_long_label(1000, "");
+    NAOS_REQUIRE_UINT_EQ(child_count(amark_document_root(g_doc)), 2);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, block_at(1)),
+                       AMARK_KIND_PARAGRAPH);
+    NAOS_CHECK_UINT_EQ(child_count(paragraph()), 1);
+    check_node(child_at(paragraph(), 0), AMARK_KIND_TEXT, 0, 1002, 1, 1);
+}
+
+NAOS_TEST(a_label_of_1000_characters_after_the_text_is_no_label)
+{
+    static char buffer[1000 + 64];
+    const char *head = "[a][";
+    const char *tail = "]\n\n[a]: /u";
+    size_t length = strlen(head);
+    size_t i;
+
+    /* The full reference does not match, so the text is a shortcut. */
+    memcpy(buffer, head, length);
+    for (i = 0; i < 1000; i++) {
+        buffer[length++] = 'b';
+    }
+    memcpy(buffer + length, tail, strlen(tail));
+    length += strlen(tail);
+    parse_bytes(buffer, length);
+    check_node(child_at(paragraph(), 0), AMARK_KIND_LINK, 0, 3, 1, 1);
+    check_reference(child_at(paragraph(), 0), AMARK_LINK_SHORTCUT,
+                    block_at(1));
+    check_node(child_at(paragraph(), 1), AMARK_KIND_TEXT, 3, 1005, 1, 1);
+}
+
+NAOS_TEST(labels_are_compared_after_case_folding_and_white_space)
+{
+    /* Example 540 of the specification: U+1E9E folds to "ss". */
+    CHECK_TREE("[\xE1\xBA\x9E]\n\n[SS]: /u",
+               "(doc (p (link shortcut def=\"SS\" "
+               "(text \"\\xE1\\xBA\\x9E\"))) (def))");
+    CHECK_TREE("[x][Foo  \tBAR]\n\n[foo bar]: /u",
+               "(doc (p (link full def=\"foo bar\" (text \"x\"))) (def))");
+    CHECK_TREE("[ Foo bar ][]\n\n[foo bar]: /u",
+               "(doc (p (link collapsed def=\"foo bar\" "
+               "(text \" Foo bar \"))) (def))");
+}
+
+NAOS_TEST(a_label_across_lines)
+{
+    amark_node_id_t link;
+
+    /* A full reference label across lines makes no line break (13.7). */
+    CHECK_TREE("[x][a\nb]\n\n[a b]: /u",
+               "(doc (p (link full def=\"a b\" (text \"x\"))) (def))");
+    link = child_at(paragraph(), 0);
+    NAOS_CHECK_UINT_EQ(child_count(paragraph()), 1);
+    check_node(link, AMARK_KIND_LINK, 0, 8, 1, 2);
+    NAOS_CHECK_UINT_EQ(child_count(link), 1);
+
+    /* Inside a block quote, the prefix is not part of the label. */
+    PARSE("> [x][a\n> b]\n\n[a b]: /u");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (bq (p (link full def=\"a b\" (text \"x\")))) "
+                      "(def))");
+    link = child_at(child_at(block_at(0), 0), 0);
+    check_node(link, AMARK_KIND_LINK, 2, 12, 1, 2);
+    check_reference(link, AMARK_LINK_FULL, block_at(1));
+    NAOS_CHECK_UINT_EQ(child_count(link), 1);
+
+    /* A shortcut whose text is across lines: its line break is a child. */
+    PARSE("> [a\n> b]\n\n[a b]: /u");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (bq (p (link shortcut def=\"a b\" (text \"a\") "
+                      "(sbr) (text \"b\")))) (def))");
+    link = child_at(child_at(block_at(0), 0), 0);
+    check_node(link, AMARK_KIND_LINK, 2, 9, 1, 2);
+    check_reference(link, AMARK_LINK_SHORTCUT, block_at(1));
+}
+
+NAOS_TEST(labels_are_compared_as_written)
+{
+    /* An escape in the text is not undone before the comparison. */
+    CHECK_TREE("[a\\*]\n\n[a*]: /u",
+               "(doc (p (text \"[a\") (esc \"\\\\*\") (text \"]\")) (def))");
+    CHECK_TREE("[a\\*]\n\n[a\\*]: /u",
+               "(doc (p (link shortcut def=\"a\\\\*\" (text \"a\") "
+               "(esc \"\\\\*\"))) (def))");
+    /* Nor is a character reference or emphasis. */
+    CHECK_TREE("[x][&amp;]\n\n[&]: /u",
+               "(doc (p (text \"[x][\") (ref \"&amp;\") (text \"]\")) "
+               "(def))");
+    CHECK_TREE("[*a*]\n\n[a]: /u",
+               "(doc (p (text \"[\") (em (text \"a\")) (text \"]\")) "
+               "(def))");
+    /* An escaped bracket inside the text can be part of a label. */
+    CHECK_TREE("[a\\]b]\n\n[a\\]b]: /u",
+               "(doc (p (link shortcut def=\"a\\\\]b\" (text \"a\") "
+               "(esc \"\\\\]\") (text \"b\"))) (def))");
+}
+
+/* ---- Precedence of the forms ---- */
+
+NAOS_TEST(the_inline_form_comes_first)
+{
+    CHECK_TREE("[a](b)\n\n[a]: /u",
+               "(doc (p (link inline dest=\"b\" (text \"a\"))) (def))");
+    /* A part in parentheses that does not match: a shortcut, then text. */
+    CHECK_TREE("[a](b c)\n\n[a]: /u",
+               "(doc (p (link shortcut def=\"a\" (text \"a\")) "
+               "(text \"(b c)\")) (def))");
+}
+
+NAOS_TEST(a_full_reference_without_a_definition_tries_no_shortcut)
+{
+    /* The text [a] has a definition, the label [b] has none. */
+    CHECK_TREE("[a][b]\n\n[a]: /u", "(doc (p (text \"[a][b]\")) (def))");
+    /* The label goes on as brackets of its own (9.7). */
+    CHECK_TREE("[b][a]\n\n[a]: /u",
+               "(doc (p (link full def=\"a\" (text \"b\"))) (def))");
+    CHECK_TREE("[a][b]\n\n[b]: /u",
+               "(doc (p (link full def=\"b\" (text \"a\"))) (def))");
+    /* Example 568 of the specification. */
+    CHECK_TREE("[foo][bar][baz]\n\n[baz]: /1",
+               "(doc (p (text \"[foo]\") (link full def=\"baz\" "
+               "(text \"bar\"))) (def))");
+    check_node(child_at(paragraph(), 1), AMARK_KIND_LINK, 5, 15, 1, 1);
+    /* Example 569: the second label is the text of a shortcut. */
+    CHECK_TREE("[foo][bar][baz]\n\n[baz]: /1\n[bar]: /2",
+               "(doc (p (link full def=\"bar\" (text \"foo\")) "
+               "(link shortcut def=\"baz\" (text \"baz\"))) (def) (def))");
+    check_node(child_at(paragraph(), 0), AMARK_KIND_LINK, 0, 10, 1, 1);
+    check_node(child_at(paragraph(), 1), AMARK_KIND_LINK, 10, 15, 1, 1);
+    /* Example 570. */
+    CHECK_TREE("[foo][bar][baz]\n\n[baz]: /1\n[foo]: /2",
+               "(doc (p (text \"[foo]\") (link full def=\"baz\" "
+               "(text \"bar\"))) (def) (def))");
+}
+
+NAOS_TEST(collapsed_and_what_is_not_a_label)
+{
+    amark_node_id_t link;
+
+    CHECK_TREE("[a][]\n\n[a]: /u",
+               "(doc (p (link collapsed def=\"a\" (text \"a\"))) (def))");
+    /* White space between the text and the "[]": a shortcut (9.11). */
+    CHECK_TREE("[a] []\n\n[a]: /u",
+               "(doc (p (link shortcut def=\"a\" (text \"a\")) "
+               "(text \" []\")) (def))");
+    CHECK_TREE("[a]\n[]\n\n[a]: /u",
+               "(doc (p (link shortcut def=\"a\" (text \"a\")) (sbr) "
+               "(text \"[]\")) (def))");
+    /* "[ ]" is neither a label nor "[]": a shortcut, then text. This differs
+     * from both reference implementations; the specification has no
+     * example. */
+    CHECK_TREE("[a][ ]\n\n[a]: /u",
+               "(doc (p (link shortcut def=\"a\" (text \"a\")) "
+               "(text \"[ ]\")) (def))");
+    link = child_at(paragraph(), 0);
+    check_node(link, AMARK_KIND_LINK, 0, 3, 1, 1);
+    check_reference(link, AMARK_LINK_SHORTCUT, block_at(1));
+    check_node(child_at(paragraph(), 1), AMARK_KIND_TEXT, 3, 6, 1, 1);
+    /* A label that is not closed: a shortcut. */
+    CHECK_TREE("[a][b\n\n[a]: /u",
+               "(doc (p (link shortcut def=\"a\" (text \"a\")) "
+               "(text \"[b\")) (def))");
+}
+
+NAOS_TEST(a_text_with_brackets_is_no_label)
+{
+    /* The inner shortcut is a link; the outer brackets are text. */
+    CHECK_TREE("[[a]]\n\n[a]: /u",
+               "(doc (p (text \"[\") (link shortcut def=\"a\" (text \"a\")) "
+               "(text \"]\")) (def))");
+    /* Example 545 of the specification, with a full reference after it. */
+    CHECK_TREE("[foo [bar](/uri)][ref]\n\n[ref]: /u",
+               "(doc (p (text \"[foo \") (link inline dest=\"/uri\" "
+               "(text \"bar\")) (text \"]\") (link shortcut def=\"ref\" "
+               "(text \"ref\"))) (def))");
+    /* Brackets in the text that make no link: no label, so no link. */
+    CHECK_TREE("[a [b] c]\n\n[a]: /u", "(doc (p (text \"[a [b] c]\")) (def))");
+    /* A ']' inside a code span ends the scan of the label early. */
+    CHECK_TREE("[a`]`]\n\n[a`]: /u",
+               "(doc (p (text \"[a\") (code \"`]`\") (text \"]\")) "
+               "(def))");
+}
+
 NAOS_SUITE(inline_form,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -635,10 +1020,36 @@ NAOS_SUITE(lines,
     NAOS_ADD_TEST(line_breaks_inside_the_link_text_are_children_of_the_link)
 )
 
+NAOS_SUITE(references,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(the_three_reference_forms_of_links),
+    NAOS_ADD_TEST(the_three_reference_forms_of_images),
+    NAOS_ADD_TEST(the_first_of_the_definitions_with_the_same_label),
+    NAOS_ADD_TEST(definitions_anywhere_in_the_document),
+    NAOS_ADD_TEST(a_label_without_a_definition),
+    NAOS_ADD_TEST(labels_of_999_and_1000_characters),
+    NAOS_ADD_TEST(a_label_of_1000_characters_after_the_text_is_no_label),
+    NAOS_ADD_TEST(labels_are_compared_after_case_folding_and_white_space),
+    NAOS_ADD_TEST(a_label_across_lines),
+    NAOS_ADD_TEST(labels_are_compared_as_written)
+)
+
+NAOS_SUITE(reference_precedence,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(the_inline_form_comes_first),
+    NAOS_ADD_TEST(a_full_reference_without_a_definition_tries_no_shortcut),
+    NAOS_ADD_TEST(collapsed_and_what_is_not_a_label),
+    NAOS_ADD_TEST(a_text_with_brackets_is_no_label)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(inline_form),
     NAOS_ADD_SUITE(text),
     NAOS_ADD_SUITE(nesting),
     NAOS_ADD_SUITE(precedence),
-    NAOS_ADD_SUITE(lines)
+    NAOS_ADD_SUITE(lines),
+    NAOS_ADD_SUITE(references),
+    NAOS_ADD_SUITE(reference_precedence)
 )

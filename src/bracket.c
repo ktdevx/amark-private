@@ -10,6 +10,7 @@
 
 #include <amark/tree.h>
 
+#include "definition.h"
 #include "inline_scan.h"
 
 void amark_brackets_init(amark_brackets_t *brackets, amark_arena_t *scratch)
@@ -60,6 +61,74 @@ static bool match_inline(amark_cursor_t *cursor, amark_draft_link_t *attr)
     attr->has_title = tail.has_title;
     attr->title = tail.title;
     attr->definition = AMARK_NODE_NONE;
+    return true;
+}
+
+/*
+ * The reference forms (CommonMark 0.31.2, section 6.3), tried when the
+ * inline form does not match. bracket is the bracket taken off the stack and
+ * cursor is at its ']'. In this order:
+ *
+ *   - full: right after the ']' (no white space between), a label read by
+ *     amark_label_scan. If it has a definition, that is the link; if not,
+ *     there is no link and no shortcut is tried (the label then goes on as
+ *     brackets of its own);
+ *   - collapsed: right after the ']', exactly "[]";
+ *   - shortcut: anything else, including a '[' that does not start a label
+ *     (such as "[ ]").
+ *
+ * The collapsed and shortcut forms use the text as the label: it is one if
+ * amark_label_scan from the bracket's '[' ends at this ']', so a text with
+ * an unescaped bracket is none. Normalizing and comparing the labels is left
+ * to amark_definitions_find, which gives the first definition in the
+ * document.
+ *
+ * If one matches, moves cursor to right after the form, stores the
+ * attribute in *attr and returns true; otherwise leaves cursor at the ']'
+ * and returns false.
+ */
+static bool match_reference(amark_cursor_t *cursor,
+                            const amark_bracket_t *bracket,
+                            amark_draft_link_t *attr)
+{
+    const amark_document_t *doc = cursor->doc;
+    size_t close = cursor->pos;
+    size_t after = close + 1;
+    size_t label_start;
+    size_t label_end;
+    amark_node_id_t def;
+    amark_link_form_t form = AMARK_LINK_SHORTCUT;
+
+    if (after < cursor->line_end && cursor->bytes[after] == '[') {
+        if (amark_label_scan(doc, after, cursor->limit, &label_start,
+                             &label_end)) {
+            form = AMARK_LINK_FULL;
+            after = label_end + 1;
+        } else if (after + 1 < cursor->line_end &&
+                   cursor->bytes[after + 1] == ']') {
+            form = AMARK_LINK_COLLAPSED;
+            after += 2;
+        }
+    }
+    if (form != AMARK_LINK_FULL &&
+        (!amark_label_scan(doc, bracket->open, cursor->limit, &label_start,
+                           &label_end) ||
+         label_end != close)) {
+        return false;
+    }
+    def = amark_definitions_find(doc, label_start, label_end);
+    if (def == AMARK_NODE_NONE) {
+        return false;
+    }
+    attr->form = form;
+    attr->has_destination = false;
+    attr->destination.start = 0;
+    attr->destination.end = 0;
+    attr->has_title = false;
+    attr->title.start = 0;
+    attr->title.end = 0;
+    attr->definition = def;
+    amark_cursor_seek(cursor, after);
     return true;
 }
 
@@ -124,7 +193,11 @@ amark_error_t amark_bracket_close(amark_brackets_t *brackets,
     if (brackets->link_floor > height) {
         brackets->link_floor = height;
     }
-    if (!active || !match_inline(cursor, &attr)) {
+    if (!active) {
+        return AMARK_ERROR_NONE;
+    }
+    if (!match_inline(cursor, &attr) &&
+        !match_reference(cursor, &bracket, &attr)) {
         return AMARK_ERROR_NONE;
     }
     *made = true;

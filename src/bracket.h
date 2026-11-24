@@ -82,8 +82,14 @@ amark_error_t amark_brackets_push(amark_brackets_t *brackets,
  *   3. for a link, sets the link floor to the height of the stack, so every
  *      link bracket left on it is inactive.
  *
- * The form tried is the inline form: a part in parentheses read by
- * amark_inline_scan_link_tail right after the ']'.
+ * The forms are tried in the order of CommonMark 0.31.2: the inline form (a
+ * part in parentheses read by amark_inline_scan_link_tail right after the
+ * ']'), then the full and collapsed reference forms, then the shortcut
+ * reference form. The labels are read with amark_label_scan and looked up
+ * with amark_definitions_find in the definition table of cursor->doc. A
+ * full reference whose label has no definition makes nothing, and no
+ * shortcut is tried. A reference form has neither a destination nor a title;
+ * its attribute holds the node of the definition.
  *
  * If a link or an image is made, sets *made to true and moves cursor to
  * right after the form. Otherwise sets *made to false and leaves cursor at
