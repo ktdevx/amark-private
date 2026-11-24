@@ -194,3 +194,127 @@ block-parser も、同じ形（新しいモジュールを中心に、上流を�
 - `amark_label_scan` を `]` のたびに呼ぶときの時間（最大 1,000 文字 × 回数）を、病的な入力で測る。
 - インラインの dest の丸括弧の入れ子に、参照実装は上限（32）を置く。要件 8.6 は上限を置かない。spec.txt の例と食い違わないかを確かめる。
 - cmark の pathological tests の一覧と、要件 18.1 の入力の対応。
+
+---
+
+# Research & Design Decisions
+
+## Summary
+- **Feature**: `inline-parser`
+- **Discovery Scope**: Complex Integration（新しい解析の段階を、既存の入口・木・行の記録・定義の表につなぐ）
+- **Key Findings**:
+  - cmark の方式（区切りのスタックと括弧のスタック）は、作業用の「項目の木」の上でそのまま動かせる。木には、決まったノードだけを文書の順に足せばよい。これで、取り除いたノードが上限に数えられる問題と、後から包むと深くなる問題が、どちらも消える。
+  - 山括弧のない dest の丸括弧に上限がないと、`[a](b` の繰り返しで時間が 2 乗になる。cmark は 32 段で打ち切る。仕様も上限を認めている。要件 8.6 を直した。
+  - cmark の `no_link_openers` の印は、新しい `[` が来ると戻るので、`[a [b](c) [d] e](f)` で外側がリンクになってしまう。括弧のスタックの高さで「リンクの下限」を持てば、たどらずに正しく無効にできる。
+  - 上流への追加は `amark_array_clear` の 1 つで足りる。後ろ向きのデコード、実体名の長さの定数、内容の一覧の深さは、足さずに済む。
+
+## Research Log
+
+### cmark の区切りの処理
+- **Context**: 強調の対応を、線形の時間で、仕様の 17 の規則どおりに決める方法。
+- **Sources Consulted**: cmark 0.31.1 `src/inlines.c`（`scan_delims`、`process_emphasis`、`S_insert_emph`）、CommonMark 0.31.2 付録「A parsing strategy」
+- **Findings**:
+  - 区切りの列の直前の文字は、原文の直前のバイトから読む。エスケープや文字参照の直後でも、原文の文字（`\*` なら `*`、`&amp;` なら `;`）を見る。内容の先頭と、デコードできないときは、改行（空白）として扱う。
+  - `openers_bottom` は、`_` と `*` のそれぞれに「開けるかどうか × 長さを 3 で割った余り」の 6 個を持つ。
+  - 使う区切りは、開く側と閉じる側の長さがともに 2 以上なら 2 つ、そうでなければ 1 つ。開く列は内側から使う。
+  - 開く区切りが見つからず、閉じる区切りが開けないものなら、スタックから外す。
+- **Implications**: InlineDelim の `process` の契約を、この形にした。下限の表は、種類 1 つにつき 6 個とし、種類の数で大きさを決める（方言の区切りを足せる）。直前の文字は、行の内容の始まりでは U+000A とする（cmark は行のプレフィックスを除いた写しの上で動くので、同じ結果になる）。
+
+### cmark の括弧の処理と、リンクの中のリンク
+- **Context**: `]` でリンクか画像を作るかを決める順と、リンクの中のリンクを禁じる方法。
+- **Sources Consulted**: `handle_close_bracket`、`push_bracket`、`link_label`
+- **Findings**:
+  - 順は、インライン、続くラベル、テキストをラベルとする参照である。続くラベルが見つかって定義がないときは、ショートカットを試さない。
+  - `bracket_after`（テキストの中に括弧がある）のときは、テキストをラベルにしない。
+  - リンクができると `no_link_openers` を立て、次のリンクの `[` で倒す。倒した後は、古い `[` もまた有効に見える。
+  - 続くラベルが空白だけ（`[ ]`）のとき、cmark は省略参照として扱い、commonmark.js はラベルを引いて失敗する。仕様の文言では、`[ ]` はラベルでも `[]` でもない。
+- **Implications**: 「テキストがラベルになれる」は、`amark_label_scan` の結果の終わりが `]` と一致することで判定する（`bracket_after` と同じ効果になる）。リンクの下限は、スタックの高さで持つ。`[a][ ]` は、仕様の文言に従い、ショートカットのリンクと、テキスト ` [ ]` にする。参照実装との違いなので、テストに書く。
+
+### 線形に保つ工夫
+- **Context**: 要件 18.1 の入力のそれぞれで、時間が 2 乗にならないこと。
+- **Sources Consulted**: `scan_to_closing_backticks`、`handle_pointy_brace`、`manual_scan_link_url_2`、`test/pathological_tests.py`
+- **Findings**:
+  - バッククォート：列の長さ（1,000 まで）ごとに最後に見た位置を持ち、終わりまで探したら印を立てる。1,000 を超える列は、コードスパンにしない。
+  - 閉じない `<!--`、`<?`、`<!X`、`<![CDATA[`：種類ごとの印で、2 回目から探さない。
+  - dest：丸括弧が 32 を超えたら打ち切る。
+  - 病的な入力の一覧は、設計の「Performance & Scalability」の表に対応させた。
+- **Implications**: バッククォートの表は、長さを添字にして伸ばす配列にし、列の長さに上限を置かない（要件 6.1）。位置を内容の先頭からのオフセットで持つので、内容が変わっても空にしなくてよい。文字参照は、英数字の並びだけを読むので、実体名の最大の長さを知らなくても線形である。
+
+### 行末の空白と改行
+- **Context**: 改行のノードの範囲と、ハードとソフトの判定。
+- **Sources Consulted**: `handle_newline`、`parse_inline` の既定の枝（`cmark_chunk_rtrim`）
+- **Findings**: cmark は、行末のテキストから空白（タブを含む）を除く。ハードの判定は、行末記号の直前の 2 バイトがスペースかどうかである。次の行の先頭のスペースは飛ばす。commonmark.js は、行末のスペースだけを除く。
+- **Implications**: 要件 3.5 と 13.4（スペースとタブを改行のノードに含める）は、cmark の動作と合う。spec.txt に、行末のタブの例はない。
+
+### 既存のテストへの影響
+- **Context**: インラインのノードが加わると、`amark_parse` を通す既存のテストがどう変わるか。
+- **Findings**: `tests/unit/test_block_limits.c` は、深さとノードの数の境の値を、ブロックだけの数で書いている（`parse_ok` と `parse_exceeds` が 72 か所）。段落のテキストは、段落より 1 段深く、ノードを 1 つ増やす。`tests/public/test_parse.c` は、文書の順のノードの表を持つ。`test_block.c` は `amark_block_parse` を直接呼ぶので変わらない。
+- **Implications**: 期待値を直す作業を、設計の「Modified Files」に入れた。
+
+## Architecture Pattern Evaluation
+
+| Option | Description | Strengths | Risks / Limitations | Notes |
+|--------|-------------|-----------|---------------------|-------|
+| 木の上で作って直す | cmark と同じく、区切りをテキストのノードにし、後で取り除いて包む | 参照実装に近い。syntax-tree の想定どおり | 取り除いたノードが上限に数えられる。包むと深さが変わる。ノードの配列にごみが残る | 採らない |
+| 項目の木を作ってから書き出す | 作業用の項目で対応を決め、決まったものだけを木へ足す | 上限が最終の木と一致する。ID が文書の順。木を作る API は `append` だけ | 作業用の木の操作（包む、取り除く）を、この spec が持つ | **採る** |
+| 区切りだけを遅らせる | 区切りはノードにせず、残った分だけを後から挿入する | 取り除くノードが減る | テキストをまとめるときに、やはり取り除く。挿入位置の管理が要る | 採らない |
+
+## Design Decisions
+
+### Decision: 項目の木を作ってから書き出す
+- **Context**: `amark_document_node_count` は取り除いたノードも数える。`amark_tree_wrap` は子孫を深くする。要件 16.3 と 16.4 は、上限を利用者に分かる形で守ることを求める。
+- **Alternatives Considered**: 上の表の 3 つ。
+- **Selected Approach**: 内容ごとに、作業用のアリーナの配列に項目の木を作る。区切りと括弧の対応が決まった後で、文書の順にたどって `amark_tree_append` する。
+- **Rationale**: ノードの数は最終の木の大きさと一致し、深さは書き出すときに分かる。失敗しても、木には決まったノードしかない。
+- **Trade-offs**: 項目の木の操作を自分で持つ（200 行ほどの見込み）。`amark_tree_wrap` と `amark_tree_remove` は、この spec では使わない（dialect-extension の後処理が使う見込みがあるので、残す）。
+- **Follow-up**: syntax-tree の設計の注記（inline-parser が `amark_tree_remove` と `amark_tree_wrap` を使う）を直す。
+
+### Decision: 上流の走査は作り直さず、インライン用に書く
+- **Context**: 行をまたぐカーソル、dest と title、タグの走査が、`refdef.c`、`definition.c`、`scan.c` に `static` である（Gap Analysis の差 1 と差 3）。
+- **Alternatives Considered**:
+  1. 共通の部品に取り出し、既存の 3 つのファイルも移す
+  2. インライン用に新しく書く
+- **Selected Approach**: 2。`inline_cursor` と `inline_scan` を新しく書く。
+- **Rationale**: 既存の関数は、定義と HTML ブロックに合わせた前提（開始が行の内容の始まり、1 行だけ、dest は空でない）を持ち、そのままでは使えない。承認済みのコードとテストを動かさずに済む。
+- **Trade-offs**: 規則が 2 か所になる。同じ例を両方のテストに通して、ずれを見つける。
+- **Follow-up**: source-text もカーソルを要する見込みである。そのときに、3 つをまとめるかを改めて決める。
+
+### Decision: 直前の文字は、その場で後ろへ読む
+- **Context**: 強調の判定に、区切りの列の直前の文字が要る。`utf8` には、前へ進む向きのデコードしかない（差 4）。
+- **Selected Approach**: 最大 3 バイトの継続バイトを戻り、そこから `amark_utf8_decode_lossy` で読む。読んだ長さが元の位置にちょうど届けばその文字、届かなければ U+FFFD とする。
+- **Rationale**: 正しい列の先頭バイトは、前の不正な列に取り込まれない（継続バイトの範囲と先頭バイトの範囲が重ならない）ので、前から読んだ場合と同じ文字になる。届かないときは、直前のバイトは不正な列の一部であり、U+FFFD である。
+- **Trade-offs**: U+FFFD は General Category が So なので、不正なバイト列と U+0000 は句読点として働く。cmark も U+0000 を U+FFFD に置き換えてから解析するので、同じである。
+
+### Decision: 段落の深さは、親をたどって数える
+- **Context**: 内容の一覧（`amark_inline_content_t`）は深さを持たない。
+- **Alternatives Considered**: 一覧に深さを足す（block-parser の変更）／親をたどる。
+- **Selected Approach**: 深さの上限が指定されているときだけ、`amark_node_parent` で根までたどる。
+- **Rationale**: 深さ d の段落が始まる行は、d に比例するプレフィックスを持つので、合計は内容の長さの定数倍である。block-parser を変えずに済む。
+
+### Decision: 要件 8.6 を直した
+- **Context**: 要件 8.6 は、dest の丸括弧の対応を「入れ子の深さによらず判定する」としていた。
+- **Selected Approach**: 「入れ子が 32 段まで」に直した。
+- **Rationale**: 上限がないと、`[a](b` の繰り返しで、`]` のたびに内容の終わりまで読むことになり、時間が 2 乗になる（要件 18.1 と両立しない）。仕様は「実装は上限を置いてよい。3 段以上は扱うべき」としている。32 は cmark と同じ値である。
+- **Trade-offs**: 33 段以上の丸括弧を含む dest は、山括弧で囲むか、エスケープしなければリンクにならない。
+
+### Decision: テストの書き出しは、原文を添える
+- **Context**: spec.txt の 356 個の例で、インラインの構造を比べる手段（差 8）。
+- **Selected Approach**: `amark_test_dump_tree` は、子を持たない種類について、範囲の原文を引用符で添える。リンクは、dest と title の原文、参照先の定義のラベルを添える。
+- **Rationale**: 期待する文字列を、仕様の HTML から手で書き起こせる。テキストの区切り方と範囲の誤りが、文字列の違いとして見える。範囲の数値は、別のテストで確かめる。
+
+### Synthesis
+- **Generalization**: `*` と `_` は、区切りの種類の表の 2 つの要素として扱う。リンクと画像は、括弧のスタックの印 1 つの違いにする。4 つの「閉じない HTML」は、1 つのビットの集まりで扱う。方言の区切りと起動文字は、同じ表に足すだけで流れに乗る（実装はこの spec の範囲に留める）。
+- **Build vs. Adopt**: 規則と線形に保つ工夫は、cmark の方式を採る（コードは写さない）。木を作る部分は、作業用の項目の木を自分で作る。上流の `amark_label_scan` と `amark_definitions_find` は、そのまま使う。
+- **Simplification**: 共通のカーソルへの作り直し、内容の一覧への深さの追加、後ろ向きのデコード、実体名の長さの定数は、要らないと分かったので外した。モジュールは 7 つで、木に触れるのは 1 つだけである。
+
+## Risks & Mitigations
+- 強調とリンクの規則の境の場合を取りこぼす — spec.txt の 356 個の例を、節ごとの表で確かめる。
+- 規則が `refdef.c`・`scan.c` と 2 か所になり、ずれる — 同じ dest、title、タグの例を、両方のテストに通す。
+- 既存のテストの期待値の直しに、誤りが混ざる — ブロックの構造を比べるテスト（`amark_test_dump_blocks`）は変えずに通ることで、ブロックの木が変わっていないことを確かめる。
+- 病的な入力のテストが遅い環境で時間切れになる — 入力の大きさを、線形なら 1 秒より十分に短く、2 乗なら制限時間を大きく超える値にする。
+- 参照実装との違い（`[a][ ]`、行末のタブ、1,000 個を超えるバッククォートの列）が、spec-conformance で問題になる — spec.txt に該当する例はない。違いをテストに明記する。
+
+## References
+- [CommonMark Spec 0.31.2](https://spec.commonmark.org/0.31.2/) — 6 章と付録「A parsing strategy」
+- [cmark 0.31.1 `src/inlines.c`](https://github.com/commonmark/cmark/blob/0.31.1/src/inlines.c) — 区切りと括弧の処理、線形に保つ工夫
+- [cmark 0.31.1 `test/pathological_tests.py`](https://github.com/commonmark/cmark/blob/0.31.1/test/pathological_tests.py) — 病的な入力の一覧
