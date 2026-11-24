@@ -11,7 +11,11 @@
  * links and images, alone and inside deep block quotes and lists);
  * emphasis, brackets and images nested 100,000 deep with no limits; and the
  * inputs of the table of "Performance & Scalability" in the design, which
- * make a careless inline parser take time quadratic in their length.
+ * make a careless inline parser take time quadratic in their length. Also:
+ * a failure injected at each allocation of a parse of every inline kind,
+ * and of a paragraph padded so that each step of the inline parse meets a
+ * failure in turn, leaves nothing behind; and the same input gives the
+ * same tree, node ID by node ID, parse after parse.
  *
  * Linear time. Each of those inputs is a pattern repeated n times, and is
  * parsed at a small n and at an n that makes it about 32 times as long
@@ -76,6 +80,8 @@
 static amark_test_alloc_t g_state;
 static amark_allocator_t g_allocator;
 static amark_document_t *g_doc;
+/* A second document, for the tests that compare two parses. */
+static amark_document_t *g_other;
 
 /* The input of a test, allocated with the counting allocator. */
 static char *g_input;
@@ -90,6 +96,7 @@ NAOS_SETUP(counting)
     amark_test_alloc_init(&g_state);
     g_allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
+    g_other = NULL;
     g_input = NULL;
     g_length = 0;
     g_capacity = 0;
@@ -102,6 +109,10 @@ NAOS_TEARDOWN(counting)
         amark_document_destroy(g_doc);
     }
     g_doc = NULL;
+    if (g_other != k_sentinel) {
+        amark_document_destroy(g_other);
+    }
+    g_other = NULL;
     if (g_input != NULL) {
         g_allocator.free_fn(g_allocator.ctx, g_input);
     }
@@ -1026,6 +1037,421 @@ NAOS_TEST(unclosed_title_after_nested_destinations)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Allocation failures                                                    */
+/* ---------------------------------------------------------------------- */
+
+/* The whole tree of an input, as amark_test_dump_tree writes it. */
+#define DUMP_SIZE ((size_t)64 * 1024)
+static char g_dump_want[DUMP_SIZE];
+static char g_dump_got[DUMP_SIZE];
+
+/* Writes the whole tree of doc to buffer (DUMP_SIZE bytes). */
+static void dump_whole(const amark_document_t *doc, char *buffer)
+{
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(doc, buffer, DUMP_SIZE),
+                         DUMP_SIZE);
+}
+
+/*
+ * Every inline construct, in a paragraph, a heading, a block quote and a
+ * list item: texts, emphasis and strong emphasis (with "*" and "_", nested,
+ * and runs used in part), links and images of the four forms (inline with
+ * and without a title and with an empty destination and title, full,
+ * collapsed and shortcut, a label of other case), links in images and
+ * images in links, a bracket under the link floor, delimiters inside and
+ * outside a link that do not match, autolinks of both types, raw HTML of
+ * the six forms, code spans, backslash escapes, character references, hard
+ * and soft line breaks, and constructs that do not close (a backtick
+ * string, a comment, a link). In the block quote a link, its title, a code
+ * span and raw HTML run over several lines, with the prefixes in their
+ * ranges. A blank line ends it, so copies of it follow one another; the
+ * repeated definition is ignored, and every reference refers to the first.
+ */
+static const char k_every_inline[] =
+    "[ref]: /url \"title\"\n"
+    "\n"
+    "# Heading *em* `code` [ref]\n"
+    "\n"
+    "Text *em* **strong** ***both*** _u_ __uu__ *a **b* c** x\\\n"
+    "hard  \n"
+    "soft [inline](/dest \"title\") [empty](<> \"\") "
+    "![image *alt*](/img 'img title')\n"
+    "[full][ref] [collapsed][] [ref] ![ref] [Ref][] "
+    "<https://example.com> <a@b.co>\n"
+    "<span class=\"x\"> <!-- comment --> <?pi?> <!DECL x> "
+    "<![CDATA[ c ]]> </span>\n"
+    "`code span` `` a ` b `` \\* \\_ &amp; &#35; &#x41; &nope; "
+    "[nested ![img](/i) **in** link](/u)\n"
+    "[a [b](c) [d] e](f) **x [a*b**c*](d) ` open `` <!-- open [no] *a\n"
+    "> quoted *emphasis\n"
+    "> over lines* and [a link\n"
+    "> over lines](/u\n"
+    "> \"title\n"
+    "> over lines\") with `code\n"
+    "> span` and <span\n"
+    "> attr=\"v\">\n"
+    "- item [x][ref] *list* <x@y.z>\n"
+    "  lazy **strong** &#0;\n"
+    "\n";
+
+/*
+ * Requires the tree of g_doc to hold a node of every inline kind, a link of
+ * each of the four forms and an autolink of each type, so that a test with
+ * k_every_inline reaches every construct.
+ */
+static void check_every_inline_kind(void)
+{
+    amark_node_id_t root = amark_document_root(g_doc);
+    amark_node_id_t node = root;
+    bool kinds[AMARK_KIND_CHARACTER_REFERENCE - AMARK_KIND_TEXT + 1];
+    bool forms[AMARK_LINK_SHORTCUT + 1];
+    bool types[AMARK_AUTOLINK_EMAIL + 1];
+    size_t i;
+
+    memset(kinds, 0, sizeof(kinds));
+    memset(forms, 0, sizeof(forms));
+    memset(types, 0, sizeof(types));
+    while (node != AMARK_NODE_NONE) {
+        amark_kind_t kind = amark_node_kind(g_doc, node);
+        amark_node_id_t next = amark_node_first_child(g_doc, node);
+
+        if (kind >= AMARK_KIND_TEXT &&
+            kind <= AMARK_KIND_CHARACTER_REFERENCE) {
+            kinds[kind - AMARK_KIND_TEXT] = true;
+        }
+        if (kind == AMARK_KIND_LINK || kind == AMARK_KIND_IMAGE) {
+            forms[amark_link_form(g_doc, node)] = true;
+        }
+        if (kind == AMARK_KIND_AUTOLINK) {
+            types[amark_autolink_type(g_doc, node)] = true;
+        }
+        while (next == AMARK_NODE_NONE && node != root) {
+            next = amark_node_next_sibling(g_doc, node);
+            if (next == AMARK_NODE_NONE) {
+                node = amark_node_parent(g_doc, node);
+            }
+        }
+        node = next;
+    }
+    for (i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        NAOS_TRACE_PUSH("kind %lu", (unsigned long)(AMARK_KIND_TEXT + i));
+        NAOS_CHECK_TRUE(kinds[i]);
+        NAOS_TRACE_POP();
+    }
+    for (i = AMARK_LINK_INLINE; i <= AMARK_LINK_SHORTCUT; i++) {
+        NAOS_TRACE_PUSH("link form %lu", (unsigned long)i);
+        NAOS_CHECK_TRUE(forms[i]);
+        NAOS_TRACE_POP();
+    }
+    NAOS_CHECK_TRUE(types[AMARK_AUTOLINK_URI]);
+    NAOS_CHECK_TRUE(types[AMARK_AUTOLINK_EMAIL]);
+}
+
+/*
+ * Makes the n-th allocation of a parse of the input with the two limits
+ * fail, for n = 1, 2, 3, ... until the parse succeeds. Every failed parse
+ * must return AMARK_ERROR_NOMEM, store NULL in *out and leave no block but
+ * the input (the block parse, the inline parse and the document released
+ * alike); the parse that succeeds must give the whole tree of a parse with
+ * no failure, and leave no block but the input once the document is
+ * destroyed. Returns the number of allocations of a parse with no failure.
+ */
+static size_t inject_failures(size_t max_depth, size_t max_nodes)
+{
+    size_t calls;
+    size_t before;
+    size_t n;
+    bool succeeded = false;
+
+    /* The tree and the number of allocations with no failure. */
+    before = g_state.malloc_calls;
+    NAOS_REQUIRE_INT_EQ(parse_input(max_depth, max_nodes), AMARK_ERROR_NONE);
+    calls = g_state.malloc_calls - before;
+    check_tree();
+    dump_whole(g_doc, g_dump_want);
+    reset_doc();
+    /* The document and the two scratch arenas. */
+    NAOS_REQUIRE_UINT_GE(calls, 3);
+
+    for (n = 1; !succeeded && n <= calls + 1; n++) {
+        amark_error_t err;
+
+        NAOS_TRACE_PUSH("allocation %lu of %lu", (unsigned long)n,
+                        (unsigned long)calls);
+        g_state.fail_at = g_state.malloc_calls + n;
+        err = parse_input(max_depth, max_nodes);
+        g_state.fail_at = 0;
+        if (err == AMARK_ERROR_NONE) {
+            succeeded = true;
+            check_tree();
+            dump_whole(g_doc, g_dump_got);
+            NAOS_CHECK_STR_EQ(g_dump_got, g_dump_want);
+            reset_doc();
+        } else {
+            NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+            NAOS_CHECK_NULL(g_doc);
+            /* Only the input is left. */
+            NAOS_CHECK_UINT_EQ(g_state.live, 1);
+        }
+        NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+        NAOS_TRACE_POP();
+    }
+    /* The parse succeeds once no allocation fails, and not before. */
+    NAOS_CHECK_TRUE(succeeded);
+    NAOS_CHECK_UINT_EQ(n, calls + 2);
+    return calls;
+}
+
+/* The largest number of copies of k_every_inline in one input. */
+#define EVERY_INLINE_COPIES 6
+
+/*
+ * A failure at each allocation of a parse of 1 to EVERY_INLINE_COPIES
+ * copies of k_every_inline: the arenas and the arrays grow at other points
+ * of the parse with each number of copies. Also with both limits set to
+ * the values of the tree, so that the depth of each content is counted.
+ */
+NAOS_TEST(allocation_failure_at_every_call_with_every_inline_kind)
+{
+    size_t copies;
+    size_t nodes;
+    size_t walked;
+    size_t depth;
+
+    for (copies = 1; copies <= EVERY_INLINE_COPIES; copies++) {
+        NAOS_TRACE_PUSH("%lu copies", (unsigned long)copies);
+        input_begin((sizeof(k_every_inline) - 1) * copies);
+        REPEAT(k_every_inline, copies);
+        NAOS_REQUIRE_INT_EQ(parse_input(0, 0), AMARK_ERROR_NONE);
+        check_tree();
+        check_every_inline_kind();
+        nodes = amark_document_node_count(g_doc);
+        tree_size(&walked, &depth);
+        reset_doc();
+        /* Several blocks of the document arena and of each scratch arena,
+         * and a growth of each array. */
+        NAOS_CHECK_UINT_GE(inject_failures(0, 0), 3 + copies);
+        inject_failures(depth, nodes);
+        NAOS_TRACE_POP();
+    }
+}
+
+/*
+ * A paragraph that closes links, images and emphasis on the last bytes of
+ * the content: a reference image in an inline link with emphasis inside
+ * and outside, a full reference, a code span, an autolink and a character
+ * reference. Before it, 0 to PAD_MAX copies of a padding: with each number
+ * of copies, the arrays of the scratch arena and the nodes of the document
+ * arena grow at a later step of the paragraph, so a failure reaches each
+ * step of the inline parse in turn (an item appended, a link or an
+ * emphasis wrapped, the attributes of a link stored, a delimiter and a
+ * bracket pushed, the record of the backtick strings grown, a node
+ * written).
+ */
+static const char k_padded_definition[] = "[ref]: /url\n\n";
+static const char k_padded_tail[] =
+    " *a [b *c* ![d][ref] **e**](f \"t\") `g` <h@i.j> &amp; [k][ref]*";
+#define PAD_MAX 300
+
+/*
+ * The paddings: a prefix, then the unit repeated, each unit one to three
+ * items (one or three, so that the items that grow the arrays fall on
+ * every step in turn), and what each one makes grow.
+ */
+typedef struct padding {
+    const char *prefix;
+    const char *unit;
+} padding_t;
+
+static const padding_t k_paddings[] = {
+    {"", "\\*"},         /* the items and the nodes, one by one */
+    {"", "[a](b)"},      /* the attributes of the links */
+    {"", "*a*"},         /* the delimiters and the wraps of emphasis */
+    {"", "\\\n"},        /* hard line breaks after a backslash */
+    {"", "x\\*  \n"},    /* hard line breaks after spaces */
+    {"", "x\\*\n"},      /* soft line breaks */
+    {"` x ", "``"},      /* a backtick string as long as the padding,
+                            which the string before it records: the
+                            record of the strings */
+};
+
+NAOS_TEST(allocation_failure_at_every_call_at_every_position)
+{
+    size_t i;
+    size_t pad;
+
+    for (i = 0; i < sizeof(k_paddings) / sizeof(k_paddings[0]); i++) {
+        const padding_t *padding = &k_paddings[i];
+        size_t prefix = strlen(padding->prefix);
+        size_t unit = strlen(padding->unit);
+
+        for (pad = 0; pad <= PAD_MAX; pad++) {
+            NAOS_TRACE_PUSH("\"%s\" and %lu times \"%s\"", padding->prefix,
+                            (unsigned long)pad, padding->unit);
+            input_begin(sizeof(k_padded_definition) - 1 + prefix +
+                        unit * pad + sizeof(k_padded_tail) - 1);
+            APPEND(k_padded_definition);
+            input_string(padding->prefix, 1);
+            input_string(padding->unit, pad);
+            APPEND(k_padded_tail);
+            inject_failures(0, 0);
+            NAOS_TRACE_POP();
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------- */
+/* The same input gives the same tree                                     */
+/* ---------------------------------------------------------------------- */
+
+/* Requires a reader of a range to give the same answer in both documents. */
+#define CHECK_SAME_RANGE(reader, node)                                      \
+    do {                                                                    \
+        amark_range_t a_ = {0, 0};                                          \
+        amark_range_t b_ = {0, 0};                                          \
+        bool has_a_ = reader(g_doc, (node), &a_);                           \
+        bool has_b_ = reader(g_other, (node), &b_);                         \
+        NAOS_CHECK_INT_EQ(has_b_ ? 1 : 0, has_a_ ? 1 : 0);                  \
+        NAOS_CHECK_UINT_EQ(b_.start, a_.start);                             \
+        NAOS_CHECK_UINT_EQ(b_.end, a_.end);                                 \
+    } while (0)
+
+/*
+ * Requires g_other to have the same nodes as g_doc, ID by ID: the same
+ * kind, class, links, range, lines and attributes. The IDs of removed nodes
+ * are compared too: both documents must answer them alike.
+ */
+static void check_same_nodes(void)
+{
+    size_t count;
+    amark_node_id_t node;
+
+    NAOS_REQUIRE_TRUE(g_other != NULL && g_other != k_sentinel);
+    count = amark_document_node_count(g_doc);
+    NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_other), count);
+    NAOS_CHECK_UINT_EQ(amark_document_root(g_other),
+                       amark_document_root(g_doc));
+    for (node = 1; node <= count; node++) {
+        NAOS_TRACE_PUSH("node %lu", (unsigned long)node);
+        NAOS_CHECK_UINT_EQ(amark_node_kind(g_other, node),
+                           amark_node_kind(g_doc, node));
+        NAOS_CHECK_INT_EQ(amark_node_is_inline(g_other, node) ? 1 : 0,
+                          amark_node_is_inline(g_doc, node) ? 1 : 0);
+        NAOS_CHECK_UINT_EQ(amark_node_parent(g_other, node),
+                           amark_node_parent(g_doc, node));
+        NAOS_CHECK_UINT_EQ(amark_node_first_child(g_other, node),
+                           amark_node_first_child(g_doc, node));
+        NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_other, node),
+                           amark_node_next_sibling(g_doc, node));
+        CHECK_SAME_RANGE(amark_node_range, node);
+        NAOS_CHECK_UINT_EQ(amark_node_start_line(g_other, node),
+                           amark_node_start_line(g_doc, node));
+        NAOS_CHECK_UINT_EQ(amark_node_end_line(g_other, node),
+                           amark_node_end_line(g_doc, node));
+        NAOS_CHECK_INT_EQ(amark_link_form(g_other, node),
+                          amark_link_form(g_doc, node));
+        CHECK_SAME_RANGE(amark_link_destination, node);
+        CHECK_SAME_RANGE(amark_link_title, node);
+        NAOS_CHECK_UINT_EQ(amark_link_definition(g_other, node),
+                           amark_link_definition(g_doc, node));
+        NAOS_CHECK_INT_EQ(amark_autolink_type(g_other, node),
+                          amark_autolink_type(g_doc, node));
+        CHECK_SAME_RANGE(amark_definition_label, node);
+        CHECK_SAME_RANGE(amark_definition_destination, node);
+        CHECK_SAME_RANGE(amark_definition_title, node);
+        NAOS_TRACE_POP();
+    }
+}
+
+/*
+ * Parses length bytes at content with the two limits through amark_parse
+ * into *out, with the counting allocator; *out must hold no document.
+ */
+static amark_error_t parse_into(const char *content, size_t length,
+                                size_t max_depth, size_t max_nodes,
+                                amark_document_t **out)
+{
+    amark_config_t config;
+
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    config.max_nesting_depth = max_depth;
+    config.max_node_count = max_nodes;
+    *out = k_sentinel;
+    return amark_parse(content, length, &config, out);
+}
+
+/* Destroys g_doc, keeping g_other. */
+static void destroy_doc(void)
+{
+    if (g_doc != k_sentinel) {
+        amark_document_destroy(g_doc);
+    }
+    g_doc = NULL;
+}
+
+/*
+ * Parses EVERY_INLINE_COPIES copies of k_every_inline into g_other, then
+ * into g_doc again and again: right after, after a parse of another input
+ * that grew the arenas otherwise, after a parse that failed at its last
+ * allocation (in the inline parse), and with the limits set to the values
+ * of the tree. Each time the two trees must be byte for byte the same, and
+ * the same node ID by node ID.
+ */
+NAOS_TEST(same_input_gives_the_same_tree)
+{
+    static const char other[] = "*a* [b](c)\n\n`d` <e@f.g>";
+    size_t nodes;
+    size_t walked;
+    size_t depth;
+    size_t calls;
+    size_t before;
+    int round;
+
+    input_begin((sizeof(k_every_inline) - 1) * EVERY_INLINE_COPIES);
+    REPEAT(k_every_inline, EVERY_INLINE_COPIES);
+    before = g_state.malloc_calls;
+    NAOS_REQUIRE_INT_EQ(parse_input(0, 0), AMARK_ERROR_NONE);
+    calls = g_state.malloc_calls - before;
+    check_tree();
+    check_every_inline_kind();
+    dump_whole(g_doc, g_dump_want);
+    nodes = amark_document_node_count(g_doc);
+    tree_size(&walked, &depth);
+    /* The first document is kept in g_other. */
+    g_other = g_doc;
+    g_doc = NULL;
+
+    for (round = 0; round < 4; round++) {
+        NAOS_TRACE_PUSH("round %d", round);
+        if (round == 1) {
+            /* Another input, whose document is destroyed first. */
+            NAOS_REQUIRE_INT_EQ(parse_into(other, sizeof(other) - 1, 0, 0,
+                                           &g_doc),
+                                AMARK_ERROR_NONE);
+            destroy_doc();
+        } else if (round == 2) {
+            /* A parse that fails at its last allocation. */
+            g_state.fail_at = g_state.malloc_calls + calls;
+            NAOS_CHECK_INT_EQ(parse_into(g_input, g_length, 0, 0, &g_doc),
+                              AMARK_ERROR_NOMEM);
+            g_state.fail_at = 0;
+            NAOS_CHECK_NULL(g_doc);
+        }
+        NAOS_REQUIRE_INT_EQ(parse_into(g_input, g_length,
+                                       round == 3 ? depth : 0,
+                                       round == 3 ? nodes : 0, &g_doc),
+                            AMARK_ERROR_NONE);
+        check_tree();
+        dump_whole(g_doc, g_dump_got);
+        NAOS_CHECK_STR_EQ(g_dump_got, g_dump_want);
+        check_same_nodes();
+        destroy_doc();
+        NAOS_TRACE_POP();
+    }
+}
+
+/* ---------------------------------------------------------------------- */
 
 NAOS_SUITE(limits,
     NAOS_SET_SETUP(counting),
@@ -1053,8 +1479,23 @@ NAOS_SUITE(large_inputs,
     NAOS_ADD_TEST(unclosed_title_after_nested_destinations)
 )
 
+NAOS_SUITE(failures,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(allocation_failure_at_every_call_with_every_inline_kind),
+    NAOS_ADD_TEST(allocation_failure_at_every_call_at_every_position)
+)
+
+NAOS_SUITE(determinism,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(same_input_gives_the_same_tree)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(limits),
     NAOS_ADD_SUITE(deep_nesting),
-    NAOS_ADD_SUITE(large_inputs)
+    NAOS_ADD_SUITE(large_inputs),
+    NAOS_ADD_SUITE(failures),
+    NAOS_ADD_SUITE(determinism)
 )
