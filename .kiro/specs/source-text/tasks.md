@@ -147,3 +147,6 @@
   - _Boundary: PublicTextTest, Consumer_
   - _Depends: 4.5_
   - _Requirements: 12.4, 12.8, 12.9, 12.10, 13.13_
+
+## Implementation Notes
+- この環境では clang の ASan の実行時ライブラリがないため、サニタイザの確認は GCC（`-DAMARK_SANITIZE=ON`）で行う。サニタイザの構成では `checks.objects` が登録されないので、テストの数が 1 つ少ない。
