@@ -126,7 +126,7 @@
   - 完了の状態：この 4 つの節の例のテストが通る
   - _Requirements: 13.1_
 
-- [ ] 5.3 spec.txt のリンクと画像の例のテストを作る
+- [x] 5.3 spec.txt のリンクと画像の例のテストを作る
   - リンクと画像の spec.txt の値のテスト（`tests/unit/test_spec_text_links.c`）を作って登録し、Links と Images の節の例を足す。参照の形式のリンクは、参照先の定義の dest と title が並ぶことで確かめる
   - 完了の状態：10 の節の例のすべてのテストが通る
   - _Requirements: 13.1_
