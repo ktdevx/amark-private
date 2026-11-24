@@ -20,7 +20,9 @@
  * of links and images with their definition, the first of the definitions
  * with the same label, definitions after the link and inside containers,
  * labels without a definition, labels of 999 and 1000 characters, case
- * folding, labels across lines, labels compared as written, and the order of
+ * folding, labels across lines, labels compared as written, labels with
+ * ill-formed UTF-8 (replaced) and U+0000 that match and resolve (0xFF and
+ * 0xFE both read as U+FFFD, so they match each other), and the order of
  * the forms ("[a](b)" with a definition of a, "[a][b]" without one of b,
  * "[a][]", "[a] []" and "[a][ ]"). Every tree passes the tree check and has
  * no link inside a link.
@@ -100,11 +102,13 @@ static bool no_link_inside_a_link(void)
 }
 
 /*
- * Parses length bytes through amark_parse without limits, requires
- * success, a tree that passes the tree check and no link inside a link.
- * The document of an earlier parse in the same test is destroyed first.
+ * Parses length bytes through amark_parse with utf8_mode and without
+ * limits, requires success, a tree that passes the tree check and no link
+ * inside a link. The document of an earlier parse in the same test is
+ * destroyed first.
  */
-static void parse_bytes(const char *bytes, size_t length)
+static void parse_with_mode(const char *bytes, size_t length,
+                            amark_utf8_mode_t utf8_mode)
 {
     amark_config_t config;
     amark_tree_check_result_t check;
@@ -113,12 +117,19 @@ static void parse_bytes(const char *bytes, size_t length)
     g_doc = NULL;
     amark_config_init(&config);
     config.allocator = g_allocator;
+    config.utf8_mode = (int)utf8_mode;
     NAOS_REQUIRE_INT_EQ(amark_parse(bytes, length, &config, &g_doc),
                         AMARK_ERROR_NONE);
     check = amark_tree_check(g_doc);
     NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
     NAOS_CHECK_UINT_EQ(check.node, AMARK_NODE_NONE);
     NAOS_CHECK_TRUE(no_link_inside_a_link());
+}
+
+/* Parses length bytes with the default configuration (strict UTF-8). */
+static void parse_bytes(const char *bytes, size_t length)
+{
+    parse_with_mode(bytes, length, AMARK_UTF8_STRICT);
 }
 
 #define PARSE(s) parse_bytes((s), sizeof(s) - 1)
@@ -896,6 +907,125 @@ NAOS_TEST(labels_are_compared_as_written)
                "(esc \"\\\\]\") (text \"b\"))) (def))");
 }
 
+/* ---- Labels with ill-formed UTF-8 and U+0000 ---- */
+
+/* Checks that the definition def has the label range [start, end). */
+static void check_label(amark_node_id_t def, size_t start, size_t end)
+{
+    amark_range_t range;
+
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, def),
+                       AMARK_KIND_LINK_REFERENCE_DEFINITION);
+    NAOS_REQUIRE_TRUE(amark_definition_label(g_doc, def, &range));
+    NAOS_CHECK_UINT_EQ(range.start, start);
+    NAOS_CHECK_UINT_EQ(range.end, end);
+}
+
+NAOS_TEST(a_label_with_ill_formed_utf8_matches_and_resolves)
+{
+    /*
+     * Line 1 "[a\xFF" "b]" (0-4), line 2 "[x][a\xFF" "b]" (6-13), a blank
+     * line, then the definition (16-24). The 'b' is a literal of its own so
+     * that it is not read as part of the hex escape.
+     */
+    static const char input[] = "[a\xFF" "b]\n[x][a\xFF" "b]\n\n"
+                                "[a\xFF" "b]: /u";
+    amark_node_id_t def;
+    amark_node_id_t link;
+
+    parse_with_mode(input, sizeof(input) - 1, AMARK_UTF8_REPLACE);
+    NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 2);
+    def = block_at(1);
+    check_node(def, AMARK_KIND_LINK_REFERENCE_DEFINITION, 16, 25, 4, 4);
+    check_label(def, 17, 20);
+    NAOS_CHECK_UINT_EQ(child_count(paragraph()), 3);
+
+    /* The shortcut: the offsets are those of the bytes given. */
+    link = child_at(paragraph(), 0);
+    check_node(link, AMARK_KIND_LINK, 0, 5, 1, 1);
+    check_reference(link, AMARK_LINK_SHORTCUT, def);
+    NAOS_CHECK_UINT_EQ(child_count(link), 1);
+    check_node(child_at(link, 0), AMARK_KIND_TEXT, 1, 4, 1, 1);
+    check_node(child_at(paragraph(), 1), AMARK_KIND_SOFT_BREAK, 5, 6, 1, 1);
+
+    /* The full reference with the same label. */
+    link = child_at(paragraph(), 2);
+    check_node(link, AMARK_KIND_LINK, 6, 14, 2, 2);
+    check_reference(link, AMARK_LINK_FULL, def);
+    NAOS_CHECK_UINT_EQ(child_count(link), 1);
+    check_node(child_at(link, 0), AMARK_KIND_TEXT, 7, 8, 2, 2);
+}
+
+NAOS_TEST(a_label_with_nul_matches_and_resolves)
+{
+    /*
+     * U+0000 is valid UTF-8, so this holds in both modes. The length is
+     * given explicitly: the content holds NUL bytes. "[a\0b]" is 0-4, the
+     * definition 7-15.
+     */
+    static const char input[] = "[a\0b]\n\n[a\0b]: /u";
+    static const size_t length = sizeof(input) - 1;
+    static const amark_utf8_mode_t modes[] = {AMARK_UTF8_REPLACE,
+                                              AMARK_UTF8_STRICT};
+    /* U+0000 is compared as U+FFFD, so it matches a U+FFFD written out. */
+    static const char replaced[] = "[a\0b]\n\n[a\xEF\xBF\xBD" "b]: /u";
+    amark_node_id_t link;
+    size_t i;
+
+    NAOS_REQUIRE_UINT_EQ(length, 16);
+    for (i = 0; i < 2; i++) {
+        NAOS_TRACE_PUSH("mode %d", (int)modes[i]);
+        parse_with_mode(input, length, modes[i]);
+        NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 2);
+        check_node(block_at(1), AMARK_KIND_LINK_REFERENCE_DEFINITION, 7, 16,
+                   3, 3);
+        check_label(block_at(1), 8, 11);
+        NAOS_CHECK_UINT_EQ(child_count(paragraph()), 1);
+        link = child_at(paragraph(), 0);
+        check_node(link, AMARK_KIND_LINK, 0, 5, 1, 1);
+        check_reference(link, AMARK_LINK_SHORTCUT, block_at(1));
+        NAOS_CHECK_UINT_EQ(child_count(link), 1);
+        check_node(child_at(link, 0), AMARK_KIND_TEXT, 1, 4, 1, 1);
+        NAOS_TRACE_POP();
+    }
+
+    parse_with_mode(replaced, sizeof(replaced) - 1, AMARK_UTF8_REPLACE);
+    check_label(block_at(1), 8, 13);
+    link = child_at(paragraph(), 0);
+    check_node(link, AMARK_KIND_LINK, 0, 5, 1, 1);
+    check_reference(link, AMARK_LINK_SHORTCUT, block_at(1));
+}
+
+NAOS_TEST(different_ill_formed_bytes_in_labels_match)
+{
+    /*
+     * "[a\xFF" "b]" against a definition of "[a\xFE" "b]": the labels
+     * match. Labels are compared as the characters they decode to
+     * (amark_label_compare in src/definition.c decodes with
+     * amark_utf8_decode_lossy and folds the code points), and with
+     * ill-formed bytes replaced, both 0xFF and 0xFE are one U+FFFD each, so
+     * both labels are "a" U+FFFD "b". The input is parsed as if those bytes
+     * were U+FFFD; only the offsets are those of the bytes given. This is
+     * the comparison that test_definition.c checks with
+     * compare_ill_formed_bytes_as_replacement_character, here end to end.
+     * "[a\xFF" "b]" is 0-4, the definition 7-15.
+     */
+    static const char input[] = "[a\xFF" "b]\n\n[a\xFE" "b]: /u";
+    amark_node_id_t link;
+
+    parse_with_mode(input, sizeof(input) - 1, AMARK_UTF8_REPLACE);
+    NAOS_CHECK_UINT_EQ(child_count(amark_document_root(g_doc)), 2);
+    check_node(block_at(1), AMARK_KIND_LINK_REFERENCE_DEFINITION, 7, 16, 3,
+               3);
+    check_label(block_at(1), 8, 11);
+    NAOS_CHECK_UINT_EQ(child_count(paragraph()), 1);
+    link = child_at(paragraph(), 0);
+    check_node(link, AMARK_KIND_LINK, 0, 5, 1, 1);
+    check_reference(link, AMARK_LINK_SHORTCUT, block_at(1));
+    NAOS_CHECK_UINT_EQ(child_count(link), 1);
+    check_node(child_at(link, 0), AMARK_KIND_TEXT, 1, 4, 1, 1);
+}
+
 /* ---- Precedence of the forms ---- */
 
 NAOS_TEST(the_inline_form_comes_first)
@@ -1032,7 +1162,10 @@ NAOS_SUITE(references,
     NAOS_ADD_TEST(a_label_of_1000_characters_after_the_text_is_no_label),
     NAOS_ADD_TEST(labels_are_compared_after_case_folding_and_white_space),
     NAOS_ADD_TEST(a_label_across_lines),
-    NAOS_ADD_TEST(labels_are_compared_as_written)
+    NAOS_ADD_TEST(labels_are_compared_as_written),
+    NAOS_ADD_TEST(a_label_with_ill_formed_utf8_matches_and_resolves),
+    NAOS_ADD_TEST(a_label_with_nul_matches_and_resolves),
+    NAOS_ADD_TEST(different_ill_formed_bytes_in_labels_match)
 )
 
 NAOS_SUITE(reference_precedence,

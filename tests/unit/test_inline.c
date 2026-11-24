@@ -27,7 +27,9 @@
  * delimiter run that is used, unmatched runs as text, emphasis across lines
  * holding the line breaks, the ends of a content as white space, and
  * ill-formed UTF-8 (in both UTF-8 modes) and U+0000 as punctuation around
- * delimiters, with the ranges as offsets of the bytes given.
+ * delimiters, with the ranges as offsets of the bytes given. The dialect:
+ * a content with every inline kind gives the same tree and link attributes
+ * with no dialect and with non-NULL dialects (Requirement 17.5).
  * Through the public entry amark_parse: the block nodes (kinds, ranges,
  * lines, attributes and order) are those of the block parser alone, and
  * the inline nodes follow them.
@@ -65,6 +67,7 @@ static amark_test_alloc_t g_state;
 static amark_allocator_t g_allocator;
 static amark_document_t *g_doc;
 static amark_document_t *g_blocks; /* the block parser alone */
+static amark_document_t *g_other;  /* a second parse to compare with */
 static amark_arena_t g_scratch;
 static unsigned char g_buffer[BUFFER_SIZE];
 static size_t g_length;
@@ -77,6 +80,7 @@ NAOS_SETUP(counting)
     amark_arena_init(&g_scratch, &g_allocator);
     g_doc = NULL;
     g_blocks = NULL;
+    g_other = NULL;
     g_length = 0;
 }
 
@@ -87,6 +91,8 @@ NAOS_TEARDOWN(counting)
     g_doc = NULL;
     amark_document_destroy(g_blocks);
     g_blocks = NULL;
+    amark_document_destroy(g_other);
+    g_other = NULL;
     NAOS_CHECK_UINT_EQ(g_state.live, 0);
     NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
 }
@@ -1289,6 +1295,181 @@ NAOS_TEST(well_formed_input_gives_the_same_tree_in_both_modes)
                        AMARK_KIND_EMPHASIS);
 }
 
+/* ---- The dialect ---- */
+
+/* Only their addresses are used, as opaque dialect pointers. */
+static const int g_dialect_a = 1;
+static const int g_dialect_b = 2;
+
+/*
+ * Parses the length bytes at bytes (copied to g_buffer) through amark_parse
+ * with the default configuration and dialect into *out, requiring success.
+ */
+static void parse_dialect(const char *bytes, size_t length,
+                          const amark_dialect_t *dialect,
+                          amark_document_t **out)
+{
+    amark_config_t config;
+
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
+    memcpy(g_buffer, bytes, length);
+    g_length = length;
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    config.dialect = dialect;
+    NAOS_REQUIRE_INT_EQ(amark_parse((const char *)g_buffer, g_length, &config,
+                                    out),
+                        AMARK_ERROR_NONE);
+}
+
+/* Requires node to have the same link attributes in g_doc and g_other. */
+static void check_same_link(amark_node_id_t node)
+{
+    amark_range_t a = {0, 0};
+    amark_range_t b = {0, 0};
+    bool has_a;
+    bool has_b;
+
+    NAOS_CHECK_INT_EQ(amark_link_form(g_other, node),
+                      amark_link_form(g_doc, node));
+    has_a = amark_link_destination(g_doc, node, &a);
+    has_b = amark_link_destination(g_other, node, &b);
+    NAOS_CHECK_INT_EQ(has_b, has_a);
+    NAOS_CHECK_UINT_EQ(b.start, a.start);
+    NAOS_CHECK_UINT_EQ(b.end, a.end);
+    has_a = amark_link_title(g_doc, node, &a);
+    has_b = amark_link_title(g_other, node, &b);
+    NAOS_CHECK_INT_EQ(has_b, has_a);
+    NAOS_CHECK_UINT_EQ(b.start, a.start);
+    NAOS_CHECK_UINT_EQ(b.end, a.end);
+    NAOS_CHECK_UINT_EQ(amark_link_definition(g_other, node),
+                       amark_link_definition(g_doc, node));
+    NAOS_CHECK_INT_EQ(amark_autolink_type(g_other, node),
+                      amark_autolink_type(g_doc, node));
+}
+
+NAOS_TEST(the_dialect_does_not_change_the_inline_result)
+{
+    /*
+     * Requirement 17.5: the dialect member is passed through and never
+     * read, so no dialect (NULL, the default) and any non-NULL dialect give
+     * the same tree. The content holds every inline kind: emphasis, strong
+     * emphasis, an inline link with a title, an image, the full, collapsed
+     * and shortcut references with their definition, a code span, an
+     * autolink, raw HTML, an escape, a character reference, and hard and
+     * soft breaks.
+     */
+    static const char content[] =
+        "*em* **strong** [in](/u \"t\") ![img](/i)\n"
+        "[x][ref] [ref][] [ref] `code` <http://a.b> <span> \\* &amp; hard  \n"
+        "soft\n"
+        "\n"
+        "[ref]: /r \"rt\"\n";
+    const amark_dialect_t *dialects[2];
+    char want[DUMP_SIZE];
+    size_t count;
+    size_t i;
+    amark_node_id_t node;
+    bool kinds[64];
+    bool forms[5];
+    amark_range_t title;
+
+    dialects[0] = (const amark_dialect_t *)(const void *)&g_dialect_a;
+    dialects[1] = (const amark_dialect_t *)(const void *)&g_dialect_b;
+    parse_dialect(content, sizeof(content) - 1, NULL, &g_doc);
+    NAOS_CHECK_TRUE(tree_ok());
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, want, sizeof(want)),
+                         sizeof(want));
+    NAOS_CHECK_STR_EQ(want,
+                      "(doc (p (em (text \"em\")) (text \" \") "
+                      "(strong (text \"strong\")) (text \" \") "
+                      "(link inline dest=\"/u\" title=\"t\" "
+                      "(text \"in\")) (text \" \") "
+                      "(image inline dest=\"/i\" (text \"img\")) (sbr) "
+                      "(link full def=\"ref\" (text \"x\")) (text \" \") "
+                      "(link collapsed def=\"ref\" (text \"ref\")) "
+                      "(text \" \") "
+                      "(link shortcut def=\"ref\" (text \"ref\")) "
+                      "(text \" \") (code \"`code`\") (text \" \") "
+                      "(autolink uri \"<http://a.b>\") (text \" \") "
+                      "(html \"<span>\") (text \" \") "
+                      "(esc \"\\\\*\") (text \" \") "
+                      "(ref \"&amp;\") (text \" hard\") (br) "
+                      "(text \"soft\")) (def))");
+
+    /* Every inline kind is in the tree. */
+    memset(kinds, 0, sizeof(kinds));
+    memset(forms, 0, sizeof(forms));
+    count = amark_document_node_count(g_doc);
+    for (node = 1; node <= count; node++) {
+        amark_kind_t kind = amark_node_kind(g_doc, node);
+        amark_link_form_t form = amark_link_form(g_doc, node);
+
+        if (kind < 64) {
+            kinds[kind] = true;
+        }
+        if ((size_t)form < 5) {
+            forms[form] = true;
+        }
+        if (form == AMARK_LINK_INLINE && kind == AMARK_KIND_LINK) {
+            /* The inline link has its title. */
+            NAOS_CHECK_TRUE(amark_link_title(g_doc, node, &title));
+        }
+        if (form == AMARK_LINK_FULL || form == AMARK_LINK_COLLAPSED ||
+            form == AMARK_LINK_SHORTCUT) {
+            NAOS_CHECK_UINT_NE(amark_link_definition(g_doc, node),
+                               AMARK_NODE_NONE);
+        }
+    }
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_TEXT]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_EMPHASIS]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_STRONG]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_LINK]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_IMAGE]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_CODE_SPAN]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_AUTOLINK]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_RAW_HTML]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_BACKSLASH_ESCAPE]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_CHARACTER_REFERENCE]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_HARD_BREAK]);
+    NAOS_CHECK_TRUE(kinds[AMARK_KIND_SOFT_BREAK]);
+    NAOS_CHECK_TRUE(forms[AMARK_LINK_INLINE]);
+    NAOS_CHECK_TRUE(forms[AMARK_LINK_FULL]);
+    NAOS_CHECK_TRUE(forms[AMARK_LINK_COLLAPSED]);
+    NAOS_CHECK_TRUE(forms[AMARK_LINK_SHORTCUT]);
+
+    for (i = 0; i < 2; i++) {
+        NAOS_TRACE_PUSH("dialect %lu", (unsigned long)i);
+        amark_document_destroy(g_other);
+        g_other = NULL;
+        parse_dialect(content, sizeof(content) - 1, dialects[i], &g_other);
+        NAOS_CHECK_INT_EQ(amark_tree_check(g_other).violation,
+                          AMARK_TREE_VIOLATION_NONE);
+        NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_other, g_dump,
+                                                  sizeof(g_dump)),
+                             sizeof(g_dump));
+        NAOS_CHECK_STR_EQ(g_dump, want);
+        NAOS_REQUIRE_UINT_EQ(amark_document_node_count(g_other), count);
+        for (node = 1; node <= count; node++) {
+            amark_range_t a;
+            amark_range_t b;
+
+            NAOS_TRACE_PUSH("node %lu", (unsigned long)node);
+            NAOS_CHECK_UINT_EQ(amark_node_kind(g_other, node),
+                               amark_node_kind(g_doc, node));
+            NAOS_CHECK_UINT_EQ(amark_node_parent(g_other, node),
+                               amark_node_parent(g_doc, node));
+            NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &a));
+            NAOS_REQUIRE_TRUE(amark_node_range(g_other, node, &b));
+            NAOS_CHECK_UINT_EQ(b.start, a.start);
+            NAOS_CHECK_UINT_EQ(b.end, a.end);
+            check_same_link(node);
+            NAOS_TRACE_POP();
+        }
+        NAOS_TRACE_POP();
+    }
+}
+
 /* ---- Limits ---- */
 
 NAOS_TEST(the_depth_limit_counts_from_the_paragraph)
@@ -1664,6 +1845,12 @@ NAOS_SUITE(emphasis,
     NAOS_ADD_TEST(well_formed_input_gives_the_same_tree_in_both_modes)
 )
 
+NAOS_SUITE(dialect,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(the_dialect_does_not_change_the_inline_result)
+)
+
 NAOS_SUITE(content,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -1700,6 +1887,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(raw_html),
     NAOS_ADD_SUITE(precedence),
     NAOS_ADD_SUITE(emphasis),
+    NAOS_ADD_SUITE(dialect),
     NAOS_ADD_SUITE(content),
     NAOS_ADD_SUITE(entry),
     NAOS_ADD_SUITE(limit)
