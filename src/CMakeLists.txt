@@ -11,6 +11,7 @@ set(AMARK_SOURCES
     arena.c
     array.c
     block.c
+    bracket.c
     config.c
     cursor.c
     definition.c

@@ -11,6 +11,7 @@
 
 #include <amark/tree.h>
 
+#include "bracket.h"
 #include "cursor.h"
 #include "delimiter.h"
 #include "draft.h"
@@ -44,6 +45,7 @@ typedef struct inline_parser {
     unsigned char special[BYTE_TABLE_SIZE]; /* not 0: a special byte */
     amark_draft_t draft;
     amark_delimiters_t delimiters;
+    amark_brackets_t brackets;
     amark_inline_scan_memo_t memo;
     amark_cursor_t cursor;
     /* The start of the white space left out of the text before the line
@@ -72,6 +74,7 @@ static void parser_init(inline_parser_t *parser, amark_document_t *doc,
             parser->special[i] = 1;
         }
     }
+    amark_brackets_init(&parser->brackets, scratch);
     amark_inline_scan_memo_init(&parser->memo, scratch);
     parser->has_break_start = false;
     parser->break_start = 0;
@@ -292,6 +295,53 @@ static amark_error_t scan_delimiter_run(inline_parser_t *parser, size_t kind)
 }
 
 /*
+ * '[' and '!': a "[", or a "![" (a '!' right before a '[' of the line), is
+ * added as a text item and pushed onto the bracket stack, an image bracket
+ * for "![". A '!' not followed by '[' is a text of the '!'.
+ */
+static amark_error_t scan_open_bracket(inline_parser_t *parser)
+{
+    amark_cursor_t *cursor = &parser->cursor;
+    size_t start = cursor->pos;
+    bool image = cursor->bytes[start] == '!';
+    size_t open = image ? start + 1 : start;
+    amark_draft_id_t id;
+    amark_error_t err;
+
+    if (image && (open >= cursor->line_end || cursor->bytes[open] != '[')) {
+        amark_cursor_seek(cursor, start + 1);
+        return append_to_cursor(parser, AMARK_KIND_TEXT, start, &id);
+    }
+    amark_cursor_seek(cursor, open + 1);
+    err = append_to_cursor(parser, AMARK_KIND_TEXT, start, &id);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    return amark_brackets_push(&parser->brackets, id, image, open);
+}
+
+/*
+ * ']': the bracket module decides whether a link or an image ends here (and
+ * then moves past it); if not, a text of the ']'.
+ */
+static amark_error_t scan_close_bracket(inline_parser_t *parser)
+{
+    amark_cursor_t *cursor = &parser->cursor;
+    size_t start = cursor->pos;
+    amark_draft_id_t unused;
+    bool made;
+    amark_error_t err;
+
+    err = amark_bracket_close(&parser->brackets, &parser->draft,
+                              &parser->delimiters, cursor, &made);
+    if (err != AMARK_ERROR_NONE || made) {
+        return err;
+    }
+    amark_cursor_seek(cursor, start + 1);
+    return append_to_cursor(parser, AMARK_KIND_TEXT, start, &unused);
+}
+
+/*
  * A special byte at the position: the one place where the rules of the
  * inline structures (and those a dialect adds) are called, chosen by the
  * byte. A structure read here is read to its end at once, so the special
@@ -319,6 +369,11 @@ static amark_error_t scan_special(inline_parser_t *parser)
         return scan_ampersand(parser);
     case '<':
         return scan_less_than(parser);
+    case '[':
+    case '!':
+        return scan_open_bracket(parser);
+    case ']':
+        return scan_close_bracket(parser);
     default:
         break;
     }
@@ -399,6 +454,7 @@ static amark_error_t parse_content(inline_parser_t *parser,
         return err;
     }
     amark_delimiters_reset(&parser->delimiters);
+    amark_brackets_reset(&parser->brackets);
     amark_inline_scan_memo_begin(&parser->memo);
     err = scan_content(parser, content->start, content->end);
     if (err == AMARK_ERROR_NONE) {
