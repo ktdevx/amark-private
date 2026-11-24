@@ -90,15 +90,19 @@ static int is_default_resolution(const amark_resolved_config_t *out,
 
 NAOS_TEST(error_values_are_distinct_and_fixed)
 {
-    const int values[5] = {AMARK_ERROR_NONE, AMARK_ERROR_INVALID_INPUT,
+    const int values[7] = {AMARK_ERROR_NONE,
+                           AMARK_ERROR_INVALID_INPUT,
                            AMARK_ERROR_INVALID_CONFIG,
-                           AMARK_ERROR_LIMIT_EXCEEDED, AMARK_ERROR_NOMEM};
+                           AMARK_ERROR_LIMIT_EXCEEDED,
+                           AMARK_ERROR_NOMEM,
+                           AMARK_ERROR_NOT_AVAILABLE,
+                           AMARK_ERROR_BUFFER_TOO_SMALL};
     int i;
     int j;
 
-    for (i = 0; i < 5; i++) {
+    for (i = 0; i < 7; i++) {
         NAOS_CHECK_INT_EQ(values[i], i);
-        for (j = i + 1; j < 5; j++) {
+        for (j = i + 1; j < 7; j++) {
             NAOS_CHECK_INT_NE(values[i], values[j]);
         }
     }
