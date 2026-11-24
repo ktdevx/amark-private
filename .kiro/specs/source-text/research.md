@@ -133,3 +133,103 @@
   - 閉じるフェンスの判定が、すべての場合で正しいこと（3.2）。
   - spec.txt の対象の節の例の数と、期待する値の持ち方（3.8）。
   - 後の段階の候補（markdown-writer、source-edit）を、この spec の API の上に、本体の設計を変えずに足せること（roadmap.md の Future Phases が求める確認）。
+
+---
+
+## Summary（設計の段階）
+- **Feature**: `source-text`
+- **Discovery Scope**: Extension（既存の解析の結果を読む、新しい公開 API）。外部の依存はないので、light の手順で、既存のコードとの接続を調べた。
+- **使った手引き**：`kiro-spec-design` の `design-principles.md`、`design-discovery-light.md`、`design-synthesis.md`、`design-review-gate.md`。ほかの skill は使っていない。
+- **Key Findings**:
+  - 要件 2〜8 の文字列は、4 つの決まり（そのまま、文字に戻す、コードスパン、コードの行）と、範囲の選び方の組み合わせで表せる。
+  - 閉じるフェンスの行は、行の記録から取り違えなく判定できる（下の Research Log）。
+  - ATX 見出しの行の記録は、`#` の後ろの内容を指す。最初の行は、記録ではなく範囲の開始から読む必要がある。
+
+## Research Log
+
+### 閉じるフェンスの行の判定（Gap Analysis の 3.2）
+- **Context**: コードブロックの属性に、閉じるフェンスの有無がない。
+- **Sources Consulted**: `src/block.c` の `continue_code_block`、`start_fenced_code`、`code_add_line`
+- **Findings**:
+  - 閉じるフェンスの行は、`amark_line_set(line, first_nonspace, 0)` で記録される。記録の位置のバイトはフェンスの文字である。
+  - コードの行は、`min(indent, fence_offset)` 桁だけ空白を除いた位置で記録される。`fence_offset` は 3 以下である。
+  - コードの行で、記録の位置がフェンスの文字になるのは、インデントをすべて除けたとき（インデントが `fence_offset` 以下、つまり 3 以下）だけである。その行が閉じるフェンスの形なら、解析のときに閉じるフェンスになっている。
+  - タブでインデントされた行は、記録の位置がタブ（`pad` が 0 でない）か空白になる。
+- **Implications**: 「開始行と終了行が異なる」「終了行の記録が `pad` 0 で、位置のバイトがフェンスの文字」「そこからの `amark_scan_close_fence` が開始のフェンスの長さ以上」の 3 つで判定する。block-parser に属性を足さない。
+
+### 行の記録と、ノードの最初の行
+- **Context**: 最初の行を、記録から読んでよいか。
+- **Sources Consulted**: `src/block.c` の `open_line_leaf` の呼び出し
+- **Findings**: テーマの区切りと開始のフェンスの記録は、最初の空白でないバイト（ノードの開始）である。ATX 見出しの記録は、`first + content_start`（`#` の列と空白の後ろ）である。
+- **Implications**: 最初の行は、範囲の開始から読む。`pad` は、範囲の開始が記録の位置と同じときだけ使う。
+
+### 文書が持つもの
+- **Findings**: 文書は、内容の位置と長さ、確保関数、行の索引、解析データを持つ。UTF-8 の扱いの設定は持たない。公開ヘッダのインストールは、ディレクトリごとである。
+- **Implications**: 出力は、常に `amark_utf8_decode_lossy` の読み方にする。確保は `doc->allocator` を使う。
+
+### spec.txt の例（Gap Analysis の 3.8）
+- **Findings**: 対象の 10 の節の例は、0.31.2 でおよそ 260 個である（Links が 90、Fenced code blocks が 29、Link reference definitions が 27 など）。既存の `test_spec_*.c` は、入力と期待する文字列の表を、ファイルごとに持つ。
+- **Implications**: `tests/unit/test_spec_text.c` に、番号、入力、期待する値の文字列の表を持つ。値の文字列は、テストの支援 `amark_test_dump_text` で作る。
+
+## Architecture Pattern Evaluation
+
+| Option | Description | Strengths | Risks / Limitations | Notes |
+|--------|-------------|-----------|---------------------|-------|
+| A 既存を広げる | カーソルと `inline_scan` を広げる | ファイルが少ない | 依存の向きに反する。カーソルの前提が変わる | 採らない |
+| B すべて新しく作る | 文字参照の構文も書き直す | 既存を変えない | 構文の規則が 2 か所になる | 採らない |
+| C 組み合わせる | 文字参照を `charref` に移して共有し、残りは新しく作る | 規則が 1 か所。依存の向きを守る | `inline_scan.c` に小さな書き換え | **採る** |
+
+## Design Decisions
+
+### Decision: 公開の関数を、部分を選ぶ引数を持つ 1 組にする
+- **Context**: 値は 9 通りあり、それぞれにバッファと確保の 2 つの方法がある。
+- **Alternatives Considered**:
+  1. 値ごとに関数を作る（18 個前後）
+  2. 部分を選ぶ列挙を引数にする（関数は 4 つ）
+- **Selected Approach**: 2。`amark_text_part_t` で部分を選ぶ。
+- **Rationale**: 公開シンボルが少なく、後から部分を足しても互換である。種類ごとの振り分けは、1 つの表になる。
+- **Trade-offs**: 種類に合わない部分を求めても、コンパイルでは分からない（`AMARK_TEXT_NONE` で分かる）。
+
+### Decision: 結果の種類を、`amark_error_t` とは別の列挙にする
+- **Context**: 「答えられない」と「バッファに収まらない」を返す必要がある。`amark_error_t` は、成功と 4 つの失敗に固定されている。
+- **Alternatives Considered**:
+  1. `amark_error_t` に 2 つの値を足す
+  2. 長さだけで収まらないことを伝える（`snprintf` の形）
+  3. 別の列挙 `amark_text_status_t` を作る
+- **Selected Approach**: 3。
+- **Rationale**: 「答えられない」は失敗ではない。1 は、syntax-tree の要件 10 と、その見直しの条件に触れる。2 は、確かめ忘れを見つけにくい。
+- **Trade-offs**: メモリ不足と上限の超過が、2 つの列挙に現れる。
+
+### Decision: バッファには NUL を書かず、必要な大きさは結果の長さとする
+- **Selected Approach**: `amark_node_text` は、ちょうど L バイトを書く。`amark_node_text_alloc` は、L+1 バイトを確保して NUL で終える。
+- **Rationale**: 「収まる」の条件が `L <= capacity` の 1 つになり、数え方を取り違えにくい。結果は U+0000 を含まないので、確保した文字列は C の文字列として使える。
+
+### Decision: 確保した文字列は、文書のアリーナに置かない
+- **Context**: structure.md は「個別に解放するものを作らない」とする。
+- **Selected Approach**: `doc->allocator` から直接確保し、`amark_text_free` で解放する。
+- **Rationale**: アリーナに置くと文書を変えるので、同時に読めなくなる。値を求めるたびに文書が大きくなる。
+- **Follow-up**: structure.md と `allocator.h` に書き足す。
+
+### Decision: 行をつなぐ処理は、カーソルとは別に作る
+- **Context**: カーソルは `pad` を見ず、行末記号で終わる範囲を扱えない。インラインの解析の層にある。
+- **Selected Approach**: 区間を返す小さな反復（TextLines）を作る。カーソルは変えない。
+- **Rationale**: カーソルは「位置を進めて、前後の文字を読む」ためのもので、TextLines は「区間を順に渡す」だけである。役目が違い、まとめると両方の前提が複雑になる。inline-parser の research.md の「まとめるかを改めて決める」への答えは、「まとめない」である。
+
+### Decision: 1 回の走査で、数えながら書く
+- **Selected Approach**: TextSink が、長さを数え、収まる間だけ書く。あふれは、範囲の長さの上限（3 倍に 1 を足した数）で、書く前に確かめる。
+- **Rationale**: 大きさを尋ねる呼び出しと、書く呼び出しが、同じコードになる。
+- **Trade-offs**: 収まらないとき、バッファの中身は定まらない（要件は、超えて書かないことだけを求める）。
+
+### Decision: 要件 12 の 1 を、dest と title について緩める
+- **Context**: 属性の範囲は行を持たず、行の索引は 2 分探索である。
+- **Selected Approach**: 要件に「行の数の対数に比例する時間が加わってよい」と書き足した。
+- **Rationale**: ノードの開始行から順に進める案は、時間がノードの範囲の長さに比例し、長いリンクのテキストで不利である。
+
+## Risks & Mitigations
+- 公開 API は後から変えにくい — 関数を 4 つに絞り、部分を列挙にして、足す方向の変更を互換にする。
+- 閉じるフェンスの判定が、block-parser の記録の付け方に頼る — 組み合わせのテストで確かめ、見直しの条件に書く。食い違えば、block-parser に属性を足す。
+- `charref` への移し替えで、インラインの解析の動作が変わる — 既存の `test_inline_scan.c` と `test_spec_inline.c` を、変えずに通す。
+- spec.txt の例の期待する値を手で書く量が多い — 値の文字列の書式を先に決め、節ごとに分けて進める。
+
+## References
+- [CommonMark Spec 0.31.2](https://spec.commonmark.org/0.31.2/) — 2.3 節（U+0000）、2.4 節（エスケープ）、2.5 節（文字参照）、4.4 節、4.5 節、6.1 節（コードスパン）、6.3 節（dest と title）
