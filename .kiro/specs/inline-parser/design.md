@@ -678,11 +678,12 @@ void amark_delimiter_classify(const amark_delimiter_kind_t *kind,
                               uint32_t before, uint32_t after,
                               bool *can_open, bool *can_close);
 
-/* 開けることも閉じることもできない列は、積まなくてよい */
+/* 開けることも閉じることもできない列は、積まなくてよい。
+   length は列の元の長さ（積むときの項目の範囲の長さ） */
 amark_error_t amark_delimiters_push(amark_delimiters_t *delims,
                                     amark_draft_id_t item,
                                     size_t kind, bool can_open,
-                                    bool can_close);
+                                    bool can_close, size_t length);
 
 /* 項目の開始が bottom 以上の区切りについて、強調の対応を決め、
    それらをスタックから外す */

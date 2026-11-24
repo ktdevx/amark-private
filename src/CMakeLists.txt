@@ -14,6 +14,7 @@ set(AMARK_SOURCES
     config.c
     cursor.c
     definition.c
+    delimiter.c
     document.c
     draft.c
     entity.c
