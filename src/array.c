@@ -102,3 +102,8 @@ bool amark_array_pop(amark_array_t *array, void *out)
     }
     return true;
 }
+
+void amark_array_clear(amark_array_t *array)
+{
+    array->len = 0;
+}

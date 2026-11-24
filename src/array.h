@@ -72,4 +72,10 @@ void *amark_array_at(const amark_array_t *array, size_t index);
  */
 bool amark_array_pop(amark_array_t *array, void *out);
 
+/*
+ * Sets the length to 0. The place and the capacity are kept, so pushing up to
+ * the capacity afterwards allocates nothing. Never fails and never allocates.
+ */
+void amark_array_clear(amark_array_t *array);
+
 #endif /* AMARK_ARRAY_H */

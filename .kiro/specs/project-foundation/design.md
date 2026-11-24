@@ -713,10 +713,14 @@ void *amark_array_at(const amark_array_t *array, size_t index);
 
 /* 空なら false を返す。そうでなければ末尾の要素を *out に写して（out が NULL なら写さない）取り除き、true を返す。 */
 bool amark_array_pop(amark_array_t *array, void *out);
+
+/* 長さを 0 にする。確保した場所と容量は保つ。失敗せず、確保しない（inline-parser で追加）。 */
+void amark_array_clear(amark_array_t *array);
 ```
 - Postconditions:
   - `push` と `reserve` が失敗したとき、`data`、`len`、`cap` は呼び出しの前と同じである（8.5）。
   - 容量が広がると、要素は新しい場所へ写る。値と順序は変わらない（8.2）。それまでに `amark_array_at` で得たポインタは無効になる。
+  - `clear` の後、長さは 0 で、それまでの要素は読めない。`data` と `cap` は変わらないので、容量の範囲の `push` はアリーナから確保しない。同じ配列を内容ごとに空にして使い回せる。
 - Invariants: `len <= cap`。`data` は `AMARK_ARENA_ALIGN` に整列しているので、どの型の要素にも使える（8.9）。
 
 ##### State Management
