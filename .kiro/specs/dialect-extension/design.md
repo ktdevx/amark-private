@@ -310,7 +310,7 @@ flowchart TD
 | 10.1, 10.2, 10.3, 10.6, 10.7 | 検査してから反映する | DialectDef、DialectReply、DialectEdit、BlockParser、InlineParser | `amark_dialect_reject` | 各フロー |
 | 10.4 | 定めていない戻り値 | DialectDef | 理由 `STATUS` | — |
 | 10.8, 10.9 | 外を読まない、検査の時間 | DialectReply、DialectEdit | 足すたびの O(1) の検査、操作ごとの O(1) の検査 | — |
-| 10.10 | 規則のメモリ不足 | DialectDef | `AMARK_DIALECT_NOMEM`、返事と操作の「残る失敗」 | 閉じるときの返事 |
+| 10.10 | 規則のメモリ不足 | DialectDef | 規則の戻り値 `AMARK_ERROR_NOMEM`、返事と操作の「残る失敗」 | 閉じるときの返事 |
 | 10.12 | 不採用の結果を数えない | DialectReply、DialectEdit、InlineParser | 検査を通るまでノードを作らない | — |
 | 11.1, 11.2, 11.3, 11.4, 11.5, 11.6, 11.7 | 診断 | DialectDef | `amark_dialect_reject`、文面の表 | — |
 | 11.8, 11.9 | 診断を足さない場合 | DialectDef | `run` が `NULL` のとき呼ばれない | — |
@@ -324,7 +324,7 @@ flowchart TD
 | 13.7, 13.10 | 失敗が局所的、確保関数 | ParseEntry、DialectDef | `parse_document` の後始末、実行の状態のアリーナ | — |
 | 14.1, 14.2, 14.4, 14.5 | 名前とヘッダ | DialectApi | `amark_` と `AMARK_`、`header_cxx.cpp` | — |
 | 14.6 | 公開シンボル | ビルド | `exported_symbols.txt` | — |
-| 14.7 | 新しいエラーの種類なし | DialectApi | 規則と操作は `amark_dialect_status_t` を返す | — |
+| 14.7 | 新しいエラーの種類なし | DialectApi | 規則も、規則が呼ぶ関数も、既存の `amark_error_t` を返す | — |
 | 15.1, 15.2 | テスト用の方言 | TestDialect | `tests/support/test_dialect.h` | — |
 | 15.3, 15.4, 15.5, 15.6, 15.7, 15.8, 15.9, 15.10, 15.11, 15.12 | 単体テスト | テスト | Testing Strategy | — |
 
@@ -343,23 +343,26 @@ flowchart TD
 
 ### 共通の決まり
 
-**戻り値**：規則と、規則が呼ぶ関数は、`int` で `amark_dialect_status_t` の値を返す。
+**戻り値**：規則も、規則が呼ぶ関数も、ほかの公開 API と同じ `amark_error_t` を返す。新しい型も、新しい値も足さない（14.7）。
 
 | 値 | 規則が返すとき | 返事・操作の関数が返すとき |
 |----|----------------|----------------------------|
-| `AMARK_DIALECT_NO` (0) | 開始しない、続かない、そのままにする、作らない | 不正だった。何も変えていない |
-| `AMARK_DIALECT_YES` (1) | 結果を書いた | 受け取った、適用した |
-| `AMARK_DIALECT_NOMEM` (2) | メモリ不足で続けられない | 本体の確保が失敗した、または資源の上限を超えた |
+| `AMARK_ERROR_NONE` | 答えた。答えの中身は、結果の構造体か返事にある | 受け取った、適用した |
+| `AMARK_ERROR_INVALID_INPUT` | （定めていない値） | 不正だった。何も変えていない |
+| `AMARK_ERROR_NOMEM` | メモリ不足で続けられない | 本体の確保が失敗した |
+| `AMARK_ERROR_LIMIT_EXCEEDED` | （定めていない値） | 資源の上限を超えた |
 
-- 規則がこれ以外の値を返したら、結果を不正とする（理由 `STATUS`、10.4）。後処理の規則は、`NO` と `YES` を同じ（終わった）として扱う。
-- 返事と操作の関数が `NOMEM` を返す失敗は、返事または編集の状態に残る（残る失敗）。規則がそれを無視して戻っても、本体は残る失敗を見て、解析を `AMARK_ERROR_NOMEM` か `AMARK_ERROR_LIMIT_EXCEEDED` で終える（10.10、10.11）。
-- 規則が `NOMEM` を返したら、解析は `AMARK_ERROR_NOMEM` で終わる。
+- 規則の「はい・いいえ」は、戻り値ではなく、結果に書く。開始・継続・インラインの規則は、結果の構造体の `matched` を真にする（本体は、呼ぶ前に結果を 0 で埋めるので、何も書かなければ「いいえ」である）。段落を閉じるときの規則は、返事にブロックを 1 つ以上足せば「置き換える」、足さなければ「そのままにする」である。
+- 規則が `AMARK_ERROR_NONE` と `AMARK_ERROR_NOMEM` のほかの値を返したら、結果を不正とする（理由 `STATUS`、10.4）。
+- 規則が `AMARK_ERROR_NOMEM` を返したら、解析は `AMARK_ERROR_NOMEM` で終わる（10.10）。
+- 返事と操作の関数が返す `AMARK_ERROR_NOMEM` と `AMARK_ERROR_LIMIT_EXCEEDED` は、返事または編集の状態に残る（残る失敗）。規則がそれを無視して `AMARK_ERROR_NONE` で戻っても、本体は残る失敗を見て、その値で解析を終える（10.10、10.11）。規則は、関数の戻り値をそのまま返してもよい。
+- 返事と操作の関数が返す `AMARK_ERROR_INVALID_INPUT` は、失敗ではない。その 1 回の呼び出しが不正で、何も変わらなかったことを規則に伝える（9.4）。規則は続けてよい。
 
 **範囲**：すべて、内容の先頭から数えたバイトのオフセットの `[start, end)` である（`amark_range_t`）。本体は、規則が返した値を、内容の長さと比べてから使う（10.8）。
 
 **呼ぶ順**：拡張は、方言の中の並びの順。1 つの拡張の中の規則は、配列の順。
 
-**不正な結果の扱い**：`amark_dialect_reject` で診断を 1 件足し、その規則が `NO` を返したものとして続ける（4.11、5.9、6.11、7.8、10.3）。診断の追加が失敗したら、その失敗で解析を終える（11.7）。
+**不正な結果の扱い**：`amark_dialect_reject` で診断を 1 件足し、その規則が「いいえ」と答えたものとして続ける（4.11、5.9、6.11、7.8、10.3）。診断の追加が失敗したら、その失敗で解析を終える（11.7）。
 
 ### 公開
 
@@ -379,10 +382,6 @@ flowchart TD
 #define AMARK_DIALECT_DELIMITER_LENGTH_MAX 4 /* 対応に使える列の長さの上限 */
 #define AMARK_DIALECT_LENGTH(n) (1u << ((n) - 1)) /* lengths のビット */
 #define AMARK_DIALECT_TOP ((size_t)-1)       /* 返事の、親のないブロック */
-
-typedef enum amark_dialect_status {
-    AMARK_DIALECT_NO = 0, AMARK_DIALECT_YES = 1, AMARK_DIALECT_NOMEM = 2
-} amark_dialect_status_t;
 
 typedef enum amark_dialect_class {
     AMARK_DIALECT_CONTAINER = 1, /* ブロック。ブロックを子に持てる */
@@ -460,6 +459,7 @@ typedef struct amark_dialect_line {
 } amark_dialect_line_t;
 
 typedef struct amark_dialect_block_start_result {
+    bool matched;           /* 真：開始する */
     amark_range_t consumed; /* 開始の印。start は line->position */
     uint64_t data;          /* このブロックに付ける値。継続と閉じるときに渡る */
 } amark_dialect_block_start_result_t;
@@ -471,8 +471,9 @@ typedef struct amark_dialect_open_block {
 } amark_dialect_open_block_t;
 
 typedef struct amark_dialect_block_continue_result {
+    bool matched;           /* 真：続く */
     amark_range_t consumed; /* プレフィックス。start は line->position */
-    uint64_t data;          /* 新しい値。呼ぶ前に、いまの値が入っている */
+    uint64_t data;          /* 新しい値。書かなければ、いまの値のまま */
 } amark_dialect_block_continue_result_t;
 
 typedef struct amark_dialect_closing {
@@ -499,6 +500,7 @@ typedef struct amark_dialect_inline {
 } amark_dialect_inline_t;
 
 typedef struct amark_dialect_inline_result {
+    bool matched;           /* 真：作る */
     amark_range_t range;    /* start は in->position */
     const void *data;  size_t data_size; /* 属性の値。なければ NULL と 0 */
 } amark_dialect_inline_result_t;
@@ -508,18 +510,18 @@ typedef struct amark_dialect_post {
     const char *content;  size_t content_length;
 } amark_dialect_post_t;
 
-typedef int (*amark_dialect_block_start_fn)(const amark_dialect_line_t *line,
+typedef amark_error_t (*amark_dialect_block_start_fn)(const amark_dialect_line_t *line,
     void *state, amark_dialect_block_start_result_t *out);
-typedef int (*amark_dialect_block_continue_fn)(const amark_dialect_line_t *line,
+typedef amark_error_t (*amark_dialect_block_continue_fn)(const amark_dialect_line_t *line,
     const amark_dialect_open_block_t *block, void *state,
     amark_dialect_block_continue_result_t *out);
-typedef int (*amark_dialect_block_close_fn)(const amark_dialect_closing_t *closing,
+typedef amark_error_t (*amark_dialect_block_close_fn)(const amark_dialect_closing_t *closing,
     void *state, amark_dialect_reply_t *reply);
-typedef int (*amark_dialect_inline_fn)(const amark_dialect_inline_t *in,
+typedef amark_error_t (*amark_dialect_inline_fn)(const amark_dialect_inline_t *in,
     void *state, amark_dialect_inline_result_t *out);
-typedef int (*amark_dialect_post_fn)(const amark_dialect_post_t *post,
+typedef amark_error_t (*amark_dialect_post_fn)(const amark_dialect_post_t *post,
     void *state, amark_dialect_editor_t *editor);
-typedef int (*amark_dialect_state_new_fn)(const amark_allocator_t *allocator,
+typedef amark_error_t (*amark_dialect_state_new_fn)(const amark_allocator_t *allocator,
     void **state);
 typedef void (*amark_dialect_state_free_fn)(const amark_allocator_t *allocator,
     void *state);
@@ -538,28 +540,28 @@ AMARK_API bool amark_dialect_inline_next_line(const amark_dialect_inline_t *in,
     size_t line_end, amark_range_t *out);
 
 /* 閉じるときの返事 */
-AMARK_API int amark_dialect_reply_add_block(amark_dialect_reply_t *reply,
+AMARK_API amark_error_t amark_dialect_reply_add_block(amark_dialect_reply_t *reply,
     size_t parent, amark_kind_t kind, amark_range_t range, size_t *index);
-AMARK_API int amark_dialect_reply_set_data(amark_dialect_reply_t *reply,
+AMARK_API amark_error_t amark_dialect_reply_set_data(amark_dialect_reply_t *reply,
     size_t index, const void *data, size_t size);
-AMARK_API int amark_dialect_reply_set_inline(amark_dialect_reply_t *reply,
+AMARK_API amark_error_t amark_dialect_reply_set_inline(amark_dialect_reply_t *reply,
     size_t index, amark_range_t range);
 
 /* 後処理の操作 */
-AMARK_API int amark_dialect_edit_set_kind(amark_dialect_editor_t *editor,
+AMARK_API amark_error_t amark_dialect_edit_set_kind(amark_dialect_editor_t *editor,
     amark_node_id_t node, amark_kind_t kind);
-AMARK_API int amark_dialect_edit_set_data(amark_dialect_editor_t *editor,
+AMARK_API amark_error_t amark_dialect_edit_set_data(amark_dialect_editor_t *editor,
     amark_node_id_t node, const void *data, size_t size);
-AMARK_API int amark_dialect_edit_shrink(amark_dialect_editor_t *editor,
+AMARK_API amark_error_t amark_dialect_edit_shrink(amark_dialect_editor_t *editor,
     amark_node_id_t node, amark_range_t range);
-AMARK_API int amark_dialect_edit_add_child(amark_dialect_editor_t *editor,
+AMARK_API amark_error_t amark_dialect_edit_add_child(amark_dialect_editor_t *editor,
     amark_node_id_t parent, amark_node_id_t hint, amark_kind_t kind,
     amark_range_t range, const void *data, size_t size, amark_node_id_t *out);
-AMARK_API int amark_dialect_edit_split_text(amark_dialect_editor_t *editor,
+AMARK_API amark_error_t amark_dialect_edit_split_text(amark_dialect_editor_t *editor,
     amark_node_id_t node, size_t at, amark_node_id_t *second);
 ```
 - `amark_dialect_reply_t` と `amark_dialect_editor_t` は、中身の見えない型である。
-- どの関数も、引数が `NULL` のとき、または型に合わない値のときは、何も変えずに `AMARK_DIALECT_NO` を返す。
+- 返事と操作の関数は、引数が `NULL` のとき、何も変えずに `AMARK_ERROR_INVALID_INPUT` を返す。行を読む 2 つの関数は `false` を返す。
 
 **Implementation Notes**
 - Integration: `amark.h` が取り込む。`config.h` の前方宣言 `amark_dialect_t` は、そのまま使う。
@@ -624,7 +626,7 @@ amark_error_t amark_dialect_reject(amark_dialect_run_t *run, size_t extension,
   6. 各インラインの規則：`fn` が `NULL` でない。`trigger` が 0x21 から 0x7E。`kind` がその拡張のインラインの種類（3.6、3.7）。
   7. 各区切りの種類：`ch` が ASCII の句読点で、CommonMark の起動文字（`` \ ` & < * _ [ ] ! ``）でない。方言の全体で、ほかの区切りの `ch` とも、どのインラインの規則の `trigger` とも重ならない（8.6）。`lengths` が 0 でなく、下位 4 ビットの外にビットがない（8.7）。`kind` がその拡張のインラインの種類（3.6、3.7）。方言の全体の数が `AMARK_DIALECT_DELIMITER_MAX` 以下（8.8）。
   8. `state_new` と `state_free` が、両方あるか、どちらもない（3.9）。
-- `amark_dialect_run_begin`：`run` を初期化し、`arena` から状態の表を取り、拡張の順に `state_new` を呼ぶ（12.3、12.5）。`state_new` が `YES` 以外を返すか、表の確保が失敗したら、それまでに作った状態を `state_free` で捨て、アリーナを解放して `AMARK_ERROR_NOMEM` を返す（12.6）。`state_new` が `YES` を返して `*state` を書かなかったときの状態は `NULL` である。
+- `amark_dialect_run_begin`：`run` を初期化し、`arena` から状態の表を取り、拡張の順に `state_new` を呼ぶ（12.3、12.5）。`state_new` が `AMARK_ERROR_NONE` 以外を返すか、表の確保が失敗したら、それまでに作った状態を `state_free` で捨て、アリーナを解放して `AMARK_ERROR_NOMEM` を返す（12.6）。`state_new` が `*state` を書かずに成功を返したときの状態は `NULL` である。
 - `amark_dialect_run_end`：`state_new` が成功した拡張の `state_free` を、作った順に 1 回ずつ呼び、アリーナを解放する（12.4）。`run_begin` が失敗した `run` では呼ばない。
 - `amark_dialect_find_kind`：その拡張の種類を、配列の順に探す。なければ `NULL`。種類の数は定数とみなす。
 - `amark_dialect_reject`：文面を 160 バイトのスタックのバッファに組み立て、`amark_document_add_diagnostic` で、重大度「エラー」として足す（11.1、11.3）。確保は、診断の追加だけである。
@@ -709,7 +711,7 @@ void amark_dialect_closing_init(amark_dialect_closing_t *closing,
 ##### State Management
 - 返事は、ブロックの記述の配列と、属性の値のバイト列の配列である。どちらも実行の状態のアリーナにあり、`amark_dialect_reply_begin` のたびに長さを 0 に戻して使い回す。メモリは、いちばん大きい返事の大きさで決まる。
 - 記述 1 つは、`kind`、`parent`、`range`、属性の値（バイト列の中の位置と大きさ）、インラインとして解析する範囲（あれば）、`level`（返事の中の深さ）、`child_end`（最後に足した子の終わり）、`has_children` を持つ。
-- 返事は、「最初の違反」（理由。なければなし）と「残る失敗」（`amark_error_t`）を持つ。違反が付いた後の `add`・`set` は、何もせずに `NO` を返す。
+- 返事は、「最初の違反」（理由。なければなし）と「残る失敗」（`amark_error_t`）を持つ。違反が付いた後の `add`・`set` は、何もせずに `AMARK_ERROR_INVALID_INPUT` を返す。
 
 **足すときの検査**（`amark_dialect_reply_add_block`。1 回が O(1)）
 1. `PARAGRAPH` の返事でだけ、ブロックを足せる。`LEAF` と `CONTAINER` の返事では、ブロックを足せない（`NESTING`。リーフはブロックの子を持たず、コンテナの子は解析がすでに作っている。2.8）。`parent` は `AMARK_DIALECT_TOP` か、すでに足したブロックの番号（`INDEX`）。
@@ -723,7 +725,7 @@ void amark_dialect_closing_init(amark_dialect_closing_t *closing,
 
 **`set_inline`**：`index` は足したブロック、または `LEAF` の返事のブロック 0（`INDEX`）。種類の別が `LEAF` である（`INLINE`。コンテナと、段落のまま残す部分には使えない。段落のまま残す部分の内容は、本体が決める）。範囲がブロックの範囲の内側（`PARENT`）。両端が、それぞれの行の `content_start` 以上、行の内容の終わり以下（`PREFIX`）。
 
-**`finish`**：残る失敗があれば、それを返す。違反があれば、`amark_dialect_reject` を呼び、`*valid = false`。`PARAGRAPH` の返事でブロックが 1 つもなければ、`EMPTY` の違反とする。
+**`finish`**：残る失敗があれば、それを返す。違反があれば、`amark_dialect_reject` を呼び、`*valid = false`。違反がなく、`PARAGRAPH` の返事にブロックが 1 つもなければ、「そのままにする」であり、`*valid = false` にするだけで診断は足さない。
 
 **`apply`**：配列を前から 1 回たどり、各ブロックを `amark_tree_append`（別は `AMARK_NODE_CLASS_BLOCK`、段落は `AUTO`）で、親のノードの最後の子として足す。足す前に、`max_nodes`（`amark_document_node_count` と比べる）と `max_depth`（`parent_depth + 1 + level`）を確かめ、超えれば `AMARK_ERROR_LIMIT_EXCEEDED` を返す。属性の値は `amark_tree_set_dialect_data` で、インラインとして解析する範囲は `amark_inline_content_add` で足す。段落のまま残す部分は、内容の範囲を、その範囲の終わりの空白を除いたものにする（`paragraph_add_line` と同じ）。`LEAF` の返事のブロック 0 は、ここでノードになる。`CONTAINER` の返事のブロック 0 は `existing` を使い、属性の値だけを設定する。
 
@@ -781,8 +783,8 @@ amark_error_t amark_block_parse(amark_document_t *doc,
 
 **閉じる**（`close_block` の `default` の枝と、`close_paragraph`）
 - 方言のコンテナ：ノードの範囲を設定する。`close_fn` があれば、`CONTAINER` の返事で呼ぶ。
-- 方言のリーフ：`close_fn` があれば、`LEAF` の返事で呼ぶ。`NO`、不正、または `close_fn` がないときは、ブロック 0 だけの返事を反映する（その種類のノードが 1 つできる）。
-- 段落：定義を取り出した後、残りがあるときに、`run != NULL` なら、`close_paragraph` を持つ拡張の順に、`PARAGRAPH` の返事で呼ぶ。`YES` で返事が通れば、それを反映して終わる。`NO` または不正なら次の拡張へ進む。どれも置き換えなければ、これまでどおり段落のノードを作る（6.2、6.11）。
+- 方言のリーフ：`close_fn` があれば、`LEAF` の返事で呼ぶ。返事が不正なとき、または `close_fn` がないときは、ブロック 0 だけの返事を反映する（その種類のノードが 1 つできる）。
+- 段落：定義を取り出した後、残りがあるときに、`run != NULL` なら、`close_paragraph` を持つ拡張の順に、`PARAGRAPH` の返事で呼ぶ。返事にブロックがあって検査を通れば、それを反映して終わる。ブロックがないか、不正なら、次の拡張へ進む。どれも置き換えなければ、これまでどおり段落のノードを作る（6.2、6.11）。
 - 見出し、コードブロック、HTML ブロック、テーマの区切り、ブロッククォート、リスト、リスト項目では呼ばない（6.12）。Setext 見出しへの変換は `start_setext_heading` で済んでいるので、ここには来ない（6.13）。
 - 反映の親は、スタックの親の要素のノード、深さは親の添字である。
 
@@ -837,7 +839,7 @@ amark_error_t amark_draft_set_dialect_data(amark_draft_t *draft,
 - 走査が項目の先頭として訪れた位置のバイトに「方言」の印があれば、拡張の順、規則の順に、`trigger` が一致する規則を呼ぶ。区切りの列の 2 文字目以降、`![` の `[`、一度に読まれた構造（コードスパン、オートリンク、生の HTML、dest と title）の中、エスケープされた文字は、走査が訪れないので、規則は呼ばれない（7.9、7.10）。走査は 1 回なので、同じ位置で同じ規則を 2 回呼ぶことはない（7.11）。
 - 検査：`range.start == position`（`ORIGIN`）、`range.start < range.end`（`EMPTY`）、`range.end` が内容の範囲の終わり以下（`PARENT`）、`range.end` が、それを含む行の `content_start` 以上で内容の終わり以下（`PREFIX`。同じ行で終わるときは、`range.end <= line_end` を見るだけである）。
 - 採用：属性の値を作業用のアリーナに写し、`amark_draft_append`（種類は規則の登録の `kind`）と `amark_draft_set_dialect_data` で項目を足し、カーソルを `range.end` へ進め、「改行の開始」の記録を消す。項目は子を持たない（7.6）。
-- `NO` と不正のときは、次の規則へ進み、どれも作らなければ、これまでの処理（区切りの列、CommonMark の構造、1 バイトのテキスト）に入る（7.5、7.8）。
+- `matched` が偽のときと、不正のときは、次の規則へ進み、どれも作らなければ、これまでの処理（区切りの列、CommonMark の構造、1 バイトのテキスト）に入る（7.5、7.8）。
 
 **区切りの種類**
 - 方言の区切り 1 つは、`match = EQUAL`、`intraword_limited = false`、`single = pair = kind`、`lengths` の種類になる（8.2）。CommonMark の 2 つは `EMPHASIS` のままである。`AMARK_DELIMITER_KIND_MAX`（8）= 2 + `AMARK_DIALECT_DELIMITER_MAX`（6）を、コンパイル時に確かめる。
@@ -875,7 +877,7 @@ amark_error_t amark_draft_set_dialect_data(amark_draft_t *draft,
 amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
     size_t max_depth, size_t max_nodes);
 ```
-- `amark_dialect_postprocess`：`postprocess` を持つ拡張の順に、1 回ずつ呼ぶ（9.1）。編集の状態（`run`、拡張の番号、2 つの上限、残る失敗）は、この関数のスタックにある。規則が戻った後、残る失敗があればそれを返し、規則が `NOMEM` を返せば `AMARK_ERROR_NOMEM` を返す。`NO`、`YES` 以外の値は `STATUS` の診断にして、次の拡張へ進む。
+- `amark_dialect_postprocess`：`postprocess` を持つ拡張の順に、1 回ずつ呼ぶ（9.1）。編集の状態（`run`、拡張の番号、2 つの上限、残る失敗）は、この関数のスタックにある。規則が戻った後、残る失敗があればそれを返し、規則が `AMARK_ERROR_NOMEM` を返せば、それを返す。`AMARK_ERROR_NONE` と `AMARK_ERROR_NOMEM` のほかの値は、`STATUS` の診断にして、次の拡張へ進む。
 
 **操作の検査と適用**（どれも、対象のノードと、その親・前後の兄弟・最初と最後の子だけを読む。10.9）
 
@@ -890,8 +892,8 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 | `split_text(node, at)` | ノードはテキスト。`start < at < end`。`at` のバイトが UTF-8 の続きのバイト（`10xxxxxx`）でない（`TEXT`） | `amark_tree_set_range` で `[start, at)` に縮め、`[at, end)` のテキストを次の兄弟として足す |
 
 - `add_child` の置く位置：`hint`（なければ最初の子）から後ろへ、`range.start` 以上で始まる最初の兄弟を探す。その前が置く位置である（9.5）。`hint` より前には戻らない。`hint` の終わりが `range.start` より後ろなら `ORDER` とする。左から右へ進む規則は、直前に見たノードを `hint` に渡せば、1 回が O(1) になる。
-- ノードを足す操作（`add_child`、`split_text`）は、足す前に `max_nodes` を確かめる。超えていれば、残る失敗を `AMARK_ERROR_LIMIT_EXCEEDED` にして `NOMEM` を返す（9.10）。`add_child` は、`max_depth` が 0 でないときに限り、親の深さを親をたどって数え、親の深さ + 1 が上限を超えれば、同じく `LIMIT_EXCEEDED` にする。`split_text` と、ほかの 3 つの操作は、どのノードの深さも変えない。
-- 不正な操作は、診断を足して `NO` を返し、木を変えない（9.4、9.7）。取り除く操作と、順を入れ替える操作はない（9.8）。
+- ノードを足す操作（`add_child`、`split_text`）は、足す前に `max_nodes` を確かめる。超えていれば、`AMARK_ERROR_LIMIT_EXCEEDED` を返し、残る失敗にする（9.10）。`add_child` は、`max_depth` が 0 でないときに限り、親の深さを親をたどって数え、親の深さ + 1 が上限を超えれば、同じく `LIMIT_EXCEEDED` にする。`split_text` と、ほかの 3 つの操作は、どのノードの深さも変えない。
+- 不正な操作は、診断を足して `AMARK_ERROR_INVALID_INPUT` を返し、木を変えない（9.4、9.7）。取り除く操作と、順を入れ替える操作はない（9.8）。
 - どの操作も、通った後の木が不変条件を満たす条件だけを確かめているので、後処理の後に木の全体を検査し直さない（9.9）。テストは `amark_tree_check` で確かめる。
 
 **Implementation Notes**
@@ -924,7 +926,7 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 | 段落の先頭の `[x] ` と `[ ] ` | 後処理（テキストを分ける、縮める、子を加える、種類を変える、属性を設定する） | CHECK（インライン）、TASK（コンテナ） |
 
 - 文書ごとの状態は、規則が呼ばれた回数の数え上げである。後処理が、その数を TASK の属性の値に書く。解析の間で数が持ち越されないことを、これで確かめる（15.9）。
-- 状態を持たない別の方言 `amark_test_dialect_plain()`（規則がすべて `NO` を返す）と、拡張が 0 個の方言を、同じファイルに置く（15.6）。
+- 状態を持たない別の方言 `amark_test_dialect_plain()`（規則がすべて「いいえ」と答える）と、拡張が 0 個の方言を、同じファイルに置く（15.6）。
 
 ## Data Models
 
@@ -952,18 +954,18 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 ### Error Strategy
 - **定義の誤り**：`AMARK_ERROR_INVALID_CONFIG`。規則は 1 つも呼ばれず、文書はできない。
 - **不正な結果・操作**：エラーにしない。診断を 1 件足し、その結果を採用せずに続ける。
-- **メモリ不足**（本体の確保、規則の `NOMEM`、状態の作成の失敗、診断の追加の失敗）：`AMARK_ERROR_NOMEM`。状態を捨て、文書を破棄する。
+- **メモリ不足**（本体の確保、規則が返す `AMARK_ERROR_NOMEM`、状態の作成の失敗、診断の追加の失敗）：`AMARK_ERROR_NOMEM`。状態を捨て、文書を破棄する。
 - **資源の上限**（方言のノードによる深さ・ノードの数の超過）：`AMARK_ERROR_LIMIT_EXCEEDED`。不採用の結果はノードを作らないので、数えない。
 
 ### Error Categories and Responses
 | 起きること | 見つける所 | 応答 |
 |------------|-----------|------|
 | 定義の誤り | `amark_config_resolve` | `INVALID_CONFIG` |
-| 規則の戻り値が定めた値でない | 各差し込み口 | 診断（`STATUS`）、`NO` として続ける |
+| 規則の戻り値が定めた値でない | 各差し込み口 | 診断（`STATUS`）、「いいえ」として続ける |
 | 結果が条件を破る | 各差し込み口、返事の関数、操作の関数 | 診断、採用しない |
-| 規則が `NOMEM` を返す | 各差し込み口 | `NOMEM` |
+| 規則が `AMARK_ERROR_NOMEM` を返す | 各差し込み口 | `NOMEM` |
 | 返事・操作の関数の中の確保の失敗、上限の超過 | 残る失敗 | 規則が戻った後、`NOMEM` か `LIMIT_EXCEEDED` |
-| `state_new` が `YES` 以外を返す | `amark_dialect_run_begin` | `NOMEM` |
+| `state_new` が `AMARK_ERROR_NONE` 以外を返す | `amark_dialect_run_begin` | `NOMEM` |
 
 ### Monitoring
 診断が、方言の作者への唯一の報告である。位置、重大度「エラー」、文面（拡張の名前、差し込み口、理由）を持つ。ログは出さない。
@@ -984,7 +986,7 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 - FENCE：段落に割り込まない。空行をまたぐ。閉じる行を `data` で覚える。属性の値が読める。範囲が最後の空行でない行で終わる（4.7、4.9、5.3、6.1、6.5）。
 - LINE：インラインとして解析する範囲が、ブロックの子のインラインのノードになる（6.8）。
 - GRID：段落の前半が段落のまま残り、後半が GRID・ROW・CELL になる。セルの中の強調とコードスパンがインラインのノードになる。リンク参照定義で始まる段落では、定義が先に取り出される。Setext 見出しになる段落では呼ばれない（6.2、6.6、6.7、6.13）。
-- 不正な結果：開始（`ORIGIN`、`LINE`、`EMPTY`、`STATUS`）、継続（`ORIGIN`、`LINE`）、返事（`INDEX`、`KIND`、`NESTING`、`BOUNDS`、`PARENT`、`ORDER`、`INLINE`、`PREFIX`、`PARAGRAPH`、空の返事）のそれぞれについて、結果が木に反映されず、診断が 1 件で文面と位置が合い、解析が成功して後ろの内容が解析され、木が検査を通る（4.10、4.11、5.8、5.9、6.10、6.11、10.3、10.4、15.4）。
+- 不正な結果：開始（`ORIGIN`、`LINE`、`EMPTY`、`STATUS`）、継続（`ORIGIN`、`LINE`）、返事（`INDEX`、`KIND`、`NESTING`、`BOUNDS`、`PARENT`、`ORDER`、`INLINE`、`PREFIX`、`PARAGRAPH`）のそれぞれについて、結果が木に反映されず、診断が 1 件で文面と位置が合い、解析が成功して後ろの内容が解析され、木が検査を通る（4.10、4.11、5.8、5.9、6.10、6.11、10.3、10.4、15.4）。
 - 不正な結果の後も、同じ規則が後ろの行で呼ばれて採用される（10.7）。
 
 ### 単体テスト：`tests/unit/test_dialect_inline.c`、`test_delimiter.c`、`test_draft.c`
@@ -1002,7 +1004,7 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 ### 単体テスト：`tests/unit/test_dialect_limits.c`
 - 確保の失敗の注入：テスト用の方言を指定した解析を、失敗させる回を 1 から順に変えて繰り返す。どの回でも、解放されないメモリが残らず、`state_free` の回数が `state_new` の成功の回数と等しい（15.8、13.7）。
 - ノードの数の上限：不正な結果を返し続ける入力で、返す木のノードの数が上限以下なら成功する。方言のノードで上限を超えると `LIMIT_EXCEEDED`。深さの上限も同じ（10.11、10.12、15.12、9.10）。
-- 方言なし、拡張が 0 個の方言、すべて `NO` を返す方言で、木のダンプが同じになる。方言なしと拡張が 0 個の方言で、確保の回数が等しい（13.1、13.2、13.3、15.6、15.7）。
+- 方言なし、拡張が 0 個の方言、すべて「いいえ」と答える方言で、木のダンプが同じになる。方言なしと拡張が 0 個の方言で、確保の回数が等しい（13.1、13.2、13.3、15.6、15.7）。
 - 同じ方言で 2 回解析して、木のダンプと診断が同じになる。TASK の属性の数え上げが、2 回目も 1 回目と同じ値である（11.6、12.7、13.8、15.9）。
 - BOX を 10 万段に入れ子にした入力、NOTE を深く入れ子にして空行を大量に並べた入力、`~` を大量に並べた入力で、解析、`amark_tree_check`、解放が終わる（13.5、13.6、15.10）。
 - 規則を呼んだ回数（文書ごとの状態で数える）が、入力の行の数と起動文字の数に対して、13.4 の上限以下である。
