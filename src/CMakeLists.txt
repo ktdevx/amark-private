@@ -15,6 +15,7 @@ set(AMARK_SOURCES
     cursor.c
     definition.c
     document.c
+    draft.c
     entity.c
     line.c
     line_index.c
