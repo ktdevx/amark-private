@@ -151,6 +151,7 @@ amark_add_unit_test(test_bracket SOURCES unit/test_bracket.c)
 amark_add_unit_test(test_spec_inline SOURCES unit/test_spec_inline.c)
 amark_add_unit_test(test_spec_emphasis SOURCES unit/test_spec_emphasis.c)
 amark_add_unit_test(test_spec_links SOURCES unit/test_spec_links.c)
+amark_add_unit_test(test_inline_limits SOURCES unit/test_inline_limits.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
