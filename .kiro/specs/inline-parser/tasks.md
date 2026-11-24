@@ -212,7 +212,7 @@
 - バッククォートの記録は長さごとに位置の大きい方を残す（cmark の上書きと違う。上書きは閉じる列を見落とす）。記録の正しさは、1 つの内容の中で `amark_inline_scan_code_span` を位置が増える順に呼ぶことに依存する。
 - design.md の `amark_delimiters_push` に `size_t length`（列の元の長さ）を足した（4.1 で、元のシグネチャでは元の長さを記録できなかったため）。5.4 の呼び出し側は、積むときの項目の範囲の長さを渡す。スタックの要素の型は `amark_delimiter_t`（添字 + 1 で指し、0 はなし）。
 - 区切りの下限の表は性能のためだけにあり、出力には表れない。線形であることは 8.1 の病的な入力のテスト（test_inline_limits.c）で確かめる。`amark_delimiters_process` が失敗したときは下限より上を外さないので、呼び出し側（5.4）はその内容を捨てる。
-- InlineParser の振り分けは `src/inline.c` の `scan_special` の 1 か所（MSVC の C4065 を避けるため、default だけの switch にしない）。区切りの文字の印は `amark_delimiters_kind_of` で付ける（Delimiter のメンバを直接読まない）。
+- InlineParser の振り分けは `src/inline.c` の `scan_special` の 1 か所（MSVC の C4065 を避けるため、default だけの switch にしない）。区切りの文字の印は `amark_delimiters_kind_of` で付ける。Delimiter のメンバを直接読んでよいのは、`delimiter.h` の注釈にある 2 つ（「種類がない」値としての `kind_count` と、`classify` に渡す `kinds[kind]`）だけ。
 - 5.2 以降、既存の上限のテストは「ブロックだけで超える値」と「インラインのノードで初めて超える値」の両方を確かめる。5.3、5.4、6.x で `[`、`!`、`<` を含む入力のノードの数が動いたら、同じ形で直す。
 - test_inline.c の `check_bytes_covered` は、プレフィックスのバイトがどの子にも入らないことを前提にする。ブロッククォートの中で複数の行にまたがるコードスパン、HTML、リンクは範囲にプレフィックスを含む（2.5）ので、この補助を使わずに範囲を数値で確かめる。
 - 参照の解決（6.2）は `src/bracket.c` の `amark_bracket_close` で、`match_inline` が合わなかった直後に足す。ラベルの読み取りと定義の検索には `cursor->doc` を使う。
