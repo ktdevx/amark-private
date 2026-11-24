@@ -12,6 +12,7 @@ set(AMARK_SOURCES
     array.c
     block.c
     bracket.c
+    charref.c
     config.c
     cursor.c
     definition.c
