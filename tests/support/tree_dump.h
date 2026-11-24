@@ -56,4 +56,53 @@
 size_t amark_test_dump_blocks(const amark_document_t *doc, char *buffer,
                               size_t size);
 
+/*
+ * Writes the whole tree of doc, blocks and inlines, as one line, in the
+ * same way as amark_test_dump_blocks: the blocks are written in its format,
+ * and the inline nodes as children of the blocks that hold them, with one
+ * space before each. Visits the nodes in document order without recursion,
+ * reads the tree through the public reading API of include/amark/tree.h
+ * (and the content of doc, for the quoted bytes), and allocates nothing.
+ * Ranges are not written as numbers.
+ *
+ * The inline kinds, where Q is the bytes of the range of the node, quoted:
+ *
+ *     (text Q)                  a text
+ *     (esc Q) (ref Q)           a backslash escape, a character reference
+ *     (code Q) (html Q)         a code span, a raw HTML
+ *     (autolink T Q)            an autolink of type T ("uri" or "email")
+ *     (em ...) (strong ...)     an emphasis, a strong emphasis
+ *     (link F[ A] ...)          a link of form F ("inline", "full",
+ *                               "collapsed" or "shortcut") and its
+ *                               attributes A, below
+ *     (image F[ A] ...)         an image, with the attributes of a link
+ *     (br) (sbr)                a hard and a soft line break
+ *
+ * The attributes of the inline form are dest=Q and title=Q, the bytes of the
+ * destination and of the title, each written only when that part is written
+ * (dest="" when it is written but empty). The attribute of the reference
+ * forms is def=Q, the bytes of the label of the link reference definition
+ * the link refers to. For example, on one line:
+ *
+ *     (doc (def) (p (text "a") (em (text "b")) (sbr)
+ *      (link inline dest="/u" title="t" (text "c"))
+ *      (link full def="x" (code "`d`"))))
+ *
+ * A quoted string is written between '"'. In it, '"' and '\' are written
+ * with a '\' before them, LF as "\n", CR as "\r", tab as "\t", and any other
+ * byte below 0x20 or 0x7F and above as "\xHH" (two upper-case hexadecimal
+ * digits); the other bytes are written as they are. Q is written as
+ * "none" when the range cannot be read or does not lie within the content.
+ *
+ * As with the blocks, an attribute the node does not have is written as
+ * "none" (a link of no form as "(link none ...)"), and an inline of any
+ * other kind (a dialect inline) as "(?)" with its children, so that a
+ * malformed tree shows up in a comparison.
+ *
+ * Writes at most size bytes to buffer and returns the length of the whole
+ * string, as amark_test_dump_blocks does. A NULL doc gives the empty string.
+ */
+size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
+                            size_t size);
+
 #endif /* AMARK_TREE_DUMP_H */

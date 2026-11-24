@@ -5,6 +5,8 @@
 
 #include "tree_dump.h"
 
+#include "document.h" /* amark_document_content, for the quoted bytes */
+
 #include <stdint.h>
 
 /*
@@ -237,6 +239,220 @@ size_t amark_test_dump_blocks(const amark_document_t *doc, char *buffer,
             }
             put_char(&out, ' ');
             put_open(&out, doc, next);
+            node = next;
+        }
+    }
+
+    if (size > 0) {
+        buffer[out.len < size ? out.len : size - 1] = '\0';
+    }
+    return out.len;
+}
+
+/*
+ * amark_test_dump_tree: the blocks as above, and the inlines.
+ */
+
+/* Writes the bytes of range of the content of doc between '"', escaped. */
+static void put_quoted(dump_out_t *out, const amark_document_t *doc,
+                       const amark_range_t *range)
+{
+    static const char k_hex[] = "0123456789ABCDEF";
+    const unsigned char *content = amark_document_content(doc);
+    size_t i;
+    unsigned char c;
+
+    if (range->start > range->end ||
+        range->end > amark_document_content_length(doc) ||
+        (content == NULL && range->end > 0)) {
+        put_str(out, "none");
+        return;
+    }
+    put_char(out, '"');
+    for (i = range->start; i < range->end; i++) {
+        c = content[i];
+        if (c == '"' || c == '\\') {
+            put_char(out, '\\');
+            put_char(out, (char)c);
+        } else if (c == '\n') {
+            put_str(out, "\\n");
+        } else if (c == '\r') {
+            put_str(out, "\\r");
+        } else if (c == '\t') {
+            put_str(out, "\\t");
+        } else if (c < 0x20u || c >= 0x7Fu) {
+            put_str(out, "\\x");
+            put_char(out, k_hex[c >> 4]);
+            put_char(out, k_hex[c & 0x0Fu]);
+        } else {
+            put_char(out, (char)c);
+        }
+    }
+    put_char(out, '"');
+}
+
+/* Writes a space and the bytes of the range of node, quoted. */
+static void put_node_quoted(dump_out_t *out, const amark_document_t *doc,
+                            amark_node_id_t node)
+{
+    amark_range_t range;
+
+    put_char(out, ' ');
+    if (!amark_node_range(doc, node, &range)) {
+        put_str(out, "none");
+        return;
+    }
+    put_quoted(out, doc, &range);
+}
+
+/* Writes the form and the attributes of node, a link or an image. */
+static void put_link(dump_out_t *out, const amark_document_t *doc,
+                     amark_node_id_t node)
+{
+    amark_range_t range;
+    amark_node_id_t def;
+
+    switch (amark_link_form(doc, node)) {
+    case AMARK_LINK_INLINE:
+        put_str(out, " inline");
+        if (amark_link_destination(doc, node, &range)) {
+            put_str(out, " dest=");
+            put_quoted(out, doc, &range);
+        }
+        if (amark_link_title(doc, node, &range)) {
+            put_str(out, " title=");
+            put_quoted(out, doc, &range);
+        }
+        return;
+    case AMARK_LINK_FULL:
+        put_str(out, " full");
+        break;
+    case AMARK_LINK_COLLAPSED:
+        put_str(out, " collapsed");
+        break;
+    case AMARK_LINK_SHORTCUT:
+        put_str(out, " shortcut");
+        break;
+    default:
+        put_str(out, " none");
+        return;
+    }
+    def = amark_link_definition(doc, node);
+    if (amark_definition_label(doc, def, &range)) {
+        put_str(out, " def=");
+        put_quoted(out, doc, &range);
+    }
+}
+
+/* Writes "(" and the kind and attributes of node, a block or an inline. */
+static void put_open_any(dump_out_t *out, const amark_document_t *doc,
+                         amark_node_id_t node)
+{
+    if (!amark_node_is_inline(doc, node)) {
+        put_open(out, doc, node);
+        return;
+    }
+    put_char(out, '(');
+    switch (amark_node_kind(doc, node)) {
+    case AMARK_KIND_TEXT:
+        put_str(out, "text");
+        put_node_quoted(out, doc, node);
+        break;
+    case AMARK_KIND_BACKSLASH_ESCAPE:
+        put_str(out, "esc");
+        put_node_quoted(out, doc, node);
+        break;
+    case AMARK_KIND_CHARACTER_REFERENCE:
+        put_str(out, "ref");
+        put_node_quoted(out, doc, node);
+        break;
+    case AMARK_KIND_CODE_SPAN:
+        put_str(out, "code");
+        put_node_quoted(out, doc, node);
+        break;
+    case AMARK_KIND_RAW_HTML:
+        put_str(out, "html");
+        put_node_quoted(out, doc, node);
+        break;
+    case AMARK_KIND_AUTOLINK:
+        put_str(out, "autolink");
+        switch (amark_autolink_type(doc, node)) {
+        case AMARK_AUTOLINK_URI:
+            put_str(out, " uri");
+            break;
+        case AMARK_AUTOLINK_EMAIL:
+            put_str(out, " email");
+            break;
+        default:
+            put_str(out, " none");
+            break;
+        }
+        put_node_quoted(out, doc, node);
+        break;
+    case AMARK_KIND_EMPHASIS:
+        put_str(out, "em");
+        break;
+    case AMARK_KIND_STRONG:
+        put_str(out, "strong");
+        break;
+    case AMARK_KIND_LINK:
+        put_str(out, "link");
+        put_link(out, doc, node);
+        break;
+    case AMARK_KIND_IMAGE:
+        put_str(out, "image");
+        put_link(out, doc, node);
+        break;
+    case AMARK_KIND_HARD_BREAK:
+        put_str(out, "br");
+        break;
+    case AMARK_KIND_SOFT_BREAK:
+        put_str(out, "sbr");
+        break;
+    default:
+        put_char(out, '?');
+        break;
+    }
+}
+
+size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
+                            size_t size)
+{
+    dump_out_t out;
+    amark_node_id_t root = amark_document_root(doc);
+    amark_node_id_t node = root;
+    amark_node_id_t next;
+
+    out.buffer = buffer;
+    out.size = size;
+    out.len = 0;
+
+    if (root != AMARK_NODE_NONE) {
+        put_open_any(&out, doc, root);
+        for (;;) {
+            next = amark_node_first_child(doc, node);
+            if (next == AMARK_NODE_NONE) {
+                /*
+                 * node has no children: close it, and the ancestors it was
+                 * the last child of, up to one with a next sibling.
+                 */
+                for (;;) {
+                    put_char(&out, ')');
+                    if (node == root) {
+                        break;
+                    }
+                    next = amark_node_next_sibling(doc, node);
+                    if (next != AMARK_NODE_NONE) {
+                        break;
+                    }
+                    node = amark_node_parent(doc, node);
+                }
+                if (next == AMARK_NODE_NONE) {
+                    break; /* the root is closed */
+                }
+            }
+            put_char(&out, ' ');
+            put_open_any(&out, doc, next);
             node = next;
         }
     }

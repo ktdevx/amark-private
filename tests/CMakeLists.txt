@@ -55,7 +55,7 @@ endif()
 unset(_amark_libm_probe)
 
 # amark_test_support: the counting, failing test allocator ("test_alloc.h")
-# and the dump of the block structure of a tree ("tree_dump.h"). A test-only
+# and the dumps of a tree as one line ("tree_dump.h"). A test-only
 # static library, never installed.
 add_library(amark_test_support STATIC
     support/test_alloc.c
