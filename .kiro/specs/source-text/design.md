@@ -158,7 +158,9 @@ tests/
 │   ├── test_text_build.c   # 4 つの決まりと、コードの行
 │   ├── test_text.c         # 「部分と種類の表」、答えられない呼び出し、受け渡し、確保の失敗の注入
 │   ├── test_text_limits.c  # 時間、深い入れ子、同時の読み出し
-│   └── test_spec_text.c    # spec.txt の 10 の節の例の値
+│   ├── test_spec_text_leaf.c    # spec.txt の例の値：Tabs、Indented code blocks、Fenced code blocks、Link reference definitions
+│   ├── test_spec_text_inline.c  # spec.txt の例の値：Backslash escapes、Entity and numeric character references、Code spans、Autolinks
+│   └── test_spec_text_links.c   # spec.txt の例の値：Links、Images
 └── public/
     └── test_text.c         # 公開 API だけで、木をたどって値を得る
 ```
@@ -201,7 +203,7 @@ flowchart TB
 ```
 
 - 「答えられない」は、TextSink に 1 バイトも書く前に決まる（11.4）。
-- 上限の検査も、書く前に行う。結果の長さは、範囲の長さの 3 倍に 1 を足した数を超えない（「長さの上限」の節）。この数が `size_t` に収まらないときだけ、`LIMIT_EXCEEDED` になる（10.12）。
+- 上限の検査も、書く前に行う。結果の長さは、範囲の長さの 3 倍に 1 を足した数を超えない（「長さの上限」の節）。この数に終端の NUL の 1 を足した数が `size_t` に収まらないときだけ、`LIMIT_EXCEEDED` になる（10.12）。
 - `amark_node_text_alloc` は、同じ流れを 2 回通る。1 回目は `capacity` を 0 として長さを得る。次に、長さに 1 を足した大きさを確保し、2 回目で書いて、終端の NUL を置く。
 
 ## Requirements Traceability
@@ -235,7 +237,7 @@ flowchart TB
 | 12.4, 12.5, 12.6, 12.11 | 状態を持たない、同時に読める | すべて | 「確保した文字列」の節 | — |
 | 12.7 | 規則を設定で変えない | TextApi | 設定を受け取らない | — |
 | 12.8, 12.9, 12.10 | 公開ヘッダとシンボル | TextApi | `text.h`、`exported_symbols.txt` | — |
-| 13.1 | spec.txt の例 | TextDump | `test_spec_text.c` | — |
+| 13.1 | spec.txt の例 | TextDump | `test_spec_text_leaf.c`、`test_spec_text_inline.c`、`test_spec_text_links.c` | — |
 | 13.2, 13.3, 13.4, 13.6, 13.7, 13.8, 13.9, 13.10, 13.11, 13.14 | 決まりと受け渡しのテスト | — | `test_text_lines.c`、`test_text_build.c`、`test_text_sink.c`、`test_text.c` | — |
 | 13.5 | 文字に戻す決まりの境 | — | `test_charref.c`、`test_text_build.c` | — |
 | 13.12 | 時間と深い入れ子 | — | `test_text_limits.c` | — |
@@ -360,7 +362,8 @@ AMARK_API void amark_text_free(const amark_document_t *doc, char *text);
 
 ##### 長さの上限
 - 結果は、読む範囲の 1 バイトにつき、多くても 3 バイトである（U+0000 と不正な 1 バイトが U+FFFD の 3 バイトに、タブ 1 バイトが 3 個のスペースになる場合が最大。文字参照は、もとより長くなっても 5 バイトが 6 バイトで、3 倍より小さい）。コードの行では、行末記号のない最後の行に `\n` を足すので、1 バイト増える。
-- そのため、範囲の長さ R が `(SIZE_MAX - 1) / 3` 以下なら、長さの計算はあふれない。TextApi は、書く前にこれを確かめ、超えていれば `AMARK_ERROR_LIMIT_EXCEEDED` を返す（10.12）。TextSink は、あふれの検査を持たない。
+- 確保する方法では、結果の長さ L に、終端の NUL の 1 バイトを足す。L は 3R+1 を超えないので、L+1 が `size_t` に収まるには、3R+2 が `SIZE_MAX` 以下であればよい。
+- そのため、範囲の長さ R が `(SIZE_MAX - 2) / 3` 以下なら、長さの計算も、確保する大きさの計算もあふれない。TextApi は、書く前にこれを確かめ、超えていれば `AMARK_ERROR_LIMIT_EXCEEDED` を返す（10.12）。TextSink は、あふれの検査を持たない。
 
 ##### 確保した文字列
 - `amark_node_text_alloc` の文字列は、文書のアリーナではなく、`doc->allocator` から直接確保する。アリーナに置くと、文書を変えることになり、同じ文書を同時に読めなくなるからである（12.5、12.6）。
@@ -616,7 +619,7 @@ bool amark_test_dump_text(const amark_document_t *doc, char *buffer,
 - **答えられない**（`NOT_AVAILABLE`）：無効な引数、表にない組、書かれていない部分、解析データのない文書。何も変えない。
 - **バッファに収まらない**（`BUFFER_TOO_SMALL`）：`*length` の大きさのバッファで呼び直す。
 - **メモリ不足**（`NOMEM`）：`amark_node_text_alloc` だけ。何も残さない。
-- **資源の上限の超過**（`LIMIT_EXCEEDED`）：範囲の長さが `(SIZE_MAX - 1) / 3` を超えるとき。書く前に返す。
+- **資源の上限の超過**（`LIMIT_EXCEEDED`）：範囲の長さが `(SIZE_MAX - 2) / 3` を超えるとき。書く前に返す。
 - Markdown の中身を理由にした失敗はない（11.7）。診断は足さない（12.11）。
 
 ### Monitoring
@@ -662,9 +665,10 @@ bool amark_test_dump_text(const amark_document_t *doc, char *buffer,
 
 ### 単体テスト：`tests/unit/test_text_limits.c`
 - 多数の `&` と `\` を含む範囲、多数の短い行にわたるコードブロック、入れ子が 10 万段のブロッククォートの中の段落とコードブロックで、入力を 2 倍にしたときの時間が、ほぼ 2 倍までに収まる（既存の `test_inline_limits.c` と同じ測り方）。スタックを使い切らない（12.1、12.3、13.12）。
-- スレッドを使えるビルドでは、同じ文書について、複数のスレッドから `amark_node_text` を呼び、結果が 1 つのスレッドのときと同じである（12.6）。既存の並行性のテストに支援がなければ、この項目は spec-conformance に送る。
+- 複数のスレッドから同時に呼ぶテストは、この spec では作らず、spec-conformance に送る（既存のテストにスレッドの支援がなく、roadmap.md も並行性のテストを spec-conformance に置いている）。この spec では、12.6 を次の 3 つで支える。文書と内容を変えないこと（`test_text.c`）、`amark_node_raw` と `amark_node_text` が確保関数を呼ばないこと（`test_text.c`）、可変の静的データがないこと（`CheckObjects.cmake`）。
 
-### 単体テスト：`tests/unit/test_spec_text.c`
+### 単体テスト：`tests/unit/test_spec_text_leaf.c`、`test_spec_text_inline.c`、`test_spec_text_links.c`
+- 既存の `test_spec_*.c` と同じく、節のまとまりごとにファイルを分ける（それぞれの節は、File Structure Plan のとおり）。
 - spec.txt 0.31.2 の、Tabs、Backslash escapes、Entity and numeric character references、Indented code blocks、Fenced code blocks、Link reference definitions、Code spans、Links、Images、Autolinks の例を、`amark_test_dump_text` の文字列で比べる（13.1）。入力は、例の番号とともに、テストのコードに写す（既存の `test_spec_*.c` と同じ出どころと表示）。
 
 ### 公開 API のテスト：`tests/public/test_text.c`

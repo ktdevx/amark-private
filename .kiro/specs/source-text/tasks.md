@@ -116,25 +116,25 @@
 - [ ] 5. 統合と検証
 - [ ] 5.1 値の文字列のテストの支援と、spec.txt のリーフブロックの例を作る
   - テストの支援に、文書を文書の順にたどり、値、dest、title、info のうち成功するものを `種類の名前:部分=値` の形で並べる関数を足す。公開の API だけを使い、制御文字、`\`、区切りの文字をエスケープし、収まれば NUL で終わる文字列を書く。書式は木の文字列の支援の決まりにならう
-  - spec.txt の値のテスト（`tests/unit/test_spec_text.c`）を作って登録し、Tabs、Indented code blocks、Fenced code blocks、Link reference definitions の節の例を、例の番号とともに写し、期待する文字列を HTML から手で導いて比べる
+  - リーフブロックの spec.txt の値のテスト（`tests/unit/test_spec_text_leaf.c`）を作って登録し、Tabs、Indented code blocks、Fenced code blocks、Link reference definitions の節の例を、例の番号とともに写し、期待する文字列を HTML から手で導いて比べる
   - 完了の状態：この 4 つの節の例のテストが通る
   - _Depends: 4.4_
   - _Requirements: 13.1_
 
-- [ ] 5.2 spec.txt のインラインの例を足す
-  - spec.txt の値のテストに、Backslash escapes、Entity and numeric character references、Code spans、Autolinks の節の例を足す
+- [ ] 5.2 spec.txt のインラインの例のテストを作る
+  - インラインの spec.txt の値のテスト（`tests/unit/test_spec_text_inline.c`）を作って登録し、Backslash escapes、Entity and numeric character references、Code spans、Autolinks の節の例を足す
   - 完了の状態：この 4 つの節の例のテストが通る
   - _Requirements: 13.1_
 
-- [ ] 5.3 spec.txt のリンクと画像の例を足す
-  - spec.txt の値のテストに、Links と Images の節の例を足す。参照の形式のリンクは、参照先の定義の dest と title が並ぶことで確かめる
+- [ ] 5.3 spec.txt のリンクと画像の例のテストを作る
+  - リンクと画像の spec.txt の値のテスト（`tests/unit/test_spec_text_links.c`）を作って登録し、Links と Images の節の例を足す。参照の形式のリンクは、参照先の定義の dest と title が並ぶことで確かめる
   - 完了の状態：10 の節の例のすべてのテストが通る
   - _Requirements: 13.1_
 
 - [ ] 5.4 (P) 時間とスタックのテストを作る
   - 時間とスタックの単体テスト（`tests/unit/test_text_limits.c`）を作って登録する（テストの登録の一覧には、並行するタスクと 1 行ずつ足す）
   - 多数の `&` と `\` を含む範囲、多数の短い行にわたるコードブロック、入れ子が 10 万段のブロッククォートの中の段落とコードブロックで、入力を 2 倍にしたときの時間がほぼ 2 倍までに収まり、スタックを使い切らないことを、既存のインラインの上限のテストと同じ測り方で確かめる
-  - 既存のテストにスレッドの支援がないので、複数のスレッドから同時に呼ぶテストは、設計に従い spec-conformance に送る。この spec では、文書を変えないこと（4.5）、バッファに書く方法が確保しないこと（4.4）、可変の静的データがないこと（オブジェクトの検査）で 12.6 を支える
+  - 複数のスレッドから同時に呼ぶテストは、設計に従い spec-conformance に送る。この spec では、文書を変えないこと（4.5）、バッファに書く方法が確保しないこと（4.4）、可変の静的データがないこと（オブジェクトの検査）で 12.6 を支える
   - 完了の状態：時間とスタックのテストが通る
   - _Boundary: TextLimitsTest_
   - _Depends: 4.5_

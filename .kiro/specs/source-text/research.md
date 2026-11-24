@@ -169,7 +169,7 @@
 
 ### spec.txt の例（Gap Analysis の 3.8）
 - **Findings**: 対象の 10 の節の例は、0.31.2 でおよそ 260 個である（Links が 90、Fenced code blocks が 29、Link reference definitions が 27 など）。既存の `test_spec_*.c` は、入力と期待する文字列の表を、ファイルごとに持つ。
-- **Implications**: `tests/unit/test_spec_text.c` に、番号、入力、期待する値の文字列の表を持つ。値の文字列は、テストの支援 `amark_test_dump_text` で作る。
+- **Implications**: `tests/unit/test_spec_text_*.c`（節のまとまりごとの 3 つ）に、番号、入力、期待する値の文字列の表を持つ。値の文字列は、テストの支援 `amark_test_dump_text` で作る。
 
 ## Architecture Pattern Evaluation
 
