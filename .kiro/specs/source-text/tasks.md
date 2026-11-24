@@ -121,7 +121,7 @@
   - _Depends: 4.4_
   - _Requirements: 13.1_
 
-- [ ] 5.2 spec.txt のインラインの例のテストを作る
+- [x] 5.2 spec.txt のインラインの例のテストを作る
   - インラインの spec.txt の値のテスト（`tests/unit/test_spec_text_inline.c`）を作って登録し、Backslash escapes、Entity and numeric character references、Code spans、Autolinks の節の例を足す
   - 完了の状態：この 4 つの節の例のテストが通る
   - _Requirements: 13.1_

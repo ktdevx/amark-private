@@ -159,6 +159,7 @@ amark_add_unit_test(test_text_lines SOURCES unit/test_text_lines.c)
 amark_add_unit_test(test_text_build SOURCES unit/test_text_build.c)
 amark_add_unit_test(test_text SOURCES unit/test_text.c)
 amark_add_unit_test(test_spec_text_leaf SOURCES unit/test_spec_text_leaf.c)
+amark_add_unit_test(test_spec_text_inline SOURCES unit/test_spec_text_inline.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
