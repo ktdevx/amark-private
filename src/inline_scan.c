@@ -5,13 +5,9 @@
 
 #include "inline_scan.h"
 
-#include "entity.h"
+#include "charref.h"
 
 #include <string.h>
-
-/* The most digits of a decimal and a hexadecimal character reference. */
-#define MAX_DECIMAL_DIGITS 7
-#define MAX_HEX_DIGITS 6
 
 /* The shortest and the longest scheme of an absolute URI. */
 #define MIN_SCHEME_LENGTH 2
@@ -23,11 +19,6 @@
 static bool is_digit(unsigned char c)
 {
     return c >= '0' && c <= '9';
-}
-
-static bool is_hex_digit(unsigned char c)
-{
-    return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
 static bool is_letter(unsigned char c)
@@ -153,45 +144,14 @@ amark_error_t amark_inline_scan_code_span(amark_cursor_t *cursor,
 
 bool amark_inline_scan_entity(amark_cursor_t *cursor)
 {
-    const unsigned char *p = cursor->bytes;
-    size_t end = cursor->line_end;
-    size_t pos = cursor->pos + 1;
-    size_t start;
+    size_t length = amark_charref_scan(cursor->bytes + cursor->pos,
+                                       cursor->line_end - cursor->pos, NULL);
 
-    if (pos < end && p[pos] == '#') {
-        size_t max = MAX_DECIMAL_DIGITS;
-        bool hex = false;
-
-        pos++;
-        if (pos < end && (p[pos] == 'x' || p[pos] == 'X')) {
-            hex = true;
-            max = MAX_HEX_DIGITS;
-            pos++;
-        }
-        start = pos;
-        while (pos < end && pos - start < max &&
-               (hex ? is_hex_digit(p[pos]) : is_digit(p[pos]))) {
-            pos++;
-        }
-        if (pos == start || pos >= end || p[pos] != ';') {
-            return false;
-        }
-    } else {
-        const unsigned char *utf8;
-        size_t utf8_length;
-
-        start = pos;
-        while (pos < end && is_alnum(p[pos])) {
-            pos++;
-        }
-        if (pos == start || pos >= end || p[pos] != ';' ||
-            !amark_entity_lookup(p + start, pos - start, &utf8,
-                                 &utf8_length)) {
-            return false;
-        }
+    if (length == 0) {
+        return false;
     }
     /* Right after the ';', still within this line. */
-    cursor->pos = pos + 1;
+    cursor->pos += length;
     return true;
 }
 

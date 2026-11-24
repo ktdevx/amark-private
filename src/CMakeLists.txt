@@ -12,6 +12,7 @@ set(AMARK_SOURCES
     array.c
     block.c
     bracket.c
+    charref.c
     config.c
     cursor.c
     definition.c
@@ -30,6 +31,10 @@ set(AMARK_SOURCES
     scan.c
     tree.c
     tree_check.c
+    text.c
+    text_build.c
+    text_lines.c
+    text_sink.c
     unicode.c
     utf8.c
     version.c

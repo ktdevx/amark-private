@@ -54,11 +54,12 @@ if(NOT AMARK_MATH_WITHOUT_LIBM)
 endif()
 unset(_amark_libm_probe)
 
-# amark_test_support: the counting, failing test allocator ("test_alloc.h")
-# and the dumps of a tree as one line ("tree_dump.h"). A test-only
-# static library, never installed.
+# amark_test_support: the counting, failing test allocator ("test_alloc.h"),
+# the dumps of a tree as one line ("tree_dump.h") and of the values of its
+# nodes ("text_dump.h"). A test-only static library, never installed.
 add_library(amark_test_support STATIC
     support/test_alloc.c
+    support/text_dump.c
     support/tree_dump.c
 )
 amark_target_defaults(amark_test_support)
@@ -127,6 +128,7 @@ amark_add_unit_test(test_line_index SOURCES unit/test_line_index.c)
 amark_add_unit_test(test_utf8 SOURCES unit/test_utf8.c)
 amark_add_unit_test(test_unicode SOURCES unit/test_unicode.c)
 amark_add_unit_test(test_entity SOURCES unit/test_entity.c)
+amark_add_unit_test(test_charref SOURCES unit/test_charref.c)
 amark_add_unit_test(test_config SOURCES unit/test_config.c)
 amark_add_unit_test(test_document SOURCES unit/test_document.c)
 amark_add_unit_test(test_tree SOURCES unit/test_tree.c)
@@ -152,6 +154,14 @@ amark_add_unit_test(test_spec_inline SOURCES unit/test_spec_inline.c)
 amark_add_unit_test(test_spec_emphasis SOURCES unit/test_spec_emphasis.c)
 amark_add_unit_test(test_spec_links SOURCES unit/test_spec_links.c)
 amark_add_unit_test(test_inline_limits SOURCES unit/test_inline_limits.c)
+amark_add_unit_test(test_text_sink SOURCES unit/test_text_sink.c)
+amark_add_unit_test(test_text_lines SOURCES unit/test_text_lines.c)
+amark_add_unit_test(test_text_build SOURCES unit/test_text_build.c)
+amark_add_unit_test(test_text SOURCES unit/test_text.c)
+amark_add_unit_test(test_spec_text_leaf SOURCES unit/test_spec_text_leaf.c)
+amark_add_unit_test(test_spec_text_inline SOURCES unit/test_spec_text_inline.c)
+amark_add_unit_test(test_spec_text_links SOURCES unit/test_spec_text_links.c)
+amark_add_unit_test(test_text_limits SOURCES unit/test_text_limits.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
@@ -168,6 +178,8 @@ amark_add_public_test(test_version SOURCES public/test_version.c)
 amark_add_public_test(test_public_config SOURCES public/test_config.c)
 # Named test_public_parse: test_parse is the unit test of the same module.
 amark_add_public_test(test_public_parse SOURCES public/test_parse.c)
+# Named test_public_text: test_text is the unit test of the same module.
+amark_add_public_test(test_public_text SOURCES public/test_text.c)
 
 # amark_target_defaults sets only C properties (C99 and so on); its warning
 # flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The

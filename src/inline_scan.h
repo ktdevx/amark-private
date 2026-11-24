@@ -90,16 +90,13 @@ amark_error_t amark_inline_scan_code_span(amark_cursor_t *cursor,
                                           size_t open_length, bool *found);
 
 /*
- * Reads an entity or numeric character reference within the current line:
- * '&', then one of
- *   - '#', 1 to 7 decimal digits,
- *   - '#', 'x' or 'X', 1 to 6 hexadecimal digits,
- *   - an ASCII alphanumeric name that amark_entity_lookup knows,
- * then ';'. The value of a numeric reference is not checked (0, surrogates
- * and values over U+10FFFF match too). The cursor is on the '&'. On a
- * match, moves the cursor right after the ';' and returns true; otherwise
- * returns false and leaves the cursor where it was. Reads at most the
- * alphanumeric run after the '&' (and the '#', the 'x' and the ';').
+ * Reads an entity or numeric character reference within the current line,
+ * with the syntax of amark_charref_scan (src/charref.h), its one owner. The
+ * value of a numeric reference does not matter here (0, surrogates and
+ * values over U+10FFFF match too). The cursor is on the '&'. On a match,
+ * moves the cursor right after the ';' and returns true; otherwise returns
+ * false and leaves the cursor where it was. Reads at most the alphanumeric
+ * run after the '&' (and the '#', the 'x' and the ';').
  */
 bool amark_inline_scan_entity(amark_cursor_t *cursor);
 
