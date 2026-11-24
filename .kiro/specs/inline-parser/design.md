@@ -957,7 +957,7 @@ size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
 
 ### 既存のテストと、公開 API のテスト
 - `tests/public/test_parse.c`：公開ヘッダだけで、インラインのノードの種類・範囲・リンクの属性を読む（19.10）。
-- `tests/unit/test_block_limits.c`、`test_parse.c`：期待値を直した後、すべて通る。`test_block.c` と、`amark_test_dump_blocks` を使う `test_spec_*.c` は、変えずに通る（19.11）。
+- `tests/unit/test_block_limits.c`、`test_parse.c`、`test_block.c` の `amark_parse` を通す上限とノードの数のテスト：期待値を直した後、すべて通る。`test_block.c` の構造の比較と、`amark_test_dump_blocks` を使う `test_spec_*.c` は、期待する文字列を変えずに通る（19.11）。
 - `tests/unit/test_tree_dump.c`：`amark_test_dump_tree` の書式、引用符の中のエスケープ、足りないバッファ。
 
 ### リポジトリの検査（既存のもの）
