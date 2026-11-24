@@ -20,8 +20,16 @@
  * each end only when both ends are spaces and the content is not all spaces;
  * tabs, other spaces, backslashes and '&' stay; container prefixes and the
  * leading whitespace of continuation lines are left out.
+ * Code lines: an indented code block gives every line of its range with the
+ * four columns of indentation left out (blank lines inside, deeper
+ * indentation and tabs that cross the boundary included); a fenced code block
+ * gives the lines after the opening fence, up to the closing fence when there
+ * is one, with up to the indentation of the opening fence left out; lines
+ * that look like a closing fence but are not one stay; each line ends in
+ * '\n', also the last one without a line ending; backslashes and '&' stay.
  */
 
+#include "array.h"
 #include "document.h"
 #include "line_index.h"
 #include "test_alloc.h"
@@ -746,8 +754,243 @@ NAOS_SUITE(text_build_code_span,
     NAOS_ADD_TEST(code_span_second_span_on_a_later_line)
 )
 
+/* --- Code lines ---------------------------------------------------------- */
+
+/* Writes the code lines of the n-th code block into g_out. */
+static void build_code(size_t n)
+{
+    amark_node_id_t id = find(AMARK_KIND_CODE_BLOCK, n);
+    const amark_node_t *node;
+    amark_text_sink_t sink;
+
+    NAOS_REQUIRE_UINT_NE(id, AMARK_NODE_NONE);
+    node = (const amark_node_t *)amark_array_at(&g_doc->nodes, id);
+    NAOS_REQUIRE_UINT_NE(node->attr, 0);
+    memset(g_out, 0, sizeof(g_out));
+    amark_text_sink_init(&sink, g_out, OUT_SIZE - 1);
+    amark_text_build_code(
+        g_doc, node,
+        (const amark_node_attr_t *)amark_array_at(&g_doc->attrs, node->attr),
+        &sink);
+    g_length = sink.length;
+    NAOS_REQUIRE_UINT_LT(g_length, OUT_SIZE);
+}
+
+/* Checks the code lines of the first code block of content. */
+static void check_code(const char *content, const char *want)
+{
+    parse(content);
+    build_code(0);
+    check_out(want);
+}
+
+/* Writes count spaces and then text (a C string) at *pos of buffer. */
+static void put_indented(char *buffer, size_t *pos, size_t count,
+                         const char *text)
+{
+    size_t length = strlen(text);
+
+    memset(buffer + *pos, ' ', count);
+    *pos += count;
+    memcpy(buffer + *pos, text, length);
+    *pos += length;
+    buffer[*pos] = '\0';
+}
+
+NAOS_TEST(indented_code_lines)
+{
+    check_code("    a\n    b\n", "a\nb\n");
+    check_code("    a", "a\n");
+    check_code("    a\r\n    b\r    c", "a\nb\nc\n");
+}
+
+NAOS_TEST(indented_code_keeps_blank_lines_inside)
+{
+    check_code("    a\n\n    b\n", "a\n\nb\n");
+    /* The white space past the four columns of a blank line stays. */
+    check_code("    a\n      \n    b\n", "a\n  \nb\n");
+    /* Blank lines after the block are not part of it. */
+    check_code("    a\n\n    b\n\n\nx\n", "a\n\nb\n");
+}
+
+NAOS_TEST(indented_code_keeps_deeper_indentation)
+{
+    check_code("      a\n    b\n", "  a\nb\n");
+    check_code("    a\n        b\n", "a\n    b\n");
+    check_code("     \tb\n", " \tb\n");
+}
+
+NAOS_TEST(indented_code_tab_across_the_boundary)
+{
+    check_code("\ta\n", "a\n");
+    check_code("  \ta\n", "a\n");
+    check_code("\t\ta\n", "\ta\n");
+    check_code("    \ta\n", "\ta\n");
+    /* The tab after ">" is partly the optional space of the block quote. */
+    check_code(">\t\tfoo\n", "  foo\n");
+    check_code("-\t\tfoo\n", "  foo\n");
+}
+
+NAOS_TEST(indented_code_keeps_trailing_spaces_and_escapes)
+{
+    check_code("    a  \n    \\* &amp; &#35;\n", "a  \n\\* &amp; &#35;\n");
+}
+
+NAOS_TEST(fenced_code_with_closing_fence)
+{
+    check_code("```\na\nb\n```\n", "a\nb\n");
+    check_code("~~~ info\na\n~~~\n", "a\n");
+    check_code("```\na\n`````\n", "a\n");
+    check_code("```\na\n```  \n", "a\n");
+    check_code("  ```\na\n   ```\n", "a\n");
+    check_code("```\na\n```", "a\n");
+    check_code("```\r\na\r\nb\r```\r\n", "a\nb\n");
+}
+
+NAOS_TEST(fenced_code_without_closing_fence)
+{
+    check_code("```\na\nb\n", "a\nb\n");
+    check_code("```\na\nb", "a\nb\n");
+    check_code("`````\n\n```\naaa", "\n```\naaa\n");
+    check_code("```\n\n  \n```", "\n  \n");
+}
+
+NAOS_TEST(fenced_code_with_no_code_lines)
+{
+    check_code("```", "");
+    check_code("```\n", "");
+    check_code("```\n```", "");
+    check_code("```\n```\n", "");
+    check_code("~~~ info\n~~~\nx\n", "");
+    check_code("> ```\n> ```\n", "");
+}
+
+NAOS_TEST(fenced_code_fence_and_line_indentation)
+{
+    char content[64];
+    char want[64];
+    size_t fence;
+    size_t indent;
+
+    for (fence = 0; fence <= 3; fence++) {
+        for (indent = 0; indent <= 7; indent++) {
+            size_t c = 0;
+            size_t w = 0;
+            size_t left = indent > fence ? indent - fence : 0;
+
+            /* A plain code line, then a closing fence. */
+            put_indented(content, &c, fence, "```\n");
+            put_indented(content, &c, indent, "x\n");
+            put_indented(content, &c, fence, "```\n");
+            put_indented(want, &w, left, "x\n");
+            check_code(content, want);
+
+            /* A shorter run of the fence character never closes. */
+            c = 0;
+            w = 0;
+            put_indented(content, &c, fence, "```\n");
+            put_indented(content, &c, indent, "``");
+            put_indented(want, &w, left, "``\n");
+            check_code(content, want);
+
+            /*
+             * A full fence indented four columns or more is a code line,
+             * also as the last line of a block without a closing fence.
+             */
+            if (indent >= 4) {
+                c = 0;
+                w = 0;
+                put_indented(content, &c, fence, "```\n");
+                put_indented(content, &c, indent, "```\n");
+                put_indented(want, &w, left, "```\n");
+                check_code(content, want);
+                content[c - 1] = '\0';
+                check_code(content, want);
+            }
+        }
+    }
+}
+
+NAOS_TEST(fenced_code_tabs)
+{
+    check_code("```\n\tx\n```\n", "\tx\n");
+    check_code("  ```\n\tx\n  ```\n", "  x\n");
+    check_code("   ```\n\tx\n   ```\n", " x\n");
+    /* A tab of four columns before a fence: a code line, kept as pad. */
+    check_code(" ```\n\t```\n", "   ```\n");
+    check_code(" ```\n\t```", "   ```\n");
+}
+
+NAOS_TEST(fenced_code_lines_that_look_like_a_closing_fence)
+{
+    check_code("````\n```\n", "```\n");
+    check_code("````\n```\n````\n", "```\n");
+    check_code("```\n~~~\n", "~~~\n");
+    check_code("~~~\n```\n", "```\n");
+    check_code("```\n```x\n", "```x\n");
+    check_code("```\n```x", "```x\n");
+    check_code("~~~\n~~~ x\n", "~~~ x\n");
+    check_code("```\n``\n```\n", "``\n");
+}
+
+NAOS_TEST(fenced_code_in_containers)
+{
+    check_code("> ```\n> a\n>  b\n> ```\n", "a\n b\n");
+    check_code("> ```\n> aaa\n\nbbb\n", "aaa\n");
+    check_code("> ```\n> ```x\n> ````", "```x\n");
+    check_code("> ````\n> ```x\n> ```", "```x\n```\n");
+    check_code("- ```\n  a\n    b\n  ```\n", "a\n  b\n");
+    check_code(" -  ```\n    a\n     ```\n", "a\n");
+    check_code("1. > ```\n   > a\n   >  ```\n", "a\n");
+    check_code("> - ```\n>   a\n> - b\n", "a\n");
+}
+
+NAOS_TEST(fenced_code_last_line_of_length_0)
+{
+    check_code("```\n\n", "\n");
+    check_code("```\na\n\n", "a\n\n");
+    check_code("```\n\n```\n", "\n");
+    check_code("> ```\n>\n", "\n");
+}
+
+NAOS_TEST(code_lines_keep_backslashes_ampersands_and_spaces)
+{
+    check_code("```\n\\* &amp; &#35; \\\n  a  \n```\n",
+               "\\* &amp; &#35; \\\n  a  \n");
+}
+
+NAOS_TEST(second_code_block)
+{
+    parse("```\na\n```\n\n    b\n\n~~~\nc\n");
+    build_code(1);
+    check_out("b\n");
+    build_code(2);
+    check_out("c\n");
+}
+
+NAOS_SUITE(text_build_code,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(indented_code_lines),
+    NAOS_ADD_TEST(indented_code_keeps_blank_lines_inside),
+    NAOS_ADD_TEST(indented_code_keeps_deeper_indentation),
+    NAOS_ADD_TEST(indented_code_tab_across_the_boundary),
+    NAOS_ADD_TEST(indented_code_keeps_trailing_spaces_and_escapes),
+    NAOS_ADD_TEST(fenced_code_with_closing_fence),
+    NAOS_ADD_TEST(fenced_code_without_closing_fence),
+    NAOS_ADD_TEST(fenced_code_with_no_code_lines),
+    NAOS_ADD_TEST(fenced_code_fence_and_line_indentation),
+    NAOS_ADD_TEST(fenced_code_tabs),
+    NAOS_ADD_TEST(fenced_code_lines_that_look_like_a_closing_fence),
+    NAOS_ADD_TEST(fenced_code_in_containers),
+    NAOS_ADD_TEST(fenced_code_last_line_of_length_0),
+    NAOS_ADD_TEST(code_lines_keep_backslashes_ampersands_and_spaces),
+    NAOS_ADD_TEST(second_code_block)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(text_build_plain),
     NAOS_ADD_SUITE(text_build_decoded),
-    NAOS_ADD_SUITE(text_build_code_span)
+    NAOS_ADD_SUITE(text_build_code_span),
+    NAOS_ADD_SUITE(text_build_code)
 )

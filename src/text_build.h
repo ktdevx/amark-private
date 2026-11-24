@@ -57,4 +57,28 @@ void amark_text_build_range(const amark_document_t *doc, size_t start,
                             size_t end, size_t first_line,
                             amark_text_rule_t rule, amark_text_sink_t *sink);
 
+/*
+ * Writes the code lines of the code block node of doc, whose attributes are
+ * attr, to sink. The code lines of an indented code block are its start line
+ * through its end line; those of a fenced code block are the line after its
+ * start line through its end line, without the end line when it is the
+ * closing fence line, and there are none when the start line is the end
+ * line. The end line is the closing fence line when it is not the start
+ * line, its record has pad 0, the byte at its content_start is the fence
+ * character, and amark_scan_close_fence from there to the end of the line's
+ * content returns at least the length of the opening fence.
+ *
+ * Each code line is written from the content_start of its record to the end
+ * of its content as PLAIN writes a segment (pad spaces in place of the tab at
+ * the record, the rest as written), followed by '\n' whether or not the line
+ * has a line ending. Backslashes and '&' stay as written.
+ *
+ * Preconditions: doc has parse data, node is a code block node of doc and
+ * attr is its attributes.
+ */
+void amark_text_build_code(const amark_document_t *doc,
+                           const amark_node_t *node,
+                           const amark_node_attr_t *attr,
+                           amark_text_sink_t *sink);
+
 #endif /* AMARK_TEXT_BUILD_H */

@@ -8,6 +8,8 @@
 #include <stdbool.h>
 
 #include "charref.h"
+#include "line.h"
+#include "scan.h"
 #include "text_lines.h"
 
 /* ASCII punctuation as CommonMark defines it: what a backslash escapes. */
@@ -240,5 +242,85 @@ void amark_text_build_range(const amark_document_t *doc, size_t start,
     case AMARK_TEXT_RULE_CODE_SPAN:
         build_code_span(doc, start, end, first_line, sink);
         break;
+    }
+}
+
+/*
+ * Whether the end line of the fenced code block node is its closing fence
+ * line: a line other than the start line whose record has pad 0, whose
+ * content starts with the fence character, and which amark_scan_close_fence
+ * reads as a run at least as long as the opening fence. The block parser
+ * records a closing fence line at its first character with pad 0; a code
+ * line is recorded after up to the indentation of the opening fence, so its
+ * record is at the fence character only when its indentation was 3 columns
+ * or less, and such a line of the closing form would have closed the block.
+ */
+static bool ends_with_closing_fence(const amark_document_t *doc,
+                                    const amark_node_t *node,
+                                    const amark_node_attr_t *attr)
+{
+    const unsigned char *content = amark_document_content(doc);
+    amark_line_bounds_t bounds;
+    amark_line_record_t record;
+    size_t start;
+
+    if (node->start_line == node->end_line ||
+        !amark_line_bounds(doc, node->end_line, &bounds) ||
+        !amark_line_get(doc, node->end_line, &record)) {
+        return false;
+    }
+    start = record.content_start;
+    if (record.pad != 0 || start >= bounds.content_end ||
+        content[start] != (unsigned char)attr->code_block.fence_char) {
+        return false;
+    }
+    return amark_scan_close_fence(content + start, bounds.content_end - start,
+                                  attr->code_block.fence_char) >=
+           attr->code_block.fence_length;
+}
+
+/*
+ * Writes code line line of doc: from the content_start of its record to the
+ * end of its content as PLAIN writes a segment, then '\n' in any case.
+ */
+static void build_code_line(const amark_document_t *doc, size_t line,
+                            amark_text_sink_t *sink)
+{
+    amark_line_bounds_t bounds;
+    amark_line_record_t record;
+    amark_text_segment_t segment;
+
+    if (!amark_line_bounds(doc, line, &bounds) ||
+        !amark_line_get(doc, line, &record)) {
+        /* Not reached when the preconditions hold. */
+        return;
+    }
+    segment.start = record.content_start;
+    segment.end = bounds.content_end;
+    segment.pad = record.pad;
+    segment.line_end = true;
+    build_plain(amark_document_content(doc), &segment, sink);
+}
+
+void amark_text_build_code(const amark_document_t *doc,
+                           const amark_node_t *node,
+                           const amark_node_attr_t *attr,
+                           amark_text_sink_t *sink)
+{
+    size_t first = node->start_line;
+    size_t last = node->end_line;
+    size_t line;
+
+    if (attr->code_block.style == AMARK_CODE_BLOCK_FENCED) {
+        if (first == last) {
+            return;
+        }
+        if (ends_with_closing_fence(doc, node, attr)) {
+            last--;
+        }
+        first++;
+    }
+    for (line = first; line <= last; line++) {
+        build_code_line(doc, line, sink);
     }
 }
