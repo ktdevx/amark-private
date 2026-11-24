@@ -536,6 +536,87 @@ NAOS_TEST(push_after_pop_reuses_the_capacity)
     NAOS_CHECK_TRUE(contents_intact(&array, 8));
 }
 
+/* ---- clear ---- */
+
+NAOS_TEST(clear_on_a_new_array_allocates_nothing)
+{
+    amark_array_t array;
+    int out = 99;
+
+    amark_array_init(&array, &g_arena, sizeof(int));
+    amark_array_clear(&array);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&array), 0);
+    NAOS_CHECK_UINT_EQ(array.cap, 0);
+    NAOS_CHECK_NULL(array.data);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
+    NAOS_CHECK_FALSE(amark_array_pop(&array, &out));
+    NAOS_CHECK_INT_EQ(out, 99);
+}
+
+NAOS_TEST(clear_empties_and_keeps_the_place)
+{
+    amark_array_t array;
+    array_snapshot_t before;
+    unsigned char out[sizeof(elem24_t)];
+
+    amark_array_init(&array, &g_arena, sizeof(elem24_t));
+    NAOS_REQUIRE_INT_EQ(push_patterns(&array, 5), AMARK_ERROR_NONE);
+    before = snapshot(&array);
+    amark_array_clear(&array);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&array), 0);
+    NAOS_CHECK_PTR_EQ(array.data, before.data);
+    NAOS_CHECK_UINT_EQ(array.cap, before.cap);
+    NAOS_CHECK_UINT_EQ(array.elem_size, sizeof(elem24_t));
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, before.malloc_calls);
+    /* The earlier elements are gone: nothing can be popped. */
+    memset(out, 0xEE, sizeof(out));
+    NAOS_CHECK_FALSE(amark_array_pop(&array, out));
+    NAOS_CHECK_UINT_EQ(out[0], 0xEE);
+    NAOS_CHECK_TRUE(contents_intact(&array, 0));
+    /* Clearing an empty array again changes nothing. */
+    amark_array_clear(&array);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&array), 0);
+    NAOS_CHECK_PTR_EQ(array.data, before.data);
+    NAOS_CHECK_UINT_EQ(array.cap, before.cap);
+}
+
+NAOS_TEST(push_after_clear_reuses_the_capacity)
+{
+    amark_array_t array;
+    array_snapshot_t before;
+    size_t cap;
+    size_t round;
+
+    amark_array_init(&array, &g_arena, sizeof(elem24_t));
+    /* Grows 8 -> 16 -> 32. */
+    NAOS_REQUIRE_INT_EQ(push_patterns(&array, 20), AMARK_ERROR_NONE);
+    cap = array.cap;
+    NAOS_REQUIRE_UINT_EQ(cap, 32);
+    for (round = 0; round < 3; round++) {
+        amark_array_clear(&array);
+        before = snapshot(&array);
+        /* Fill the whole capacity: no growth, no allocator call. */
+        NAOS_REQUIRE_INT_EQ(push_patterns(&array, cap), AMARK_ERROR_NONE);
+        NAOS_CHECK_PTR_EQ(array.data, before.data);
+        NAOS_CHECK_UINT_EQ(array.cap, cap);
+        NAOS_CHECK_UINT_EQ(g_state.malloc_calls, before.malloc_calls);
+        NAOS_CHECK_TRUE(contents_intact(&array, cap));
+    }
+    /* Fewer elements than before: only the new ones are in the array. */
+    amark_array_clear(&array);
+    NAOS_REQUIRE_INT_EQ(push_patterns(&array, 3), AMARK_ERROR_NONE);
+    NAOS_CHECK_TRUE(contents_intact(&array, 3));
+    NAOS_CHECK_TRUE(amark_array_pop(&array, NULL));
+    NAOS_CHECK_TRUE(amark_array_pop(&array, NULL));
+    NAOS_CHECK_TRUE(amark_array_pop(&array, NULL));
+    NAOS_CHECK_FALSE(amark_array_pop(&array, NULL));
+    /* One more than the capacity grows as usual. */
+    amark_array_clear(&array);
+    NAOS_REQUIRE_INT_EQ(push_patterns(&array, cap + 1), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(array.cap, 2 * cap);
+    NAOS_CHECK_TRUE(contents_intact(&array, cap + 1));
+}
+
 /* ---- element sizes (8.9) ---- */
 
 NAOS_TEST(one_byte_elements)
@@ -906,6 +987,9 @@ NAOS_SUITE(array,
     NAOS_ADD_TEST(pop_with_null_out_removes_the_last),
     NAOS_ADD_TEST(pop_copies_the_whole_element),
     NAOS_ADD_TEST(push_after_pop_reuses_the_capacity),
+    NAOS_ADD_TEST(clear_on_a_new_array_allocates_nothing),
+    NAOS_ADD_TEST(clear_empties_and_keeps_the_place),
+    NAOS_ADD_TEST(push_after_clear_reuses_the_capacity),
     NAOS_ADD_TEST(one_byte_elements),
     NAOS_ADD_TEST(eight_byte_elements),
     NAOS_ADD_TEST(twenty_four_byte_elements),

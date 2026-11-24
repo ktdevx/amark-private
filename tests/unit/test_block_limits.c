@@ -261,17 +261,27 @@ static const amark_kind_t k_lists[] = {AMARK_KIND_LIST, AMARK_KIND_LIST_ITEM};
 /* The nesting depth and node count limits                                */
 /* ---------------------------------------------------------------------- */
 
-/* Nesting: the root is at depth 0 and each container adds 1. */
+/*
+ * Nesting: the root is at depth 0 and each container adds 1. amark_parse
+ * also parses the inlines, so a paragraph or heading holds inline nodes one
+ * level below it, and they are counted in the depth and the node count: a
+ * paragraph of one line holds one text, and each line ending inside it
+ * adds a line break and a text. Code blocks, HTML blocks, thematic breaks
+ * and definitions hold none. Where a test below checks two values over a
+ * limit, the first is the one the blocks alone are over (the block parser
+ * fails) and the second the one only the inline nodes are over.
+ */
 #define NEST 40
 
 NAOS_TEST(depth_limit_with_block_quotes)
 {
-    /* NEST quotes, the paragraph at depth NEST + 1. */
+    /* NEST quotes, the paragraph at depth NEST + 1, its text at NEST + 2. */
     input_begin(NEST + 1);
     REPEAT(">", NEST);
     APPEND("a");
     parse_exceeds(NEST, 0);
-    parse_ok(NEST + 1, 0, NEST + 2);
+    parse_exceeds(NEST + 1, 0);
+    parse_ok(NEST + 2, 0, NEST + 3);
     check_chain(k_quotes, 1, NEST, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
@@ -284,12 +294,16 @@ NAOS_TEST(depth_limit_with_block_quotes)
 
 NAOS_TEST(depth_limit_with_lists)
 {
-    /* NEST lists and NEST items, the paragraph at depth 2 NEST + 1. */
+    /*
+     * NEST lists and NEST items, the paragraph at depth 2 NEST + 1, its
+     * text at 2 NEST + 2.
+     */
     input_begin(2 * NEST + 1);
     REPEAT("- ", NEST);
     APPEND("a");
     parse_exceeds(2 * NEST, 0);
-    parse_ok(2 * NEST + 1, 0, 2 * NEST + 2);
+    parse_exceeds(2 * NEST + 1, 0);
+    parse_ok(2 * NEST + 2, 0, 2 * NEST + 3);
     check_chain(k_lists, 2, 2 * NEST, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
@@ -298,7 +312,8 @@ NAOS_TEST(depth_limit_with_lists)
     REPEAT("1. ", NEST);
     APPEND("a");
     parse_exceeds(2 * NEST, 0);
-    parse_ok(2 * NEST + 1, 0, 2 * NEST + 2);
+    parse_exceeds(2 * NEST + 1, 0);
+    parse_ok(2 * NEST + 2, 0, 2 * NEST + 3);
 }
 
 NAOS_TEST(depth_limit_with_block_quotes_and_lists)
@@ -306,30 +321,39 @@ NAOS_TEST(depth_limit_with_block_quotes_and_lists)
     static const amark_kind_t mixed[] = {
         AMARK_KIND_BLOCK_QUOTE, AMARK_KIND_LIST, AMARK_KIND_LIST_ITEM};
 
-    /* "> - " NEST times: 3 NEST containers, the paragraph below them. */
+    /*
+     * "> - " NEST times: 3 NEST containers, the paragraph below them and
+     * its text below it.
+     */
     input_begin(4 * NEST + 1);
     REPEAT("> - ", NEST);
     APPEND("a");
     parse_exceeds(3 * NEST, 0);
-    parse_ok(3 * NEST + 1, 0, 3 * NEST + 2);
+    parse_exceeds(3 * NEST + 1, 0);
+    parse_ok(3 * NEST + 2, 0, 3 * NEST + 3);
     check_chain(mixed, 3, 3 * NEST, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
-    /* A short one, read whole. */
+    /* A short one, read whole: the text "a" is at depth 8. */
     input_begin(16);
     APPEND("> - > 1. a\n");
     parse_exceeds(6, 0);
-    parse_ok(7, 0, 8);
+    parse_exceeds(7, 0);
+    parse_ok(8, 0, 9);
     check_dump("(doc (bq (ul - tight (li (bq (ol 1 . tight (li (p))))))))");
 }
 
 NAOS_TEST(depth_limit_counts_the_deepest_node_only)
 {
-    /* A deep branch beside shallow ones: only the deepest counts. */
+    /*
+     * A deep branch beside shallow ones: only the deepest counts, the text
+     * "b" at depth 5. 11 blocks and the 4 texts.
+     */
     input_begin(64);
     APPEND("a\n\n> > > b\n\n- c\n\n> d\n");
     parse_exceeds(3, 0);
-    parse_ok(4, 0, 11);
+    parse_exceeds(4, 0);
+    parse_ok(5, 0, 15);
     check_dump("(doc (p) (bq (bq (bq (p)))) (ul - tight (li (p))) (bq (p)))");
     reset_doc();
 
@@ -343,46 +367,54 @@ NAOS_TEST(depth_limit_counts_the_deepest_node_only)
 
 NAOS_TEST(node_count_limit_with_block_quotes)
 {
-    /* The root, NEST quotes and the paragraph. */
+    /* The root, NEST quotes, the paragraph and its text. */
     input_begin(NEST + 1);
     REPEAT(">", NEST);
     APPEND("a");
     parse_exceeds(0, NEST + 1);
-    parse_ok(0, NEST + 2, NEST + 2);
+    parse_exceeds(0, NEST + 2);
+    parse_ok(0, NEST + 3, NEST + 3);
 
-    /* Siblings count the same as the nested. */
+    /*
+     * Siblings count the same as the nested: the root and NEST / 2 quotes,
+     * each with a paragraph and its text.
+     */
     input_begin(4 * NEST);
     REPEAT("> a\n\n", NEST / 2);
     parse_exceeds(0, NEST);
-    parse_ok(0, NEST + 1, NEST + 1);
+    parse_exceeds(0, 3 * NEST / 2);
+    parse_ok(0, 3 * NEST / 2 + 1, 3 * NEST / 2 + 1);
 }
 
 NAOS_TEST(node_count_limit_with_lists)
 {
-    /* The root, NEST lists, NEST items and the paragraph. */
+    /* The root, NEST lists, NEST items, the paragraph and its text. */
     input_begin(2 * NEST + 1);
     REPEAT("- ", NEST);
     APPEND("a");
     parse_exceeds(0, 2 * NEST + 1);
-    parse_ok(0, 2 * NEST + 2, 2 * NEST + 2);
+    parse_exceeds(0, 2 * NEST + 2);
+    parse_ok(0, 2 * NEST + 3, 2 * NEST + 3);
 
-    /* One list of NEST items, each with a paragraph. */
+    /* One list of NEST items, each with a paragraph and its text. */
     input_begin(4 * NEST);
     REPEAT("- a\n", NEST);
     parse_exceeds(0, 2 * NEST + 1);
-    parse_ok(0, 2 * NEST + 2, 2 * NEST + 2);
+    parse_exceeds(0, 3 * NEST + 1);
+    parse_ok(0, 3 * NEST + 2, 3 * NEST + 2);
     NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, root_child(0)),
                        AMARK_NODE_NONE);
 }
 
 NAOS_TEST(node_count_limit_with_block_quotes_and_lists)
 {
-    /* The root, 3 NEST containers and the paragraph. */
+    /* The root, 3 NEST containers, the paragraph and its text. */
     input_begin(4 * NEST + 1);
     REPEAT("> - ", NEST);
     APPEND("a");
     parse_exceeds(0, 3 * NEST + 1);
-    parse_ok(0, 3 * NEST + 2, 3 * NEST + 2);
+    parse_exceeds(0, 3 * NEST + 2);
+    parse_ok(0, 3 * NEST + 3, 3 * NEST + 3);
 }
 
 NAOS_TEST(both_limits_exactly_met)
@@ -390,19 +422,24 @@ NAOS_TEST(both_limits_exactly_met)
     input_begin(4 * NEST + 1);
     REPEAT("> - ", NEST);
     APPEND("a");
-    parse_ok(3 * NEST + 1, 3 * NEST + 2, 3 * NEST + 2);
+    /* The text at depth 3 NEST + 2, and 3 NEST + 3 nodes. */
+    parse_ok(3 * NEST + 2, 3 * NEST + 3, 3 * NEST + 3);
     reset_doc();
-    parse_exceeds(3 * NEST, 3 * NEST + 2);
-    parse_exceeds(3 * NEST + 1, 3 * NEST + 1);
+    parse_exceeds(3 * NEST + 1, 3 * NEST + 3);
+    parse_exceeds(3 * NEST + 2, 3 * NEST + 2);
 }
 
 NAOS_TEST(node_count_limit_counts_definitions)
 {
-    /* The definitions are nodes; the paragraph they came from is not. */
+    /*
+     * The definitions are nodes; the paragraph they came from is not. The
+     * root, 2 definitions, the paragraph "c" and its text.
+     */
     input_begin(32);
     APPEND("[a]: /u\n[b]: /v\nc\n");
     parse_exceeds(0, 3);
-    parse_ok(0, 4, 4);
+    parse_exceeds(0, 4);
+    parse_ok(0, 5, 5);
     check_dump("(doc (def) (def) (p))");
 }
 
@@ -414,33 +451,42 @@ NAOS_TEST(node_count_limit_counts_definitions)
 
 NAOS_TEST(block_quotes_nested_100000_deep)
 {
+    /*
+     * The root, DEEP quotes and the paragraph, with "a", a soft break and
+     * "b" at depth DEEP + 2.
+     */
     input_begin(DEEP + 4);
     REPEAT(">", DEEP);
     APPEND("a\nb");
-    parse_ok(0, 0, DEEP + 2);
+    parse_ok(0, 0, DEEP + 5);
     check_chain(k_quotes, 1, DEEP, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
     /* The limits at their bounds, at this depth. */
     parse_exceeds(DEEP, 0);
-    parse_ok(DEEP + 1, DEEP + 2, DEEP + 2);
+    parse_exceeds(DEEP + 1, 0);
+    parse_ok(DEEP + 2, DEEP + 5, DEEP + 5);
     reset_doc();
     parse_exceeds(0, DEEP + 1);
+    parse_exceeds(0, DEEP + 4);
 }
 
 NAOS_TEST(lists_nested_100000_deep)
 {
+    /* The text of the paragraph at depth 2 DEEP + 2. */
     input_begin(2 * DEEP + 1);
     REPEAT("- ", DEEP);
     APPEND("a");
-    parse_ok(0, 0, 2 * DEEP + 2);
+    parse_ok(0, 0, 2 * DEEP + 3);
     check_chain(k_lists, 2, 2 * DEEP, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
     parse_exceeds(2 * DEEP, 0);
-    parse_ok(2 * DEEP + 1, 2 * DEEP + 2, 2 * DEEP + 2);
+    parse_exceeds(2 * DEEP + 1, 0);
+    parse_ok(2 * DEEP + 2, 2 * DEEP + 3, 2 * DEEP + 3);
     reset_doc();
     parse_exceeds(0, 2 * DEEP + 1);
+    parse_exceeds(0, 2 * DEEP + 2);
 }
 
 NAOS_TEST(lists_nested_on_their_own_lines)
@@ -457,7 +503,8 @@ NAOS_TEST(lists_nested_on_their_own_lines)
         input_repeat("  ", 2, i);
         APPEND("- a\n");
     }
-    parse_ok(0, 0, 3 * 1000 + 1);
+    /* Per line a list, an item, a paragraph and its text. */
+    parse_ok(0, 0, 4 * 1000 + 1);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -486,7 +533,8 @@ NAOS_TEST(blank_lines_after_a_deep_list)
         APPEND(" \n");
     }
     APPEND("b");
-    parse_ok(0, 0, 2 * PATH_DEPTH + 3);
+    /* The blocks, and the texts "a" and "b". */
+    parse_ok(0, 0, 2 * PATH_DEPTH + 5);
     check_chain(k_lists, 2, 2 * PATH_DEPTH, AMARK_KIND_PARAGRAPH);
     NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, root_child(1)),
                        AMARK_KIND_PARAGRAPH);
@@ -505,7 +553,7 @@ NAOS_TEST(blank_lines_after_a_deep_list)
         REPEAT("  ", PATH_DEPTH);
         APPEND("\n");
     }
-    parse_ok(0, 0, 2 * PATH_DEPTH + 2);
+    parse_ok(0, 0, 2 * PATH_DEPTH + 3);
 }
 
 NAOS_TEST(marker_lines_after_a_deep_list_in_a_block_quote)
@@ -518,8 +566,11 @@ NAOS_TEST(marker_lines_after_a_deep_list_in_a_block_quote)
     REPEAT(">\n", PATH_LINES / 2);
     REPEAT("> \n", PATH_LINES / 2);
     APPEND("> b");
-    /* The quote, the lists and items, the paragraph and "b" in the quote. */
-    parse_ok(0, 0, 2 * PATH_DEPTH + 4);
+    /*
+     * The quote, the lists and items, the paragraph and "b" in the quote,
+     * and the text of each paragraph.
+     */
+    parse_ok(0, 0, 2 * PATH_DEPTH + 6);
     check_chain(k_quotes, 1, 1, AMARK_KIND_LIST);
 }
 
@@ -555,12 +606,16 @@ NAOS_TEST(many_definitions)
 
 NAOS_TEST(many_lazy_continuation_lines)
 {
-    /* A paragraph in PATH_DEPTH quotes, continued by PATH_LINES lazy lines. */
+    /*
+     * A paragraph in PATH_DEPTH quotes, continued by PATH_LINES lazy lines:
+     * a text for each of its PATH_LINES + 1 lines, and a soft break between
+     * two of them.
+     */
     input_begin(PATH_DEPTH + 2 + 2 * PATH_LINES);
     REPEAT(">", PATH_DEPTH);
     APPEND("a\n");
     REPEAT("b\n", PATH_LINES);
-    parse_ok(0, 0, PATH_DEPTH + 2);
+    parse_ok(0, 0, PATH_DEPTH + 2 + 2 * PATH_LINES + 1);
     check_chain(k_quotes, 1, PATH_DEPTH, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
@@ -569,7 +624,7 @@ NAOS_TEST(many_lazy_continuation_lines)
     REPEAT("- ", PATH_DEPTH);
     APPEND("a\n");
     REPEAT("b\n", PATH_LINES);
-    parse_ok(0, 0, 2 * PATH_DEPTH + 2);
+    parse_ok(0, 0, 2 * PATH_DEPTH + 2 + 2 * PATH_LINES + 1);
     check_chain(k_lists, 2, 2 * PATH_DEPTH, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
@@ -579,7 +634,7 @@ NAOS_TEST(many_lazy_continuation_lines)
     APPEND("a\n");
     REPEAT(">>> b\n", PATH_LINES / 2);
     REPEAT("> b\n", PATH_LINES / 2);
-    parse_ok(0, 0, PATH_DEPTH + 2);
+    parse_ok(0, 0, PATH_DEPTH + 2 + 2 * PATH_LINES + 1);
 }
 
 NAOS_TEST(markers_that_almost_make_a_thematic_break)
@@ -591,26 +646,27 @@ NAOS_TEST(markers_that_almost_make_a_thematic_break)
     input_begin(2 * DEEP + 1);
     REPEAT("- ", DEEP);
     APPEND("a");
-    parse_ok(0, 0, 2 * DEEP + 2);
+    parse_ok(0, 0, 2 * DEEP + 3);
     reset_doc();
 
     /* With "*" and with no spaces after the first two. */
     input_begin(2 * DEEP + 1);
     REPEAT("* ", DEEP);
     APPEND("a");
-    parse_ok(0, 0, 2 * DEEP + 2);
+    parse_ok(0, 0, 2 * DEEP + 3);
     reset_doc();
     input_begin(2 * DEEP + 4);
     APPEND("- - ");
     REPEAT("-", 2 * DEEP - 4);
     APPEND("a");
-    parse_ok(0, 0, 6);
+    parse_ok(0, 0, 7);
     check_dump("(doc (ul - tight (li (ul - tight (li (p))))))");
     reset_doc();
 
     /*
      * PATH_LINES / 40 lines of a hundred markers and "a": one list, each of
-     * its items holding 99 nested lists and items and a paragraph.
+     * its items holding 99 nested lists and items and a paragraph with its
+     * text.
      */
     input_begin(PATH_LINES / 40 * 203);
     {
@@ -621,7 +677,7 @@ NAOS_TEST(markers_that_almost_make_a_thematic_break)
             APPEND("a\n");
         }
     }
-    parse_ok(0, 0, 2 + PATH_LINES / 40 * 200);
+    parse_ok(0, 0, 2 + PATH_LINES / 40 * 201);
 }
 
 NAOS_TEST(continuation_lines_of_a_deep_list)
@@ -629,6 +685,7 @@ NAOS_TEST(continuation_lines_of_a_deep_list)
     /*
      * A paragraph in PATH_DEPTH / 2 items, continued by lines indented to
      * the content of the innermost item: each such line matches every item.
+     * The paragraph holds "a", then a soft break and "b" for each line.
      */
     input_begin(PATH_DEPTH + 2 + 100 * (PATH_DEPTH + 2));
     REPEAT("- ", PATH_DEPTH / 2);
@@ -641,7 +698,7 @@ NAOS_TEST(continuation_lines_of_a_deep_list)
             APPEND("b\n");
         }
     }
-    parse_ok(0, 0, PATH_DEPTH + 2);
+    parse_ok(0, 0, PATH_DEPTH + 2 + 1 + 2 * 100);
     check_chain(k_lists, 2, PATH_DEPTH, AMARK_KIND_PARAGRAPH);
     reset_doc();
 
@@ -657,7 +714,7 @@ NAOS_TEST(continuation_lines_of_a_deep_list)
             APPEND("b\n");
         }
     }
-    parse_ok(0, 0, PATH_DEPTH + 2);
+    parse_ok(0, 0, PATH_DEPTH + 2 + 1 + 2 * 100);
     check_chain(k_lists, 2, PATH_DEPTH, AMARK_KIND_PARAGRAPH);
 }
 
@@ -665,23 +722,26 @@ NAOS_TEST(runs_of_open_brackets)
 {
     size_t i;
 
-    /* One paragraph of PATH_LINES lines of "[". */
+    /*
+     * One paragraph of PATH_LINES lines of "[": a text for each line and a
+     * soft break between two of them.
+     */
     input_begin(2 * PATH_LINES);
     REPEAT("[\n", PATH_LINES);
-    parse_ok(0, 0, 2);
+    parse_ok(0, 0, 2 + 2 * PATH_LINES - 1);
     check_dump("(doc (p))");
     reset_doc();
 
-    /* One line of DEEP "[". */
+    /* One line of DEEP "[", one text. */
     input_begin(DEEP);
     REPEAT("[", DEEP);
-    parse_ok(0, 0, 2);
+    parse_ok(0, 0, 3);
     reset_doc();
 
     /* Labels that never close, one per line. */
     input_begin(3 * PATH_LINES);
     REPEAT("[a\n", PATH_LINES);
-    parse_ok(0, 0, 2);
+    parse_ok(0, 0, 2 + 2 * PATH_LINES - 1);
     reset_doc();
 
     /*
@@ -695,22 +755,23 @@ NAOS_TEST(runs_of_open_brackets)
 
     /*
      * A title that starts on the next line and never closes, over
-     * PATH_LINES lines: a definition with no title, then a paragraph.
+     * PATH_LINES lines: a definition with no title, then a paragraph of
+     * PATH_LINES + 1 lines (a text for each and a soft break between two).
      */
     input_begin(10 + 2 * PATH_LINES);
     APPEND("[a]: /u\n'\n");
     REPEAT("x\n", PATH_LINES);
-    parse_ok(0, 0, 3);
+    parse_ok(0, 0, 3 + 2 * PATH_LINES + 1);
     check_dump("(doc (def) (p))");
     reset_doc();
 
-    /* Runs of "[" and a setext underline after each. */
+    /* Runs of "[" and a setext underline after each: headings of one text. */
     input_begin(PATH_LINES / 100 * 103);
     for (i = 0; i < PATH_LINES / 100; i++) {
         REPEAT("[", 100);
         APPEND("\n=\n");
     }
-    parse_ok(0, 0, PATH_LINES / 100 + 1);
+    parse_ok(0, 0, 2 * (PATH_LINES / 100) + 1);
 }
 
 /* Checks the kind, the range and the line span of node. */
@@ -792,19 +853,22 @@ NAOS_TEST(unclosed_blocks_of_many_lines)
  */
 NAOS_TEST(one_very_long_line)
 {
-    /* A paragraph of one line. */
+    /* A paragraph of one line, one text. */
     input_begin(LONG_LINE);
     REPEAT("ab c", LONG_LINE / 4);
-    parse_ok(0, 0, 2);
+    parse_ok(0, 0, 3);
     check_dump("(doc (p))");
     check_span(root_child(0), AMARK_KIND_PARAGRAPH, 0, LONG_LINE, 1, 1);
     reset_doc();
 
-    /* The same line indented by three spaces, after a paragraph line. */
+    /*
+     * The same line indented by three spaces, after a paragraph line: "a",
+     * a soft break and the long text.
+     */
     input_begin(5 + LONG_LINE);
     APPEND("a\n   ");
     REPEAT("ab c", LONG_LINE / 4);
-    parse_ok(0, 0, 2);
+    parse_ok(0, 0, 5);
     check_span(root_child(0), AMARK_KIND_PARAGRAPH, 0, g_length, 1, 2);
     reset_doc();
 
@@ -828,7 +892,7 @@ NAOS_TEST(one_very_long_line)
 
     input_begin(LONG_LINE);
     REPEAT("#", LONG_LINE);
-    parse_ok(0, 0, 2);
+    parse_ok(0, 0, 3);
     check_dump("(doc (p))");
 }
 

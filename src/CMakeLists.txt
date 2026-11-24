@@ -11,10 +11,16 @@ set(AMARK_SOURCES
     arena.c
     array.c
     block.c
+    bracket.c
     config.c
+    cursor.c
     definition.c
+    delimiter.c
     document.c
+    draft.c
     entity.c
+    inline.c
+    inline_scan.c
     line.c
     line_index.c
     node.c

@@ -55,7 +55,7 @@ endif()
 unset(_amark_libm_probe)
 
 # amark_test_support: the counting, failing test allocator ("test_alloc.h")
-# and the dump of the block structure of a tree ("tree_dump.h"). A test-only
+# and the dumps of a tree as one line ("tree_dump.h"). A test-only
 # static library, never installed.
 add_library(amark_test_support STATIC
     support/test_alloc.c
@@ -142,6 +142,16 @@ amark_add_unit_test(test_spec_leaf SOURCES unit/test_spec_leaf.c)
 amark_add_unit_test(test_spec_refdef SOURCES unit/test_spec_refdef.c)
 amark_add_unit_test(test_spec_container SOURCES unit/test_spec_container.c)
 amark_add_unit_test(test_block_limits SOURCES unit/test_block_limits.c)
+amark_add_unit_test(test_cursor SOURCES unit/test_cursor.c)
+amark_add_unit_test(test_draft SOURCES unit/test_draft.c)
+amark_add_unit_test(test_inline_scan SOURCES unit/test_inline_scan.c)
+amark_add_unit_test(test_delimiter SOURCES unit/test_delimiter.c)
+amark_add_unit_test(test_inline SOURCES unit/test_inline.c)
+amark_add_unit_test(test_bracket SOURCES unit/test_bracket.c)
+amark_add_unit_test(test_spec_inline SOURCES unit/test_spec_inline.c)
+amark_add_unit_test(test_spec_emphasis SOURCES unit/test_spec_emphasis.c)
+amark_add_unit_test(test_spec_links SOURCES unit/test_spec_links.c)
+amark_add_unit_test(test_inline_limits SOURCES unit/test_inline_limits.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.

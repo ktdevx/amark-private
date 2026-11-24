@@ -108,6 +108,11 @@ static bool skip_space(refdef_cursor_t *cursor)
  * nor ASCII control characters and whose unescaped parentheses balance.
  * Parentheses are counted, not nested. Writes the range and leaves the
  * cursor after the destination.
+ *
+ * The destination of an inline link follows the same rules, in
+ * read_link_destination in src/inline_scan.c; when one of them changes,
+ * change both. That one may be absent and nests parentheses at most
+ * AMARK_LINK_DEST_PAREN_MAX deep; this one has no such limit.
  */
 static bool read_destination(refdef_cursor_t *cursor, amark_range_t *out)
 {
@@ -165,6 +170,9 @@ static bool read_destination(refdef_cursor_t *cursor, amark_range_t *out)
  * Reads a link title at the cursor, delimited by "...", '...' or (...),
  * without a blank line and, for (...), without an unescaped '('. Writes the
  * inside of the delimiters and leaves the cursor after the closing one.
+ *
+ * The title of an inline link follows the same rules, in read_link_title in
+ * src/inline_scan.c; when one of them changes, change both.
  */
 static bool read_title(refdef_cursor_t *cursor, amark_range_t *out)
 {
