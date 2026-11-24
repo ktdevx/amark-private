@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <amark/tree.h>
 
@@ -253,6 +254,44 @@ static amark_error_t scan_less_than(inline_parser_t *parser)
 }
 
 /*
+ * A delimiter character of kind (`*`, `_`, or one a dialect adds): the
+ * whole run of that character in the line is a text item. Whether it can
+ * open or close is decided from the characters right before and right
+ * after the run, the ends of a line's content reading as U+000A; a run that
+ * can do either is pushed onto the delimiter stack with its length, to be
+ * matched when the content ends. The position moves forward by the length
+ * of the run.
+ */
+static amark_error_t scan_delimiter_run(inline_parser_t *parser, size_t kind)
+{
+    amark_cursor_t *cursor = &parser->cursor;
+    size_t start = cursor->pos;
+    size_t end = start;
+    unsigned char ch = cursor->bytes[start];
+    uint32_t before;
+    uint32_t after;
+    bool can_open;
+    bool can_close;
+    amark_draft_id_t id;
+    amark_error_t err;
+
+    while (end < cursor->line_end && cursor->bytes[end] == ch) {
+        end++;
+    }
+    before = amark_cursor_char_before(cursor, start);
+    after = amark_cursor_char_at(cursor, end);
+    amark_delimiter_classify(&parser->delimiters.kinds[kind], before, after,
+                             &can_open, &can_close);
+    amark_cursor_seek(cursor, end);
+    err = append_to_cursor(parser, AMARK_KIND_TEXT, start, &id);
+    if (err != AMARK_ERROR_NONE || (!can_open && !can_close)) {
+        return err;
+    }
+    return amark_delimiters_push(&parser->delimiters, id, kind, can_open,
+                                 can_close, end - start);
+}
+
+/*
  * A special byte at the position: the one place where the rules of the
  * inline structures (and those a dialect adds) are called, chosen by the
  * byte. A structure read here is read to its end at once, so the special
@@ -265,7 +304,12 @@ static amark_error_t scan_special(inline_parser_t *parser)
     amark_cursor_t *cursor = &parser->cursor;
     size_t start = cursor->pos;
     amark_draft_id_t unused;
+    size_t kind = amark_delimiters_kind_of(&parser->delimiters,
+                                           cursor->bytes[start]);
 
+    if (kind != parser->delimiters.kind_count) {
+        return scan_delimiter_run(parser, kind);
+    }
     switch (cursor->bytes[start]) {
     case '\\':
         return scan_backslash(parser);
@@ -339,7 +383,11 @@ static amark_error_t scan_content(inline_parser_t *parser, size_t start,
     return err;
 }
 
-/* Parses one inline content and writes its nodes under its block. */
+/*
+ * Parses one inline content, matches its delimiters from the start of the
+ * content up, and writes its nodes under its block. On failure the content
+ * is abandoned: the draft is not written.
+ */
 static amark_error_t parse_content(inline_parser_t *parser,
                                    const amark_inline_content_t *content)
 {
@@ -353,6 +401,10 @@ static amark_error_t parse_content(inline_parser_t *parser,
     amark_delimiters_reset(&parser->delimiters);
     amark_inline_scan_memo_begin(&parser->memo);
     err = scan_content(parser, content->start, content->end);
+    if (err == AMARK_ERROR_NONE) {
+        err = amark_delimiters_process(&parser->delimiters, &parser->draft,
+                                       content->start);
+    }
     if (err != AMARK_ERROR_NONE) {
         return err;
     }

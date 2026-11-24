@@ -59,7 +59,10 @@ typedef struct amark_delimiter {
 } amark_delimiter_t;
 
 /*
- * The members are visible in src/ but other modules use the functions only.
+ * The members are visible in src/ but other modules use the functions only,
+ * with two exceptions: `kind_count` as the "no kind" value that
+ * amark_delimiters_kind_of() returns, and `kinds[kind]` (for a kind that
+ * amark_delimiters_kind_of() returned) to pass to amark_delimiter_classify().
  */
 typedef struct amark_delimiters {
     amark_delimiter_kind_t kinds[AMARK_DELIMITER_KIND_MAX];

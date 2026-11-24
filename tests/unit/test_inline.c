@@ -23,6 +23,11 @@
  * escaped backtick), autolinks and raw HTML, across lines without breaks,
  * and their precedence (the one that starts first wins, no special byte
  * inside them starts anything, an escaped special byte starts nothing).
+ * Emphasis and strong emphasis: their ranges and children, the part of a
+ * delimiter run that is used, unmatched runs as text, emphasis across lines
+ * holding the line breaks, the ends of a content as white space, and
+ * ill-formed UTF-8 (in both UTF-8 modes) and U+0000 as punctuation around
+ * delimiters, with the ranges as offsets of the bytes given.
  * Through the public entry amark_parse: the block nodes (kinds, ranges,
  * lines, attributes and order) are those of the block parser alone, and
  * the inline nodes follow them.
@@ -1005,6 +1010,285 @@ NAOS_TEST(a_range_that_does_not_start_at_0)
     check_bytes_covered();
 }
 
+/* ---- Emphasis ---- */
+
+/* Checks the kind, range and start line of node. */
+static void check_node(amark_node_id_t node, amark_kind_t kind, size_t start,
+                       size_t end, size_t line)
+{
+    amark_range_t range = node_range(node);
+
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, node), kind);
+    NAOS_CHECK_UINT_EQ(range.start, start);
+    NAOS_CHECK_UINT_EQ(range.end, end);
+    NAOS_CHECK_UINT_EQ(amark_node_start_line(g_doc, node), line);
+}
+
+NAOS_TEST(emphasis_and_strong_emphasis_wrap_their_children)
+{
+    amark_node_id_t em;
+    amark_node_id_t strong;
+
+    PARSE("*a* __b__ c");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (p (em (text \"a\")) (text \" \") "
+                      "(strong (text \"b\")) (text \" c\")))");
+    em = child_at(block_at(0), 0);
+    check_node(em, AMARK_KIND_EMPHASIS, 0, 3, 1);
+    NAOS_CHECK_UINT_EQ(child_count(em), 1);
+    check_node(child_at(em, 0), AMARK_KIND_TEXT, 1, 2, 1);
+    check_child(1, AMARK_KIND_TEXT, 3, 4, 1);
+    strong = child_at(block_at(0), 2);
+    check_node(strong, AMARK_KIND_STRONG, 4, 9, 1);
+    NAOS_CHECK_UINT_EQ(child_count(strong), 1);
+    check_node(child_at(strong, 0), AMARK_KIND_TEXT, 6, 7, 1);
+    check_child(3, AMARK_KIND_TEXT, 9, 11, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(nested_emphasis_and_other_items_inside)
+{
+    amark_node_id_t em;
+    amark_node_id_t strong;
+
+    /* ***a*** is em around strong; the code span is a child as it is. */
+    PARSE("***a `*` b***");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (p (em (strong (text \"a \") (code \"`*`\") "
+                      "(text \" b\")))))");
+    em = child_at(block_at(0), 0);
+    check_node(em, AMARK_KIND_EMPHASIS, 0, 13, 1);
+    strong = child_at(em, 0);
+    check_node(strong, AMARK_KIND_STRONG, 1, 12, 1);
+    NAOS_CHECK_UINT_EQ(child_count(strong), 3);
+    check_node(child_at(strong, 1), AMARK_KIND_CODE_SPAN, 5, 8, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(part_of_a_delimiter_run_is_used)
+{
+    /* The opener is used from its inner side; the rest stays outside. */
+    PARSE("***a**");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"*\") (strong (text \"a\"))))");
+    check_child(0, AMARK_KIND_TEXT, 0, 1, 1);
+    check_child(1, AMARK_KIND_STRONG, 1, 6, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* The closer is used from its inner side. */
+    PARSE("*a***");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (em (text \"a\")) (text \"**\")))");
+    check_child(0, AMARK_KIND_EMPHASIS, 0, 3, 1);
+    check_child(1, AMARK_KIND_TEXT, 3, 5, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(unmatched_delimiters_are_text)
+{
+    /* No closer, an intraword `_`, and a run between spaces. */
+    PARSE("**a a_b_c * d_");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"**a a_b_c * d_\")))");
+    check_child(0, AMARK_KIND_TEXT, 0, 14, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* An intraword `*` opens and closes. */
+    PARSE("a*b*c");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (p (text \"a\") (em (text \"b\")) (text \"c\")))");
+    check_child(1, AMARK_KIND_EMPHASIS, 1, 4, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+}
+
+NAOS_TEST(emphasis_spans_lines_and_holds_their_breaks)
+{
+    amark_node_id_t em;
+
+    /* A soft break with CR LF, and a hard break, inside emphasis. */
+    PARSE("*a\r\nb  \nc*");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (p (em (text \"a\") (sbr) (text \"b\") (br) "
+                      "(text \"c\"))))");
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+    em = child_at(block_at(0), 0);
+    check_node(em, AMARK_KIND_EMPHASIS, 0, 10, 1);
+    NAOS_CHECK_UINT_EQ(amark_node_end_line(g_doc, em), 3);
+    NAOS_CHECK_UINT_EQ(child_count(em), 5);
+    check_node(child_at(em, 0), AMARK_KIND_TEXT, 1, 2, 1);
+    check_node(child_at(em, 1), AMARK_KIND_SOFT_BREAK, 2, 4, 1);
+    check_node(child_at(em, 2), AMARK_KIND_TEXT, 4, 5, 2);
+    check_node(child_at(em, 3), AMARK_KIND_HARD_BREAK, 5, 8, 2);
+    check_node(child_at(em, 4), AMARK_KIND_TEXT, 8, 9, 3);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(emphasis_across_lines_of_a_block_quote)
+{
+    amark_node_id_t strong;
+
+    /*
+     * The range holds the prefix of the second line (2.5), so the bytes
+     * are checked as numbers instead of with check_bytes_covered.
+     */
+    PARSE("> **a\n> b**");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (bq (p (strong (text \"a\") (sbr) "
+                      "(text \"b\")))))");
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+    strong = child_at(block_at(0), 0);
+    check_node(strong, AMARK_KIND_STRONG, 2, 11, 1);
+    NAOS_CHECK_UINT_EQ(child_count(strong), 3);
+    check_node(child_at(strong, 0), AMARK_KIND_TEXT, 4, 5, 1);
+    check_node(child_at(strong, 1), AMARK_KIND_SOFT_BREAK, 5, 6, 1);
+    check_node(child_at(strong, 2), AMARK_KIND_TEXT, 8, 9, 2);
+    NAOS_CHECK_TRUE(tree_ok());
+}
+
+NAOS_TEST(the_ends_of_the_content_are_white_space)
+{
+    /* A heading whose content starts and ends with a delimiter run. */
+    PARSE("# _a_ #");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (h 1 atx (em (text \"a\"))))");
+    check_child(0, AMARK_KIND_EMPHASIS, 2, 5, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+/*
+ * Parses length bytes through amark_parse with utf8_mode into g_doc and
+ * returns what it returns.
+ */
+static amark_error_t parse_public(const char *bytes, size_t length,
+                                  amark_utf8_mode_t utf8_mode)
+{
+    amark_config_t config;
+
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
+    memcpy(g_buffer, bytes, length);
+    g_length = length;
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    config.utf8_mode = utf8_mode;
+    return amark_parse((const char *)g_buffer, g_length, &config, &g_doc);
+}
+
+NAOS_TEST(ill_formed_utf8_is_punctuation_around_delimiters)
+{
+    /*
+     * As punctuation, U+FFFD lets `_` open and close next to it; as a
+     * letter it would not (compare x_a_x).
+     */
+    static const char around[] = "\xFF_a_\xE3\x81";
+    /*
+     * As punctuation, U+FFFD after `*` and a letter before it make a run
+     * that is not left-flanking; as a letter it would be (compare the
+     * U+00E9 case, which is emphasis).
+     */
+    static const char inside[] = "a*\xFF" "b\xFF*c";
+    static const char letter[] = "a*\xC3\xA9" "b\xC3\xA9*c";
+
+    NAOS_REQUIRE_INT_EQ(parse_public(around, sizeof(around) - 1,
+                                     AMARK_UTF8_REPLACE),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 3);
+    /* The offsets are those of the bytes given, not of a replaced copy. */
+    check_child(0, AMARK_KIND_TEXT, 0, 1, 1);
+    check_child(1, AMARK_KIND_EMPHASIS, 1, 4, 1);
+    check_child(2, AMARK_KIND_TEXT, 4, 6, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_INT_EQ(parse_public(around, sizeof(around) - 1,
+                                   AMARK_UTF8_STRICT),
+                      AMARK_ERROR_INVALID_INPUT);
+    NAOS_CHECK_PTR_EQ(g_doc, NULL);
+
+    NAOS_REQUIRE_INT_EQ(parse_public(inside, sizeof(inside) - 1,
+                                     AMARK_UTF8_REPLACE),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+    check_child(0, AMARK_KIND_TEXT, 0, sizeof(inside) - 1, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_INT_EQ(parse_public(inside, sizeof(inside) - 1,
+                                   AMARK_UTF8_STRICT),
+                      AMARK_ERROR_INVALID_INPUT);
+
+    NAOS_REQUIRE_INT_EQ(parse_public(letter, sizeof(letter) - 1,
+                                     AMARK_UTF8_REPLACE),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 3);
+    check_child(1, AMARK_KIND_EMPHASIS, 1, 8, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+}
+
+NAOS_TEST(nul_is_punctuation_around_delimiters_in_both_modes)
+{
+    static const char around[] = "\x00_a_\x00";
+    static const char inside[] = "a*\x00" "b\x00*c";
+    static const amark_utf8_mode_t modes[] = {AMARK_UTF8_STRICT,
+                                              AMARK_UTF8_REPLACE};
+    size_t i;
+
+    for (i = 0; i < 2; i++) {
+        NAOS_TRACE_PUSH("mode %d", (int)modes[i]);
+        NAOS_REQUIRE_INT_EQ(parse_public(around, sizeof(around) - 1,
+                                         modes[i]),
+                            AMARK_ERROR_NONE);
+        NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 3);
+        check_child(0, AMARK_KIND_TEXT, 0, 1, 1);
+        check_child(1, AMARK_KIND_EMPHASIS, 1, 4, 1);
+        check_child(2, AMARK_KIND_TEXT, 4, 5, 1);
+        NAOS_CHECK_TRUE(tree_ok());
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+
+        NAOS_REQUIRE_INT_EQ(parse_public(inside, sizeof(inside) - 1,
+                                         modes[i]),
+                            AMARK_ERROR_NONE);
+        NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+        check_child(0, AMARK_KIND_TEXT, 0, sizeof(inside) - 1, 1);
+        NAOS_CHECK_TRUE(tree_ok());
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_TRACE_POP();
+    }
+}
+
+NAOS_TEST(well_formed_input_gives_the_same_tree_in_both_modes)
+{
+    static const char input[] =
+        "\xC3\xA9 *\xE3\x80\x8C" "a\xE3\x80\x8D* _b_\xE2\x82\xAC\n"
+        "> **c\xC2\xA0**d __e__";
+    char strict[DUMP_SIZE];
+
+    NAOS_REQUIRE_INT_EQ(parse_public(input, sizeof(input) - 1,
+                                     AMARK_UTF8_STRICT),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_TRUE(tree_ok());
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, strict, sizeof(strict)),
+                         sizeof(strict));
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_REQUIRE_INT_EQ(parse_public(input, sizeof(input) - 1,
+                                     AMARK_UTF8_REPLACE),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_TRUE(tree_ok());
+    NAOS_CHECK_STR_EQ(dump(), strict);
+    /* The emphasis around U+300C and U+300D (punctuation) is made. */
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, child_at(block_at(0), 1)),
+                       AMARK_KIND_EMPHASIS);
+}
+
 /* ---- Limits ---- */
 
 NAOS_TEST(the_depth_limit_counts_from_the_paragraph)
@@ -1365,6 +1649,21 @@ NAOS_SUITE(precedence,
     NAOS_ADD_TEST(an_escaped_special_byte_starts_nothing)
 )
 
+NAOS_SUITE(emphasis,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(emphasis_and_strong_emphasis_wrap_their_children),
+    NAOS_ADD_TEST(nested_emphasis_and_other_items_inside),
+    NAOS_ADD_TEST(part_of_a_delimiter_run_is_used),
+    NAOS_ADD_TEST(unmatched_delimiters_are_text),
+    NAOS_ADD_TEST(emphasis_spans_lines_and_holds_their_breaks),
+    NAOS_ADD_TEST(emphasis_across_lines_of_a_block_quote),
+    NAOS_ADD_TEST(the_ends_of_the_content_are_white_space),
+    NAOS_ADD_TEST(ill_formed_utf8_is_punctuation_around_delimiters),
+    NAOS_ADD_TEST(nul_is_punctuation_around_delimiters_in_both_modes),
+    NAOS_ADD_TEST(well_formed_input_gives_the_same_tree_in_both_modes)
+)
+
 NAOS_SUITE(content,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -1400,6 +1699,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(autolink),
     NAOS_ADD_SUITE(raw_html),
     NAOS_ADD_SUITE(precedence),
+    NAOS_ADD_SUITE(emphasis),
     NAOS_ADD_SUITE(content),
     NAOS_ADD_SUITE(entry),
     NAOS_ADD_SUITE(limit)
