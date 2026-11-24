@@ -18,6 +18,7 @@ set(AMARK_SOURCES
     document.c
     draft.c
     entity.c
+    inline.c
     inline_scan.c
     line.c
     line_index.c
