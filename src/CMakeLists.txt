@@ -31,6 +31,7 @@ set(AMARK_SOURCES
     scan.c
     tree.c
     tree_check.c
+    text_build.c
     text_lines.c
     text_sink.c
     unicode.c
