@@ -228,7 +228,11 @@ NAOS_TEST(allocation_failure_is_nomem)
 
 NAOS_TEST(node_count_limit_fails_and_releases_everything)
 {
-    /* The root and two paragraphs: three nodes. */
+    /*
+     * The root, two paragraphs and their texts: five nodes. A limit of 2
+     * stops the block parser; a limit of 4 stops the inline parser, after
+     * the blocks were made, and those are released too.
+     */
     g_config.max_node_count = 2;
     g_doc = k_sentinel;
     NAOS_CHECK_INT_EQ(amark_parse(S("a\n\nb"), &g_config, &g_doc),
@@ -236,6 +240,19 @@ NAOS_TEST(node_count_limit_fails_and_releases_everything)
     NAOS_CHECK_NULL(g_doc);
     NAOS_CHECK_UINT_GT(g_state.malloc_calls, 0);
     NAOS_CHECK_UINT_EQ(g_state.live, 0);
+
+    g_config.max_node_count = 4;
+    g_doc = k_sentinel;
+    NAOS_CHECK_INT_EQ(amark_parse(S("a\n\nb"), &g_config, &g_doc),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_NULL(g_doc);
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+
+    g_config.max_node_count = 5;
+    NAOS_REQUIRE_INT_EQ(amark_parse(S("a\n\nb"), &g_config, &g_doc),
+                        AMARK_ERROR_NONE);
+    check_tree(g_doc);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 5);
 }
 
 NAOS_TEST(allocation_failure_at_every_call)

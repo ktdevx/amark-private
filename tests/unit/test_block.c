@@ -1725,7 +1725,8 @@ NAOS_TEST(definitions_and_setext_through_amark_parse)
     check_content(0, root_child(1), 10, 13);
     NAOS_CHECK_UINT_EQ(definition_count(), 1);
     NAOS_CHECK_UINT_EQ(amark_definitions_find(g_doc, 19, 22), root_child(0));
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
+    /* The root, the 3 blocks and the text of the heading. */
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 5);
 }
 
 NAOS_TEST(allocation_failure_with_definitions_and_setext)
@@ -1817,7 +1818,8 @@ NAOS_TEST(block_quote_of_one_line_and_its_marker_forms)
     check_node(nth_child(root_child(0), 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
     check_content(0, nth_child(root_child(0), 0), 2, 3);
     check_record(1, 2, 0);
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    /* The root, the quote, the paragraph and its text. */
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
     reset_doc();
 
     /* No space after the marker. */
@@ -2210,11 +2212,17 @@ NAOS_TEST(block_quote_with_crlf_in_a_range_starting_inside_a_line)
 
 NAOS_TEST(nesting_depth_limit_with_block_quotes)
 {
-    /* "> > a": quotes at depths 1 and 2, the paragraph at 3. */
+    /*
+     * "> > a": quotes at depths 1 and 2, the paragraph at 3 and its text at
+     * 4. Depth 2 is over for the paragraph, 3 for the text only.
+     */
     NAOS_CHECK_INT_EQ(parse_public("> > a", 5, 2, 0),
                       AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_TRUE(g_doc == NULL);
-    NAOS_REQUIRE_INT_EQ(parse_public("> > a", 5, 3, 0), AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(parse_public("> > a", 5, 3, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(g_doc == NULL);
+    NAOS_REQUIRE_INT_EQ(parse_public("> > a", 5, 4, 0), AMARK_ERROR_NONE);
     check_dump("(doc (bq (bq (p))))");
     reset_doc();
 
@@ -2228,11 +2236,16 @@ NAOS_TEST(nesting_depth_limit_with_block_quotes)
 
 NAOS_TEST(node_count_limit_counts_block_quotes)
 {
-    /* The root, the quote and the paragraph. */
+    /*
+     * The root, the quote, the paragraph and its text. 2 is over for the
+     * blocks, 3 for the text only.
+     */
     NAOS_CHECK_INT_EQ(parse_public("> a", 3, 0, 2),
                       AMARK_ERROR_LIMIT_EXCEEDED);
-    NAOS_REQUIRE_INT_EQ(parse_public("> a", 3, 0, 3), AMARK_ERROR_NONE);
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    NAOS_CHECK_INT_EQ(parse_public("> a", 3, 0, 3),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_REQUIRE_INT_EQ(parse_public("> a", 3, 0, 4), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
 }
 
 #define DEEP 10000
@@ -2248,15 +2261,20 @@ NAOS_TEST(deeply_nested_block_quotes)
     memset(g_deep, '>', DEEP);
     memcpy(g_deep + DEEP, "a\nb", 3);
 
-    /* The paragraph is at depth DEEP + 1. */
+    /*
+     * The paragraph is at depth DEEP + 1, and its "a", soft break and "b"
+     * at DEEP + 2.
+     */
     NAOS_CHECK_INT_EQ(parse_public(g_deep, sizeof(g_deep), DEEP, 0),
                       AMARK_ERROR_LIMIT_EXCEEDED);
-    NAOS_REQUIRE_INT_EQ(parse_public(g_deep, sizeof(g_deep), DEEP + 1, 0),
+    NAOS_CHECK_INT_EQ(parse_public(g_deep, sizeof(g_deep), DEEP + 1, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_REQUIRE_INT_EQ(parse_public(g_deep, sizeof(g_deep), DEEP + 2, 0),
                         AMARK_ERROR_NONE);
     reset_doc();
 
     parse_public_ok(g_deep, sizeof(g_deep));
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), DEEP + 2);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), DEEP + 5);
     node = amark_document_root(g_doc);
     for (i = 0; i < DEEP; i++) {
         amark_range_t range;
@@ -2361,7 +2379,8 @@ NAOS_TEST(list_item_of_one_line_and_its_attributes)
     check_node(nth_child(item, 0), AMARK_KIND_PARAGRAPH, 2, 3, 1, 1);
     check_content(0, nth_child(item, 0), 2, 3);
     check_record(1, 2, 0);
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
+    /* The root, the list, the item, the paragraph and its text. */
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 5);
     reset_doc();
 
     PARSE_PUBLIC("+ a");
@@ -2897,19 +2916,31 @@ NAOS_TEST(list_with_crlf_in_a_range_starting_inside_a_line)
 
 NAOS_TEST(limits_with_lists)
 {
-    /* "- a": the list at depth 1, the item at 2, the paragraph at 3. */
+    /*
+     * "- a": the list at depth 1, the item at 2, the paragraph at 3 and its
+     * text at 4. Depth 2 is over for the paragraph, 3 for the text only.
+     */
     NAOS_CHECK_INT_EQ(parse_public("- a", 3, 2, 0),
                       AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_TRUE(g_doc == NULL);
-    NAOS_REQUIRE_INT_EQ(parse_public("- a", 3, 3, 0), AMARK_ERROR_NONE);
+    NAOS_CHECK_INT_EQ(parse_public("- a", 3, 3, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(g_doc == NULL);
+    NAOS_REQUIRE_INT_EQ(parse_public("- a", 3, 4, 0), AMARK_ERROR_NONE);
     reset_doc();
 
-    /* The root, the list, the item and the paragraph. */
+    /*
+     * The root, the list, the item, the paragraph and its text. 3 is over
+     * for the blocks, 4 for the text only.
+     */
     NAOS_CHECK_INT_EQ(parse_public("- a", 3, 0, 3),
                       AMARK_ERROR_LIMIT_EXCEEDED);
     NAOS_CHECK_TRUE(g_doc == NULL);
-    NAOS_REQUIRE_INT_EQ(parse_public("- a", 3, 0, 4), AMARK_ERROR_NONE);
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 4);
+    NAOS_CHECK_INT_EQ(parse_public("- a", 3, 0, 4),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_TRUE(g_doc == NULL);
+    NAOS_REQUIRE_INT_EQ(parse_public("- a", 3, 0, 5), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 5);
 }
 
 /* DEEP markers "- ", "a", a line ending, 2 DEEP spaces and "b". */
@@ -2928,17 +2959,23 @@ NAOS_TEST(deeply_nested_lists)
     memset(g_deep_list + 2 * DEEP + 2, ' ', 2 * DEEP);
     g_deep_list[4 * DEEP + 2] = 'b';
 
-    /* The paragraph is at depth 2 DEEP + 1. */
+    /*
+     * The paragraph is at depth 2 DEEP + 1, and its "a", soft break and "b"
+     * at 2 DEEP + 2.
+     */
     NAOS_CHECK_INT_EQ(
         parse_public(g_deep_list, sizeof(g_deep_list), 2 * DEEP, 0),
         AMARK_ERROR_LIMIT_EXCEEDED);
-    NAOS_REQUIRE_INT_EQ(
+    NAOS_CHECK_INT_EQ(
         parse_public(g_deep_list, sizeof(g_deep_list), 2 * DEEP + 1, 0),
+        AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_REQUIRE_INT_EQ(
+        parse_public(g_deep_list, sizeof(g_deep_list), 2 * DEEP + 2, 0),
         AMARK_ERROR_NONE);
     reset_doc();
 
     parse_public_ok(g_deep_list, sizeof(g_deep_list));
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 2);
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 5);
     node = amark_document_root(g_doc);
     for (i = 0; i < 2 * DEEP; i++) {
         amark_range_t range;
@@ -3992,7 +4029,8 @@ NAOS_TEST(blank_run_after_a_deeply_nested_list)
     size_t i;
 
     parse_public_ok(g_blank_run, length);
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 3);
+    /* The blocks, and the texts "a" and "b". */
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 5);
     check_deep_lists(2 * DEEP + 1, 1);
     node = amark_document_root(g_doc);
     for (i = 0; i < 2 * DEEP; i++) {
@@ -4021,7 +4059,8 @@ NAOS_TEST(blank_run_in_fenced_code_in_a_deeply_nested_list)
 
     /* The fence is not closed: the code ends with the last blank line. */
     parse_public_ok(g_blank_run, length);
-    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 3);
+    /* The blocks, and the text "b" (the code holds no inline nodes). */
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 2 * DEEP + 4);
     check_deep_lists(end, BLANK_RUN + 1);
     node = amark_document_root(g_doc);
     for (i = 0; i < 2 * DEEP; i++) {

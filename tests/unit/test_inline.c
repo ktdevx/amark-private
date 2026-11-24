@@ -4,8 +4,8 @@
  */
 
 /*
- * Unit tests of the inline parser (src/inline.h). Each test runs the block
- * parser and then amark_inline_parse right after it, as amark_parse will.
+ * Unit tests of the inline parser (src/inline.h). Most tests run the block
+ * parser and then amark_inline_parse right after it, as amark_parse does.
  *
  * Covered here: the ranges of texts (one line, never the white space before
  * a line ending), hard and soft line breaks with LF, CR and CR LF, no break
@@ -16,7 +16,10 @@
  * children for the other blocks, the empty ATX heading, a parsed range that
  * does not start at 0, special bytes that start no structure as text, bytes
  * outside ASCII and U+0000 in texts, the depth and node count limits counted
- * from the paragraph's depth, and the tree check on every tree.
+ * from the paragraph's depth, and the tree check on every tree. Through the
+ * public entry amark_parse: the block nodes (kinds, ranges, lines,
+ * attributes and order) are those of the block parser alone, and the inline
+ * nodes follow them.
  */
 
 #include "arena.h"
@@ -50,6 +53,7 @@
 static amark_test_alloc_t g_state;
 static amark_allocator_t g_allocator;
 static amark_document_t *g_doc;
+static amark_document_t *g_blocks; /* the block parser alone */
 static amark_arena_t g_scratch;
 static unsigned char g_buffer[BUFFER_SIZE];
 static size_t g_length;
@@ -61,6 +65,7 @@ NAOS_SETUP(counting)
     g_allocator = amark_test_allocator(&g_state);
     amark_arena_init(&g_scratch, &g_allocator);
     g_doc = NULL;
+    g_blocks = NULL;
     g_length = 0;
 }
 
@@ -69,6 +74,8 @@ NAOS_TEARDOWN(counting)
     amark_arena_deinit(&g_scratch);
     amark_document_destroy(g_doc);
     g_doc = NULL;
+    amark_document_destroy(g_blocks);
+    g_blocks = NULL;
     NAOS_CHECK_UINT_EQ(g_state.live, 0);
     NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
 }
@@ -629,6 +636,241 @@ NAOS_TEST(the_node_count_limit_counts_the_inline_nodes)
                       AMARK_ERROR_LIMIT_EXCEEDED);
 }
 
+/* ---- Through the public entry ---- */
+
+/*
+ * Parses length bytes at bytes twice: with the block parser alone into
+ * g_blocks, and through amark_parse into g_doc. Both succeed.
+ */
+static void parse_both(const char *bytes, size_t length)
+{
+    amark_config_t config;
+    amark_resolved_config_t resolved;
+
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
+    memcpy(g_buffer, bytes, length);
+    g_length = length;
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, g_length, &resolved),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&resolved.allocator, g_buffer,
+                                              g_length, resolved.start,
+                                              resolved.end, NULL, &g_blocks),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_blocks), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_blocks, &resolved, &g_scratch),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_parse((const char *)g_buffer, g_length, &config,
+                                    &g_doc),
+                        AMARK_ERROR_NONE);
+}
+
+/* Requires the ranges a and b of the two documents to be equal. */
+static void check_same_range(bool has_a, amark_range_t a, bool has_b,
+                             amark_range_t b)
+{
+    NAOS_CHECK_INT_EQ(has_a, has_b);
+    if (has_a && has_b) {
+        NAOS_CHECK_UINT_EQ(a.start, b.start);
+        NAOS_CHECK_UINT_EQ(a.end, b.end);
+    }
+}
+
+/* Requires the attributes of node to be the same in g_blocks and g_doc. */
+static void check_same_attributes(amark_node_id_t node)
+{
+    amark_range_t a = {0, 0};
+    amark_range_t b = {0, 0};
+    uint32_t start_a = 0;
+    uint32_t start_b = 0;
+    bool has_a;
+    bool has_b;
+
+    NAOS_CHECK_UINT_EQ(amark_heading_level(g_doc, node),
+                       amark_heading_level(g_blocks, node));
+    NAOS_CHECK_INT_EQ(amark_heading_style(g_doc, node),
+                      amark_heading_style(g_blocks, node));
+    NAOS_CHECK_INT_EQ(amark_list_type(g_doc, node),
+                      amark_list_type(g_blocks, node));
+    NAOS_CHECK_INT_EQ(amark_list_spacing(g_doc, node),
+                      amark_list_spacing(g_blocks, node));
+    NAOS_CHECK_INT_EQ(amark_list_bullet_char(g_doc, node),
+                      amark_list_bullet_char(g_blocks, node));
+    NAOS_CHECK_INT_EQ(amark_list_delimiter(g_doc, node),
+                      amark_list_delimiter(g_blocks, node));
+    has_a = amark_list_start(g_blocks, node, &start_a);
+    has_b = amark_list_start(g_doc, node, &start_b);
+    NAOS_CHECK_INT_EQ(has_a, has_b);
+    NAOS_CHECK_UINT_EQ(start_a, start_b);
+    NAOS_CHECK_INT_EQ(amark_code_block_style(g_doc, node),
+                      amark_code_block_style(g_blocks, node));
+    NAOS_CHECK_INT_EQ(amark_code_block_fence_char(g_doc, node),
+                      amark_code_block_fence_char(g_blocks, node));
+    NAOS_CHECK_UINT_EQ(amark_code_block_fence_length(g_doc, node),
+                       amark_code_block_fence_length(g_blocks, node));
+    has_a = amark_code_block_info(g_blocks, node, &a);
+    has_b = amark_code_block_info(g_doc, node, &b);
+    check_same_range(has_a, a, has_b, b);
+    has_a = amark_definition_label(g_blocks, node, &a);
+    has_b = amark_definition_label(g_doc, node, &b);
+    check_same_range(has_a, a, has_b, b);
+    has_a = amark_definition_destination(g_blocks, node, &a);
+    has_b = amark_definition_destination(g_doc, node, &b);
+    check_same_range(has_a, a, has_b, b);
+    has_a = amark_definition_title(g_blocks, node, &a);
+    has_b = amark_definition_title(g_doc, node, &b);
+    check_same_range(has_a, a, has_b, b);
+}
+
+/*
+ * Node IDs run from 1 to the node count. Requires every block node of
+ * g_blocks to be in g_doc with the same ID,
+ * kind, range, lines, attributes, parent and next sibling, and the same
+ * first child, except that a paragraph or heading of g_doc may have an
+ * inline node as its first child. A node removed in g_blocks (no range) is
+ * removed in g_doc too. Every other node of g_doc must be an
+ * inline node whose parent is a paragraph or heading. Both trees pass the
+ * tree check and give the same block structure.
+ */
+static void check_blocks_unchanged(void)
+{
+    size_t blocks = amark_document_node_count(g_blocks);
+    size_t count = amark_document_node_count(g_doc);
+    amark_node_id_t node;
+    char want[DUMP_SIZE];
+
+    NAOS_CHECK_TRUE(tree_ok());
+    NAOS_CHECK_INT_EQ(amark_tree_check(g_blocks).violation,
+                      AMARK_TREE_VIOLATION_NONE);
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_blocks(g_blocks, want, sizeof(want)),
+                         sizeof(want));
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_blocks(g_doc, g_dump,
+                                                sizeof(g_dump)),
+                         sizeof(g_dump));
+    NAOS_CHECK_STR_EQ(g_dump, want);
+    NAOS_REQUIRE_UINT_GE(count, blocks);
+    for (node = 1; node <= blocks; node++) {
+        amark_kind_t kind = amark_node_kind(g_blocks, node);
+        amark_node_id_t child = amark_node_first_child(g_doc, node);
+        amark_range_t a;
+        amark_range_t b;
+
+        NAOS_TRACE_PUSH("node %lu", (unsigned long)node);
+        NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, node), kind);
+        if (!amark_node_range(g_blocks, node, &a)) {
+            NAOS_CHECK_FALSE(amark_node_range(g_doc, node, &b));
+            NAOS_TRACE_POP();
+            continue;
+        }
+        NAOS_CHECK_TRUE(amark_node_is_block(g_doc, node));
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &b));
+        NAOS_CHECK_UINT_EQ(b.start, a.start);
+        NAOS_CHECK_UINT_EQ(b.end, a.end);
+        NAOS_CHECK_UINT_EQ(amark_node_start_line(g_doc, node),
+                           amark_node_start_line(g_blocks, node));
+        NAOS_CHECK_UINT_EQ(amark_node_end_line(g_doc, node),
+                           amark_node_end_line(g_blocks, node));
+        NAOS_CHECK_UINT_EQ(amark_node_parent(g_doc, node),
+                           amark_node_parent(g_blocks, node));
+        NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, node),
+                           amark_node_next_sibling(g_blocks, node));
+        if (kind == AMARK_KIND_PARAGRAPH || kind == AMARK_KIND_HEADING) {
+            NAOS_CHECK_UINT_EQ(amark_node_first_child(g_blocks, node),
+                               AMARK_NODE_NONE);
+            NAOS_CHECK_TRUE(child == AMARK_NODE_NONE || child > blocks);
+        } else {
+            NAOS_CHECK_UINT_EQ(child, amark_node_first_child(g_blocks, node));
+        }
+        check_same_attributes(node);
+        NAOS_TRACE_POP();
+    }
+    for (node = blocks + 1; node <= count; node++) {
+        amark_node_id_t parent = amark_node_parent(g_doc, node);
+
+        NAOS_TRACE_PUSH("node %lu", (unsigned long)node);
+        NAOS_CHECK_TRUE(amark_node_is_inline(g_doc, node));
+        while (parent != AMARK_NODE_NONE &&
+               amark_node_is_inline(g_doc, parent)) {
+            parent = amark_node_parent(g_doc, parent);
+        }
+        NAOS_REQUIRE_UINT_NE(parent, AMARK_NODE_NONE);
+        NAOS_REQUIRE_UINT_LE(parent, blocks);
+        NAOS_CHECK_TRUE(amark_node_kind(g_doc, parent) ==
+                            AMARK_KIND_PARAGRAPH ||
+                        amark_node_kind(g_doc, parent) ==
+                            AMARK_KIND_HEADING);
+        NAOS_TRACE_POP();
+    }
+}
+
+NAOS_TEST(amark_parse_keeps_the_block_nodes)
+{
+    /*
+     * Every kind of block, with special bytes, line breaks and the forms of
+     * inline structures in the paragraphs and headings.
+     */
+    static const char input[] =
+        "# ATX *heading* #\n"
+        "Setext `heading`  \n"
+        "with two lines\n"
+        "---\n"
+        "\n"
+        "***\n"
+        "\n"
+        "    indented *code*\n"
+        "\n"
+        "```c info\n"
+        "fenced [code]\n"
+        "```\n"
+        "\n"
+        "<div>\n"
+        "html *block*\n"
+        "</div>\n"
+        "\n"
+        "[foo]: /url \"title\"\n"
+        "[bar]:\n"
+        "  /bar 'x'\n"
+        "\n"
+        "> quoted [foo]  \n"
+        "lazy <b>\r\n"
+        "> - item &amp; \\\n"
+        ">   more\n"
+        "\n"
+        "- tight a\\\n"
+        "- b\n"
+        "  3) nested ![i](u)\n"
+        "\n"
+        "1. loose\n"
+        "\n"
+        "2. two\n"
+        "\n"
+        "para <http://x> **strong** _em_\r"
+        "end";
+
+    parse_both(input, sizeof(input) - 1);
+    check_blocks_unchanged();
+    NAOS_CHECK_UINT_GT(amark_document_node_count(g_doc),
+                       amark_document_node_count(g_blocks));
+}
+
+NAOS_TEST(amark_parse_keeps_the_blocks_of_an_empty_heading)
+{
+    /* Contents of length 0 and documents with no content at all. */
+    parse_both("#\n\n## ##\n", 9);
+    check_blocks_unchanged();
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc),
+                       amark_document_node_count(g_blocks));
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    amark_document_destroy(g_blocks);
+    g_blocks = NULL;
+
+    parse_both("", 0);
+    check_blocks_unchanged();
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 1);
+}
+
 NAOS_TEST(an_empty_document_has_nothing_to_parse)
 {
     PARSE("");
@@ -677,6 +919,13 @@ NAOS_SUITE(content,
     NAOS_ADD_TEST(an_empty_document_has_nothing_to_parse)
 )
 
+NAOS_SUITE(entry,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(amark_parse_keeps_the_block_nodes),
+    NAOS_ADD_TEST(amark_parse_keeps_the_blocks_of_an_empty_heading)
+)
+
 NAOS_SUITE(limit,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -689,5 +938,6 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(line_break),
     NAOS_ADD_SUITE(prefix),
     NAOS_ADD_SUITE(content),
+    NAOS_ADD_SUITE(entry),
     NAOS_ADD_SUITE(limit)
 )

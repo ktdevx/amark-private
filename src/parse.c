@@ -7,8 +7,10 @@
  * The entry point of a parse (include/amark/parse.h): checks the arguments,
  * the configuration, the input size and the UTF-8 of the parsed range in a
  * fixed order without allocating, then creates the document, attaches its
- * parse data and runs the block parser with a scratch arena. Owns the
- * lifetimes of the document and the scratch arena; knows no block rules.
+ * parse data, runs the block parser with a scratch arena, and then the
+ * inline parser with the scratch arena made again (nothing of the block
+ * parse is kept in it). Owns the lifetimes of the document and the scratch
+ * arena; knows no block or inline rules.
  */
 
 #include <amark/parse.h>
@@ -19,6 +21,7 @@
 #include "block.h"
 #include "config_internal.h"
 #include "document.h"
+#include "inline.h"
 #include "parse_data.h"
 #include "utf8.h"
 
@@ -46,6 +49,11 @@ static amark_error_t parse_document(const unsigned char *bytes, size_t length,
         amark_arena_init(&scratch, &config->allocator);
         err = amark_block_parse(doc, config, &scratch);
         amark_arena_deinit(&scratch);
+        if (err == AMARK_ERROR_NONE) {
+            amark_arena_init(&scratch, &config->allocator);
+            err = amark_inline_parse(doc, config, &scratch);
+            amark_arena_deinit(&scratch);
+        }
     }
     if (err != AMARK_ERROR_NONE) {
         amark_document_destroy(doc);

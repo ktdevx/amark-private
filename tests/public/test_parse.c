@@ -7,8 +7,9 @@
  * Public API test of the parse: links Amark::amark and uses only
  * <amark/amark.h>. Parses a short document with no configuration, visits
  * its tree with the traversal of the comment in <amark/tree.h>, reads the
- * kind, the range, the lines and the parent of each node and some
- * attributes, and destroys the document. Also checks that a failed parse
+ * kind, the range, the lines and the parent of each node (the blocks and
+ * the inline nodes of the paragraphs and the heading) and some attributes,
+ * and destroys the document. Also checks that a failed parse
  * stores NULL in *out. In the shared configuration this links against the
  * exported symbols only, so it shows that amark_parse is exported.
  */
@@ -36,6 +37,7 @@ static const char k_content[] =
 /* A node as the traversal meets it, in document order. */
 typedef struct expected_node {
     amark_kind_t kind;
+    int is_block; /* 1 for a block, 0 for an inline node */
     size_t depth; /* the root is at depth 0 */
     size_t start;
     size_t end;
@@ -44,18 +46,23 @@ typedef struct expected_node {
 } expected_node_t;
 
 static const expected_node_t k_nodes[] = {
-    {AMARK_KIND_DOCUMENT, 0, 0, 38, 1, 7},
-    {AMARK_KIND_HEADING, 1, 0, 7, 1, 1},
-    {AMARK_KIND_LIST, 1, 9, 20, 3, 4},
-    {AMARK_KIND_LIST_ITEM, 2, 9, 14, 3, 3},
-    {AMARK_KIND_PARAGRAPH, 3, 11, 14, 3, 3},
-    {AMARK_KIND_LIST_ITEM, 2, 15, 20, 4, 4},
-    {AMARK_KIND_PARAGRAPH, 3, 17, 20, 4, 4},
-    {AMARK_KIND_LIST, 1, 22, 30, 6, 6},
-    {AMARK_KIND_LIST_ITEM, 2, 22, 30, 6, 6},
-    {AMARK_KIND_PARAGRAPH, 3, 25, 30, 6, 6},
-    {AMARK_KIND_BLOCK_QUOTE, 1, 31, 38, 7, 7},
-    {AMARK_KIND_PARAGRAPH, 2, 33, 38, 7, 7}};
+    {AMARK_KIND_DOCUMENT, 1, 0, 0, 38, 1, 7},
+    {AMARK_KIND_HEADING, 1, 1, 0, 7, 1, 1},
+    {AMARK_KIND_TEXT, 0, 2, 2, 7, 1, 1},
+    {AMARK_KIND_LIST, 1, 1, 9, 20, 3, 4},
+    {AMARK_KIND_LIST_ITEM, 1, 2, 9, 14, 3, 3},
+    {AMARK_KIND_PARAGRAPH, 1, 3, 11, 14, 3, 3},
+    {AMARK_KIND_TEXT, 0, 4, 11, 14, 3, 3},
+    {AMARK_KIND_LIST_ITEM, 1, 2, 15, 20, 4, 4},
+    {AMARK_KIND_PARAGRAPH, 1, 3, 17, 20, 4, 4},
+    {AMARK_KIND_TEXT, 0, 4, 17, 20, 4, 4},
+    {AMARK_KIND_LIST, 1, 1, 22, 30, 6, 6},
+    {AMARK_KIND_LIST_ITEM, 1, 2, 22, 30, 6, 6},
+    {AMARK_KIND_PARAGRAPH, 1, 3, 25, 30, 6, 6},
+    {AMARK_KIND_TEXT, 0, 4, 25, 30, 6, 6},
+    {AMARK_KIND_BLOCK_QUOTE, 1, 1, 31, 38, 7, 7},
+    {AMARK_KIND_PARAGRAPH, 1, 2, 33, 38, 7, 7},
+    {AMARK_KIND_TEXT, 0, 3, 33, 38, 7, 7}};
 
 #define NODE_COUNT (sizeof(k_nodes) / sizeof(k_nodes[0]))
 
@@ -99,8 +106,10 @@ static void check_node(amark_node_id_t node, size_t nth, size_t depth)
 
     NAOS_TRACE_PUSH("node %lu", (unsigned long)nth);
     NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, node), want->kind);
-    NAOS_CHECK_TRUE(amark_node_is_block(g_doc, node));
-    NAOS_CHECK_FALSE(amark_node_is_inline(g_doc, node));
+    NAOS_CHECK_INT_EQ(amark_node_is_block(g_doc, node) ? 1 : 0,
+                      want->is_block);
+    NAOS_CHECK_INT_EQ(amark_node_is_inline(g_doc, node) ? 1 : 0,
+                      !want->is_block);
     NAOS_CHECK_UINT_EQ(depth, want->depth);
     NAOS_CHECK_TRUE(amark_node_range(g_doc, node, &range));
     NAOS_CHECK_UINT_EQ(range.start, want->start);
@@ -206,14 +215,14 @@ NAOS_TEST(list_attributes)
     uint32_t start = 0;
 
     parse_content();
-    bullet = find_node(2);
+    bullet = find_node(3);
     NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, bullet), AMARK_KIND_LIST);
     NAOS_CHECK_INT_EQ(amark_list_type(g_doc, bullet), AMARK_LIST_BULLET);
     NAOS_CHECK_INT_EQ(amark_list_spacing(g_doc, bullet), AMARK_LIST_TIGHT);
     NAOS_CHECK_INT_EQ(amark_list_bullet_char(g_doc, bullet), '-');
     NAOS_CHECK_FALSE(amark_list_start(g_doc, bullet, &start));
 
-    ordered = find_node(7);
+    ordered = find_node(10);
     NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, ordered), AMARK_KIND_LIST);
     NAOS_CHECK_INT_EQ(amark_list_type(g_doc, ordered), AMARK_LIST_ORDERED);
     NAOS_CHECK_INT_EQ(amark_list_spacing(g_doc, ordered), AMARK_LIST_TIGHT);
