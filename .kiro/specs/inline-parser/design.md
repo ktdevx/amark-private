@@ -255,7 +255,7 @@ sequenceDiagram
 | カーソルの位置 | 処理 | できる項目 |
 |----------------|------|------------|
 | 行の内容の終わり（内容の終わりではない） | 改行の種類を決め、次の行へ進む | ハードな改行、ソフトな改行 |
-| `\` | 次が ASCII の句読点ならエスケープ。次が行の内容の終わりならハードな改行。ほかはテキスト | エスケープ、ハードな改行、テキスト |
+| `\` | 次が ASCII の句読点ならエスケープ。次が行の内容の終わりで、内容の終わりではないなら、ハードな改行。ほか（内容の最後のバイトを含む）はテキスト | エスケープ、ハードな改行、テキスト |
 | `` ` `` | 列の長さを数え、同じ長さの閉じる列を探す | コードスパン、テキスト（列の全体） |
 | `&` | 文字参照の形を読む | 文字参照、テキスト（`&`） |
 | `<` | オートリンク、生の HTML の順に試す | オートリンク、生の HTML、テキスト（`<`） |
@@ -266,7 +266,7 @@ sequenceDiagram
 | それ以外 | 次の起動文字か行の内容の終わりまでを読む | テキスト |
 
 - 起動文字かどうかは、256 個の表（`special`）で引く。表は、ポインタを含まない const の配列を、解析の状態へ写したものである。
-- テキストが行の内容の終わりに着いたときは、末尾に連続する空白（スペースとタブ）をテキストから外し、その最初の位置を「改行の開始」として覚える（3.5、13.4）。
+- テキストが行の内容の終わりに着いたときは、末尾に連続する空白（スペースとタブ）をテキストから外し、その最初の位置を「改行の開始」として覚える（3.5、13.4）。外した結果、長さが 0 になるテキストは作らない（3.6）。「改行の開始」は、行ごとに初めへ戻す。
 - 改行の項目の範囲は、「改行の開始」（なければ行の内容の終わり）から、その行の行末記号の直後までである。行末記号の直前にスペースが 2 つ以上続けばハード、そうでなければソフトである（13.1、13.3）。`\` による改行は、`\` から行末記号の直後までである（13.2）。次の行のプレフィックスと先頭の空白は、どの項目にも入らない（13.5）。
 - コードスパン、生の HTML、リンクの丸括弧の部分、完全参照のラベルは、1 つの関数が行をまたいで読み切るので、その中の行末記号は改行の項目にならない（13.7）。
 
@@ -408,8 +408,8 @@ typedef struct amark_cursor {
 } amark_cursor_t;
 
 void amark_cursor_init(amark_cursor_t *cursor,
-                              const amark_document_t *doc,
-                              size_t start, size_t limit);
+                       const amark_document_t *doc,
+                       size_t start, size_t limit);
 
 /* pos == limit */
 bool amark_cursor_at_end(const amark_cursor_t *cursor);
@@ -427,10 +427,10 @@ void amark_cursor_seek(amark_cursor_t *cursor, size_t pos);
 
 /* pos の直前の文字。pos が行の内容の始まりなら U+000A */
 uint32_t amark_cursor_char_before(const amark_cursor_t *cursor,
-                                         size_t pos);
+                                  size_t pos);
 /* pos にある文字。pos が行の内容の終わりなら U+000A */
 uint32_t amark_cursor_char_at(const amark_cursor_t *cursor,
-                                     size_t pos);
+                              size_t pos);
 ```
 - Preconditions: `start <= limit`。`[start, limit)` は、block-parser が用意した内容の範囲で、その行の記録は書かれている。`char_before` と `char_at` の `pos` は、今の行の `line_start` 以上 `line_end` 以下である。
 - Postconditions: `next_line` の後、`pos` は次の行の `content_start` である。`seek` は、行を前から順に進めて、`pos` のある行を見つける（進んだ行の数に比例する時間）。
@@ -514,7 +514,7 @@ bool amark_inline_scan_link_tail(amark_cursor_t *cursor,
 - **生の HTML**：開始タグ、終了タグ、コメント（`<!-->`、`<!--->`、`<!--` から最初の `-->` まで）、処理命令（`<?` から最初の `?>` まで）、宣言（`<!` と ASCII の英字から、最初の `>` まで）、CDATA セクション（`<![CDATA[` から最初の `]]>` まで）。タグの中の空白は、スペース、タブ、行末記号である。引用符で囲んだ属性の値は、行をまたげる。
   - コメント、処理命令、宣言、CDATA は、内容の終わりまで探して終わりがなかったら、`html_no_end` のその種類の印を立てる。印が立っている種類は、探さずに「合わない」と答える。
   - タグの名前、属性の名前、引用符のない属性の値は、`<` を含められない。引用符で囲んだ値は、次の同じ引用符で終わる。そのため、合わないタグを読む長さは、次の `<` か、次の次の引用符までで抑えられる。
-- **リンクの丸括弧の部分**：`(`、空白（スペース、タブ、行末記号）、省略できる dest、省略できる title（前に空白が要る）、空白、`)`。
+- **リンクの丸括弧の部分**：`(`、空白（スペース、タブ、行末記号）、省略できる dest、省略できる title（前に空白が要る）、空白、`)`。dest を先に読む。`(` と空白の直後が `)` なら、dest も title もない。そうでなければ、そこにあるものは dest として読む（`[a]("t")` の `"t"` は、title ではなく dest である。仕様の例 504）。title は、dest の後に空白があるときだけ試す。
   - 山括弧の dest は、行末記号と、エスケープされていない `<` を含まない。
   - 山括弧のない dest は、スペースと ASCII の制御文字（行末記号を含む）で終わる。エスケープされていない丸括弧は、対応していなければならない。開く丸括弧が `AMARK_LINK_DEST_PAREN_MAX` を超えて入れ子になったら、「合わない」と答える（8.6）。対応する相手のない `)` は、dest を終える。
   - title は、`"…"`、`'…'`、`(…)` のどれかで、エスケープされていない閉じる区切りで終わる。`(…)` は、エスケープされていない `(` を含まない。行をまたげる。
@@ -588,32 +588,32 @@ amark_error_t amark_draft_reset(amark_draft_t *draft);
 
 /* 根の最後の子として足す */
 amark_error_t amark_draft_append(amark_draft_t *draft,
-                                        amark_kind_t kind, size_t start,
-                                        size_t end,
-                                        amark_draft_id_t *out);
+                                 amark_kind_t kind, size_t start,
+                                 size_t end,
+                                 amark_draft_id_t *out);
 
 /* after の次から before の前まで（before が NONE なら最後まで）の兄弟を、
    新しい項目の子に移し、新しい項目を after の次に置く。間が空でもよい */
 amark_error_t amark_draft_wrap(amark_draft_t *draft,
-                                      amark_draft_id_t after,
-                                      amark_draft_id_t before,
-                                      amark_kind_t kind, size_t start,
-                                      size_t end,
-                                      amark_draft_id_t *out);
+                               amark_draft_id_t after,
+                               amark_draft_id_t before,
+                               amark_kind_t kind, size_t start,
+                               size_t end,
+                               amark_draft_id_t *out);
 
 void amark_draft_remove(amark_draft_t *draft,
-                               amark_draft_id_t id);
+                        amark_draft_id_t id);
 void amark_draft_set_range(amark_draft_t *draft,
-                                  amark_draft_id_t id,
-                                  size_t start, size_t end);
+                           amark_draft_id_t id,
+                           size_t start, size_t end);
 amark_error_t amark_draft_set_link(amark_draft_t *draft,
-                                          amark_draft_id_t id,
-                                          const amark_draft_link_t *attr);
+                                   amark_draft_id_t id,
+                                   const amark_draft_link_t *attr);
 void amark_draft_set_autolink(amark_draft_t *draft,
-                                     amark_draft_id_t id,
-                                     amark_autolink_type_t type);
+                              amark_draft_id_t id,
+                              amark_autolink_type_t type);
 const amark_draft_item_t *amark_draft_get(
-    const amark_draft_t *draft, amark_draft_id_t id);
+                                          const amark_draft_t *draft, amark_draft_id_t id);
 ```
 - Preconditions: `after` と `before` は根の子で、`after` は `before` より前にある（強調もリンクも、根の子の並びの上で作る）。`id` は、足した項目で、取り除かれていない。
 - Postconditions: `wrap` は、移す兄弟の数に比例する時間で終わる（1 つの繰り返しで、各兄弟の `parent` を書き換える）。失敗したら、何も動いていない。`remove` は、項目を並びから外すだけで、要素は残る（`reset` まで再利用しない）。
@@ -635,7 +635,7 @@ const amark_draft_item_t *amark_draft_get(
 
 **Responsibilities & Constraints**
 - 区切りの種類（文字と、対応したときに作る種類）を表で持つ。`*` と `_` は、この表の 2 つの要素である。
-- 区切りのスタックは、配列の上の両方向のリストである。要素は、区切りの項目、種類、開けるか、閉じられるかを持つ。列の今の長さは、項目の範囲の長さである。
+- 区切りのスタックは、配列の上の両方向のリストである。要素は、区切りの項目、種類、開けるか、閉じられるか、列の元の長さ（積んだときの長さ）を持つ。列の今の長さ（まだ使われていない区切りの数）は、項目の範囲の長さである。「3 の倍数の規則」と下限の表は元の長さを使い、使う数（1 つか 2 つか）は今の長さで決める。仕様の規則 9 と 10 は「区切りを含む列の長さ」で書かれていて、cmark も commonmark.js も元の長さを使う。
 - 対応の規則は、CommonMark 0.31.2 の付録の「process emphasis」のとおりである。
 - カーソルも走査も知らない。前後の文字は、呼ぶ側がコードポイントで渡す。
 
@@ -666,36 +666,36 @@ typedef struct amark_delimiters {
 
 /* kinds を CommonMark の 2 つにする */
 void amark_delimiters_init(amark_delimiters_t *delims,
-                              amark_arena_t *scratch);
+                           amark_arena_t *scratch);
 void amark_delimiters_reset(amark_delimiters_t *delims);
 
 /* 区切りの文字から種類の添字を引く。なければ kind_count */
 size_t amark_delimiters_kind_of(const amark_delimiters_t *delims,
-                                   unsigned char ch);
+                                unsigned char ch);
 
 /* 前後の文字から、開けるか、閉じられるかを決める（6.2 節） */
 void amark_delimiter_classify(const amark_delimiter_kind_t *kind,
-                                 uint32_t before, uint32_t after,
-                                 bool *can_open, bool *can_close);
+                              uint32_t before, uint32_t after,
+                              bool *can_open, bool *can_close);
 
 /* 開けることも閉じることもできない列は、積まなくてよい */
 amark_error_t amark_delimiters_push(amark_delimiters_t *delims,
-                                       amark_draft_id_t item,
-                                       size_t kind, bool can_open,
-                                       bool can_close);
+                                    amark_draft_id_t item,
+                                    size_t kind, bool can_open,
+                                    bool can_close);
 
 /* 項目の開始が bottom 以上の区切りについて、強調の対応を決め、
    それらをスタックから外す */
 amark_error_t amark_delimiters_process(amark_delimiters_t *delims,
-                                          amark_draft_t *draft,
-                                          size_t bottom);
+                                       amark_draft_t *draft,
+                                       size_t bottom);
 ```
 - `classify`：`before` と `after` が Unicode の空白か句読点かを `amark_unicode_is_whitespace` と `amark_unicode_is_punctuation` で調べ、left-flanking と right-flanking を決める。`intraword_limited` が偽なら、開けるのは left-flanking、閉じられるのは right-flanking である。真なら、開けるのは「left-flanking で、right-flanking でないか、直前が句読点」、閉じられるのは「right-flanking で、left-flanking でないか、直後が句読点」である（7.3）。
 - `process`：閉じられる区切りを前から順に見て、それぞれについて、後ろ向きに、同じ種類の開ける区切りを探す。
-  - 「3 の倍数の規則」に当たる組は飛ばす（7.5）。
-  - 開く側と閉じる側の長さがともに 2 以上なら 2 つずつ、そうでなければ 1 つずつ使う（7.6）。
+  - 「3 の倍数の規則」に当たる組は飛ばす（7.5）。当たるのは、どちらかが開けることも閉じることもできる列で、元の長さの和が 3 の倍数で、閉じる列の元の長さが 3 の倍数でないときである。
+  - 開く側と閉じる側の今の長さがともに 2 以上なら 2 つずつ、そうでなければ 1 つずつ使う（7.6）。
   - 対応したら、間の区切りをスタックから外し、`amark_draft_wrap` で間の項目を包む。新しい項目の範囲は、`[開く項目の end - 使った数, 閉じる項目の start + 使った数)` である。開く項目の `end` と閉じる項目の `start` を、使った数だけ縮める。長さが 0 になった項目は取り除き、スタックからも外す（3.6、7.8）。
-  - 開く区切りが見つからなかったら、その閉じる区切りの位置を、下限の表に書く。下限の表は、「種類 × 開けるかどうか × 長さを 3 で割った余り」ごとに 1 つの位置を持つ（種類 1 つにつき 6 個）。次に同じ組を探すときは、下限より前を見ない。開けない区切りは、ここでスタックから外す。
+  - 開く区切りが見つからなかったら、その閉じる区切りの位置を、下限の表に書く。下限の表は、「種類 × 閉じる区切りが開けるかどうか × 閉じる区切りの元の長さを 3 で割った余り」ごとに 1 つの位置を持つ（種類 1 つにつき 6 個）。次に同じ組を探すときは、下限より前を見ない。開けない区切りは、ここでスタックから外す。
 - 下限の表は、`process` の呼び出しごとの局所の配列（`AMARK_DELIMITER_KIND_MAX * 6` 個）である。
 
 **Implementation Notes**
@@ -731,22 +731,22 @@ typedef struct amark_brackets {
 } amark_brackets_t;
 
 void amark_brackets_init(amark_brackets_t *brackets,
-                                amark_arena_t *scratch);
+                         amark_arena_t *scratch);
 void amark_brackets_reset(amark_brackets_t *brackets);
 
 /* item は `[` か `![` のテキストの項目。open は `[` の位置 */
 amark_error_t amark_brackets_push(amark_brackets_t *brackets,
-                                         amark_draft_id_t item,
-                                         bool image, size_t open);
+                                  amark_draft_id_t item,
+                                  bool image, size_t open);
 
 /* カーソルは `]` にある。リンクか画像を作ったら *made を true にし、
    カーソルをその直後へ進める。作らなかったら *made を false にし、
    カーソルは動かさない（呼ぶ側が `]` をテキストにして 1 つ進む） */
 amark_error_t amark_bracket_close(amark_brackets_t *brackets,
-                                      amark_draft_t *draft,
-                                      amark_delimiters_t *delims,
-                                      amark_cursor_t *cursor,
-                                      bool *made);
+                                  amark_draft_t *draft,
+                                  amark_delimiters_t *delims,
+                                  amark_cursor_t *cursor,
+                                  bool *made);
 ```
 - Preconditions: カーソルの位置のバイトは `]` である。
 - Postconditions: 開く括弧があれば、作っても作らなくても、スタックから 1 つ外れている。リンクを作ったら、`link_floor` は今のスタックの高さである。
@@ -773,9 +773,9 @@ amark_error_t amark_bracket_close(amark_brackets_t *brackets,
 /* parent は段落か見出し。parent_depth はその深さ（max_depth が 0 なら使わない）。
    max_depth と max_nodes は、0 なら上限なし */
 amark_error_t amark_draft_emit(amark_document_t *doc,
-                                amark_draft_t *draft,
-                                amark_node_id_t parent, size_t parent_depth,
-                                size_t max_depth, size_t max_nodes);
+                               amark_draft_t *draft,
+                               amark_node_id_t parent, size_t parent_depth,
+                               size_t max_depth, size_t max_nodes);
 ```
 - 項目の木を、`first_child`、`next`、`parent` だけでたどる（再帰もスタックも使わない）。足したノードの ID は、項目の `node` に書き、子を足すときの親として読む。
 - **テキストをまとめる**：続く兄弟がどちらもテキストで、前の `end` と後ろの `start` が等しいとき、1 つのノードにする（3.3）。行をまたぐテキストは、間に改行の項目があるので、まとまらない（3.4）。
