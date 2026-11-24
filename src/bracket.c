@@ -94,8 +94,8 @@ static bool match_reference(amark_cursor_t *cursor,
     const amark_document_t *doc = cursor->doc;
     size_t close = cursor->pos;
     size_t after = close + 1;
-    size_t label_start;
-    size_t label_end;
+    size_t label_start = 0;
+    size_t label_end = 0;
     amark_node_id_t def;
     amark_link_form_t form = AMARK_LINK_SHORTCUT;
 
