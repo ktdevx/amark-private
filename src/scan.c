@@ -445,6 +445,13 @@ static size_t scan_attribute_value(const unsigned char *p, size_t i,
  * Returns the offset after the open tag that starts at p[0] == '<', or 0
  * when no complete open tag starts there or its name is one of start
  * condition 1.
+ *
+ * The grammar of the tags here (scan_tag_name, scan_attribute_name,
+ * scan_attribute_value, scan_open_tag and scan_closing_tag) is also the one
+ * of the inline raw HTML, scan_open_tag and scan_closing_tag in
+ * src/inline_scan.c, which reads it across lines. When the rules change,
+ * change both, and keep the same tag examples in tests/unit/test_scan.c and
+ * tests/unit/test_inline_scan.c.
  */
 static size_t scan_open_tag(const unsigned char *p, size_t len)
 {

@@ -10,6 +10,7 @@
 #include <stddef.h>
 
 #include <amark/error.h>
+#include <amark/tree.h>
 
 #include "arena.h"
 #include "array.h"
@@ -41,8 +42,15 @@ typedef struct amark_inline_scan_memo {
     bool backticks_complete; /* this content was searched to its end */
     unsigned html_no_end;    /* comments, processing instructions,
                                 declarations and CDATA sections known to have
-                                no end in the rest of this content */
+                                no end in the rest of this content: the
+                                AMARK_INLINE_SCAN_NO_END_* bits */
 } amark_inline_scan_memo_t;
+
+/* The bits of html_no_end, one for each kind of raw HTML that has an end. */
+#define AMARK_INLINE_SCAN_NO_END_COMMENT 0x1u     /* "-->" */
+#define AMARK_INLINE_SCAN_NO_END_PI 0x2u          /* "?>" */
+#define AMARK_INLINE_SCAN_NO_END_DECLARATION 0x4u /* ">" */
+#define AMARK_INLINE_SCAN_NO_END_CDATA 0x8u       /* "]]>" */
 
 /*
  * Initializes memo with an empty backticks array in scratch. Allocates
@@ -94,5 +102,56 @@ amark_error_t amark_inline_scan_code_span(amark_cursor_t *cursor,
  * alphanumeric run after the '&' (and the '#', the 'x' and the ';').
  */
 bool amark_inline_scan_entity(amark_cursor_t *cursor);
+
+/*
+ * Reads an autolink within the current line (CommonMark 0.31.2, section
+ * 6.5): '<', then either
+ *   - an absolute URI: a scheme of 2 to 32 characters (an ASCII letter, then
+ *     ASCII letters, digits, '+', '.' and '-'), ':', and any bytes but the
+ *     space, '<', '>' and the ASCII control characters, or
+ *   - an email address: one or more of the ASCII alphanumerics and
+ *     .!#$%&'*+/=?^_`{|}~-, '@', and labels of 1 to 63 ASCII alphanumerics
+ *     and '-' that neither start nor end with '-', separated by '.',
+ * then '>'. The URI is tried first. The cursor is on the '<'. On a match,
+ * sets *type to AMARK_AUTOLINK_URI or AMARK_AUTOLINK_EMAIL, moves the
+ * cursor right after the '>' and returns true; otherwise returns false and
+ * changes neither. Reads no further than the next '<', '>', space or ASCII
+ * control character of the line.
+ */
+bool amark_inline_scan_autolink(amark_cursor_t *cursor,
+                                amark_autolink_type_t *type);
+
+/*
+ * Reads raw HTML (CommonMark 0.31.2, section 6.6), one of
+ *   - an open tag: '<', a tag name, attributes each after white space,
+ *     optional white space, an optional '/', and '>',
+ *   - a closing tag: "</", a tag name, optional white space, and '>',
+ *   - a comment: "<!-->", "<!--->", or "<!--" up to the first "-->",
+ *   - a processing instruction: "<?" up to the first "?>",
+ *   - a declaration: "<!" and an ASCII letter up to the first '>',
+ *   - a CDATA section: "<![CDATA[" up to the first "]]>".
+ * A tag name is an ASCII letter followed by ASCII letters, digits and '-';
+ * an attribute is a name (an ASCII letter, '_' or ':', then ASCII letters,
+ * digits, '_', '.', ':' and '-') and an optional value specification
+ * (optional white space, '=', optional white space, and a value). A value is
+ * quoted with '"' or '\'', or a nonempty run of bytes other than white
+ * space, '"', '\'', '=', '<', '>' and '`'. White space in a tag is spaces,
+ * tabs and at most one line ending.
+ *
+ * The construct may cross lines (between attributes, in a quoted value and
+ * in the four kinds with an end string); it is read through the cursor, so
+ * only the content of the lines counts and an end string never spans a line
+ * ending. The cursor is on the '<'. On a match, moves the cursor right after
+ * the last '>' and returns true; otherwise returns false and leaves the
+ * cursor where it was.
+ *
+ * When a search for the end of a comment, a processing instruction, a
+ * declaration or a CDATA section reaches the end of the content, sets the
+ * bit of that kind in memo->html_no_end; while the bit is set, that kind is
+ * answered "no" without searching. The scans of one content must therefore
+ * be made in increasing order of position.
+ */
+bool amark_inline_scan_html(amark_cursor_t *cursor,
+                            amark_inline_scan_memo_t *memo);
 
 #endif /* AMARK_INLINE_SCAN_H */

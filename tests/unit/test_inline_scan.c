@@ -19,6 +19,16 @@
  * hexadecimal digits, a missing ';', names not in the table, the values 0,
  * surrogates and over U+10FFFF, and references that would cross a line.
  *
+ * Autolinks: schemes of 1, 2, 32 and 33 characters, URIs with a space, '<'
+ * or a control character, the shapes of an email address and the lengths
+ * of its labels, and autolinks that would cross a line.
+ *
+ * Raw HTML: the tags of the HTML block tests of start condition 7
+ * (tests/unit/test_scan.c), the examples of CommonMark 0.31.2 section 6.6,
+ * matches and mismatches of the six kinds, "<!-->" and "<!--->", line
+ * endings between attributes and in values, bytes outside the content of
+ * the lines, and the bit each of the four unclosed kinds sets in the memo.
+ *
  * Whenever a scan does not match, the cursor must not move.
  */
 
@@ -810,6 +820,685 @@ NAOS_TEST(entity_does_not_change_the_content)
     NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), input, sizeof(copy));
 }
 
+/* ---- autolinks ---------------------------------------------------------- */
+
+/*
+ * Checks that cursor is a cursor of the content at index placed at its
+ * position with amark_cursor_seek, line records included.
+ */
+static void check_placed(const amark_cursor_t *cursor, size_t index)
+{
+    amark_cursor_t expected;
+
+    cursor_at(&expected, index, cursor->pos);
+    check_unmoved(cursor, &expected);
+}
+
+/*
+ * Scans an autolink at pos of the content at index. Returns the position
+ * right after it and writes its type to *type, or returns 0 if it does not
+ * match; then checks that the cursor and *type did not change.
+ */
+static size_t autolink_end(size_t index, size_t pos,
+                           amark_autolink_type_t *type)
+{
+    amark_cursor_t cursor;
+    amark_cursor_t saved;
+    size_t calls = g_state.malloc_calls;
+
+    *type = AMARK_AUTOLINK_TYPE_NONE;
+    cursor_at(&cursor, index, pos);
+    saved = cursor;
+    if (!amark_inline_scan_autolink(&cursor, type)) {
+        check_unmoved(&cursor, &saved);
+        NAOS_CHECK_INT_EQ(*type, AMARK_AUTOLINK_TYPE_NONE);
+        NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+        return 0;
+    }
+    NAOS_CHECK_UINT_EQ(cursor.line, saved.line);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+    return cursor.pos;
+}
+
+/*
+ * Parses "x " and s, so that s is inside a paragraph, and returns the length
+ * of the autolink at the start of s (0 if none), writing its type to *type.
+ */
+static size_t autolink_in(const char *s, amark_autolink_type_t *type)
+{
+    size_t length = strlen(s);
+    size_t end;
+
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE - 2);
+    g_buffer[0] = 'x';
+    g_buffer[1] = ' ';
+    memcpy(g_buffer + 2, s, length);
+    parse_buffer(length + 2);
+    end = autolink_end(0, 2, type);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    return end == 0 ? 0 : end - 2;
+}
+
+/* The length of the autolink at the start of s if it is a URI, else 0. */
+static size_t uri_in(const char *s)
+{
+    amark_autolink_type_t type;
+    size_t length = autolink_in(s, &type);
+
+    NAOS_CHECK_TRUE(length == 0 || type == AMARK_AUTOLINK_URI);
+    return type == AMARK_AUTOLINK_URI ? length : 0;
+}
+
+/* The length of the autolink at the start of s if it is an email, else 0. */
+static size_t email_in(const char *s)
+{
+    amark_autolink_type_t type;
+    size_t length = autolink_in(s, &type);
+
+    NAOS_CHECK_TRUE(length == 0 || type == AMARK_AUTOLINK_EMAIL);
+    return type == AMARK_AUTOLINK_EMAIL ? length : 0;
+}
+
+/* The length of the autolink at the start of s, of either type, or 0. */
+static size_t any_autolink_in(const char *s)
+{
+    amark_autolink_type_t type;
+
+    return autolink_in(s, &type);
+}
+
+NAOS_TEST(autolink_uri_examples)
+{
+    NAOS_CHECK_UINT_EQ(uri_in("<http://foo.bar.baz>"), 20);
+    NAOS_CHECK_UINT_EQ(
+        uri_in("<https://foo.bar.baz/test?q=hello&id=22&boolean>"), 48);
+    NAOS_CHECK_UINT_EQ(uri_in("<irc://foo.bar:2233/baz>"), 24);
+    NAOS_CHECK_UINT_EQ(uri_in("<MAILTO:FOO@BAR.BAZ>"), 20);
+    NAOS_CHECK_UINT_EQ(uri_in("<a+b+c:d>"), 9);
+    NAOS_CHECK_UINT_EQ(uri_in("<made-up-scheme://foo,bar>"), 26);
+    NAOS_CHECK_UINT_EQ(uri_in("<https://../>"), 13);
+    NAOS_CHECK_UINT_EQ(uri_in("<localhost:5001/foo>"), 20);
+    NAOS_CHECK_UINT_EQ(uri_in("<https://example.com/\\[\\>"), 25);
+    NAOS_CHECK_UINT_EQ(uri_in("<ab:>"), 5);
+    NAOS_CHECK_UINT_EQ(uri_in("<a.b-c+d:x>"), 11);
+    /* Bytes over 0x7F are not control characters. */
+    NAOS_CHECK_UINT_EQ(uri_in("<http://a\xC3\xA4\xFF>"), 13);
+    /* Only the first '>' ends it. */
+    NAOS_CHECK_UINT_EQ(uri_in("<ab:c>d>"), 6);
+}
+
+NAOS_TEST(autolink_scheme_lengths)
+{
+    char s[64];
+
+    /* 1 and 2 characters. */
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a:b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<m:abc>"), 0);
+    NAOS_CHECK_UINT_EQ(uri_in("<ab:c>"), 6);
+    /* 32 and 33 characters. */
+    memset(s, 'a', sizeof(s));
+    s[0] = '<';
+    memcpy(s + 33, ":x>", 4);
+    NAOS_CHECK_UINT_EQ(uri_in(s), 36);
+    s[1] = 'Z';
+    s[32] = '9';
+    NAOS_CHECK_UINT_EQ(uri_in(s), 36);
+    memset(s + 1, 'a', 33);
+    memcpy(s + 34, ":x>", 4);
+    NAOS_CHECK_UINT_EQ(any_autolink_in(s), 0);
+    /* The scheme starts with a letter and has no other bytes. */
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<1a:b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<+a:b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a_b:c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a b:c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<:b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<ab>"), 0);
+}
+
+NAOS_TEST(autolink_uri_without_space_lt_or_controls)
+{
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<http://foo.bar/baz bim>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<http://a<b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<http://a\tb>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<http://a\x01" "b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<http://a\x1F" "b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<http://a\x7F" "b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("< http://foo.bar >"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<http://foo.bar"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<"), 0);
+}
+
+NAOS_TEST(autolink_email_examples)
+{
+    NAOS_CHECK_UINT_EQ(email_in("<foo@bar.example.com>"), 21);
+    NAOS_CHECK_UINT_EQ(email_in("<foo+special@Bar.baz-bar0.com>"), 30);
+    NAOS_CHECK_UINT_EQ(email_in("<a@b>"), 5);
+    NAOS_CHECK_UINT_EQ(email_in("<a@b.c>"), 7);
+    NAOS_CHECK_UINT_EQ(email_in("<.!#$%&'*+/=?^_`{|}~-@a>"), 24);
+    NAOS_CHECK_UINT_EQ(email_in("<a@0-9.Z>"), 9);
+    /* Not an email: '\', no '@', no local part, bad labels. */
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<foo\\+@bar.example.com>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<foo.bar.baz>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<@b.c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@-b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b->"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b.-c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b..c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b.>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@.b>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b_c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b@c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a b@c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b c>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b\xC3\xA4>"), 0);
+    NAOS_CHECK_UINT_EQ(any_autolink_in("<a@b.c"), 0);
+}
+
+NAOS_TEST(autolink_email_label_lengths)
+{
+    char s[160];
+
+    /* "<a@" + 63 characters + ".c>": 3 + 63 + 3. */
+    memcpy(s, "<a@", 3);
+    memset(s + 3, 'b', 63);
+    memcpy(s + 66, ".c>", 4);
+    NAOS_CHECK_UINT_EQ(email_in(s), 69);
+    s[4] = '-';
+    NAOS_CHECK_UINT_EQ(email_in(s), 69);
+    memset(s + 3, 'b', 64);
+    memcpy(s + 67, ".c>", 4);
+    NAOS_CHECK_UINT_EQ(any_autolink_in(s), 0);
+    /* The last label too. */
+    memcpy(s, "<a@b.", 5);
+    memset(s + 5, 'c', 63);
+    memcpy(s + 68, ">", 2);
+    NAOS_CHECK_UINT_EQ(email_in(s), 69);
+    memset(s + 5, 'c', 64);
+    memcpy(s + 69, ">", 2);
+    NAOS_CHECK_UINT_EQ(any_autolink_in(s), 0);
+}
+
+NAOS_TEST(autolink_stays_in_one_line)
+{
+    amark_autolink_type_t type;
+
+    PARSE("x <http://a\nb> <a@b\n.c> <a\n@b>");
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 2, &type), 0);
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 15, &type), 0);
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 24, &type), 0);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* An autolink on a later line of a block quote. */
+    PARSE("> a\n> <http://b> <c@d>\n");
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 6, &type), 16);
+    NAOS_CHECK_INT_EQ(type, AMARK_AUTOLINK_URI);
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 17, &type), 22);
+    NAOS_CHECK_INT_EQ(type, AMARK_AUTOLINK_EMAIL);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* The end of the content, before a trailing space. */
+    PARSE("x <http://a   \n");
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 2, &type), 0);
+}
+
+NAOS_TEST(autolink_does_not_change_the_content)
+{
+    static const char input[] = "<http://a> <b@c> <d>";
+    unsigned char copy[sizeof(input) - 1];
+    amark_autolink_type_t type;
+
+    PARSE("<http://a> <b@c> <d>");
+    memcpy(copy, g_buffer, sizeof(copy));
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 0, &type), 10);
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 11, &type), 16);
+    NAOS_CHECK_UINT_EQ(autolink_end(0, 17, &type), 0);
+    NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), copy, sizeof(copy));
+    NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), input, sizeof(copy));
+}
+
+/* ---- raw HTML ----------------------------------------------------------- */
+
+/*
+ * Scans raw HTML at pos of the content at index. Returns the position right
+ * after it, or 0 if it does not match; then checks that the cursor did not
+ * move. On a match, checks that the cursor's line records are those of its
+ * position.
+ */
+static size_t html_end(size_t index, size_t pos)
+{
+    amark_cursor_t cursor;
+    amark_cursor_t saved;
+    size_t calls = g_state.malloc_calls;
+
+    cursor_at(&cursor, index, pos);
+    saved = cursor;
+    if (!amark_inline_scan_html(&cursor, &g_memo)) {
+        check_unmoved(&cursor, &saved);
+        NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+        return 0;
+    }
+    check_placed(&cursor, index);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+    return cursor.pos;
+}
+
+/*
+ * Parses "x " and s, so that s is inside a paragraph, and returns the length
+ * of the raw HTML at the start of s, or 0 if there is none. The memo is
+ * started on the new content.
+ */
+static size_t html_in(const char *s)
+{
+    size_t length = strlen(s);
+    size_t end;
+
+    NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE - 2);
+    g_buffer[0] = 'x';
+    g_buffer[1] = ' ';
+    memcpy(g_buffer + 2, s, length);
+    parse_buffer(length + 2);
+    end = html_end(0, 2);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    return end == 0 ? 0 : end - 2;
+}
+
+#define HTML_ALL(s) NAOS_CHECK_UINT_EQ(html_in(s), sizeof(s) - 1)
+#define HTML_NONE(s) NAOS_CHECK_UINT_EQ(html_in(s), 0)
+
+/*
+ * The tags of the HTML block tests of start condition 7 (tests/unit/
+ * test_scan.c, html_start_type_7_*). Inline, a tag may be followed by
+ * anything, so the tags those tests reject for what follows them match here.
+ */
+NAOS_TEST(html_open_tags_of_the_block_tests)
+{
+    HTML_ALL("<a href=\"foo\">");
+    HTML_ALL("<Warning>");
+    HTML_ALL("<del>");
+    HTML_ALL("<a/>");
+    HTML_ALL("<a />");
+    HTML_ALL("<my-tag1>");
+    HTML_ALL("<a b c>");
+    HTML_ALL("<a _b :c.d-e_f=1>");
+    HTML_ALL("<a b='x\"y' c=\"x'y\" d=z>");
+    HTML_ALL("<a b = 'c' >");
+    HTML_ALL("<a b=''>");
+    HTML_ALL("<a\tb\t=\t\"c\"\t/>");
+    HTML_ALL("<Prez>");
+    HTML_ALL("<h7>");
+    HTML_ALL("<h>");
+    HTML_ALL("<abc>");
+    /* Followed by something. */
+    NAOS_CHECK_UINT_EQ(html_in("<a>  \t"), 3);
+    NAOS_CHECK_UINT_EQ(html_in("<a> x"), 3);
+    NAOS_CHECK_UINT_EQ(html_in("<del>*foo*</del>"), 5);
+    NAOS_CHECK_UINT_EQ(html_in("<a><b>"), 3);
+    NAOS_CHECK_UINT_EQ(html_in("<a>\xC2\xA0"), 3);
+}
+
+NAOS_TEST(html_closing_tags_of_the_block_tests)
+{
+    HTML_ALL("</a>");
+    HTML_ALL("</a \t>");
+    HTML_ALL("</ins>");
+    HTML_ALL("</pre>");
+    HTML_ALL("</SCRIPT>");
+    HTML_NONE("</a");
+    HTML_NONE("</");
+    HTML_NONE("</a b>");
+    HTML_NONE("</a/>");
+    HTML_NONE("</ a>");
+    HTML_NONE("</1>");
+}
+
+NAOS_TEST(html_tags_the_block_tests_reject)
+{
+    /* Incomplete tags. */
+    HTML_NONE("<a");
+    HTML_NONE("<a href=\"foo");
+    HTML_NONE("<a href='foo>");
+    HTML_NONE("<a b=");
+    HTML_NONE("<a b=>");
+    /* Bad names, attributes and values. */
+    HTML_NONE("<1a>");
+    HTML_NONE("<a_b>");
+    HTML_NONE("<a.b>");
+    HTML_NONE("<a 1b>");
+    HTML_NONE("<a b=c=d>");
+    HTML_NONE("<a b=c`d>");
+    HTML_NONE("<a b=c<d>");
+    HTML_NONE("<a b=\"c\"d>");
+    HTML_NONE("<a b='c'd='e'>");
+    HTML_NONE("<a/ >");
+    HTML_NONE("<a//>");
+    HTML_NONE("<a\xC2\xA0" "b>");
+    HTML_NONE("<a\vb>");
+    HTML_NONE("<div/x>");
+    HTML_NONE("< div>");
+    HTML_NONE("<</div>");
+    HTML_NONE("<>");
+    HTML_NONE("<");
+}
+
+/* CommonMark 0.31.2, section 6.6, examples 613 to 632. */
+NAOS_TEST(html_spec_examples)
+{
+    /* 613, 614 */
+    NAOS_CHECK_UINT_EQ(html_in("<a><bab><c2c>"), 3);
+    HTML_ALL("<bab>");
+    HTML_ALL("<c2c>");
+    HTML_ALL("<a/>");
+    HTML_ALL("<b2/>");
+    /* 617 */
+    HTML_ALL("<a foo=\"bar\" bam = 'baz <em>\"</em>'\n_boolean zoop:33=zoop:33 />");
+    /* 618 */
+    HTML_ALL("<responsive-image src=\"foo.jpg\" />");
+    /* 619, 620, 621 */
+    HTML_NONE("<33>");
+    HTML_NONE("<__>");
+    HTML_NONE("<a h*#ref=\"hi\">");
+    HTML_NONE("<a href=\"hi'>");
+    HTML_NONE("<a href=hi'>");
+    /* 622 */
+    HTML_NONE("< a>");
+    HTML_NONE("<bar/ >");
+    HTML_NONE("<foo bar=baz\nbim!bop />");
+    /* 623 */
+    HTML_NONE("<a href='bar'title=title>");
+    /* 624, 625 */
+    HTML_ALL("</a>");
+    HTML_ALL("</foo >");
+    HTML_NONE("</a href=\"foo\">");
+    /* 626, 627, 628 */
+    HTML_ALL("<!-- this is a --\ncomment - with hyphens -->");
+    NAOS_CHECK_UINT_EQ(html_in("<!--> foo -->"), 5);
+    NAOS_CHECK_UINT_EQ(html_in("<!---> foo -->"), 6);
+    /* 629, 630, 631 */
+    HTML_ALL("<?php echo $a; ?>");
+    HTML_ALL("<!ELEMENT br EMPTY>");
+    HTML_ALL("<![CDATA[>&<]]>");
+    /* 632 and the examples with escapes in values */
+    HTML_ALL("<a href=\"&ouml;\">");
+    HTML_ALL("<a href=\"\\*\">");
+    HTML_NONE("<a href=\"\\\"\">");
+}
+
+NAOS_TEST(html_comments)
+{
+    HTML_ALL("<!-->");
+    HTML_ALL("<!--->");
+    HTML_ALL("<!---->");
+    HTML_ALL("<!-- a -- b -->");
+    HTML_ALL("<!--a-->");
+    HTML_ALL("<!-- <!-- -->");
+    NAOS_CHECK_UINT_EQ(html_in("<!-- a --> b -->"), 10);
+    HTML_NONE("<!-- a --!>");
+    HTML_NONE("<!-- a ->");
+    HTML_NONE("<!--");
+    HTML_NONE("<!-");
+    HTML_NONE("<!- a -->");
+    HTML_NONE("<!-- a");
+}
+
+NAOS_TEST(html_processing_instructions)
+{
+    HTML_ALL("<?a?>");
+    HTML_ALL("<?" "?>");
+    HTML_ALL("<?>?>");
+    HTML_ALL("<? a > b ?>");
+    NAOS_CHECK_UINT_EQ(html_in("<?a?> b ?>"), 5);
+    HTML_NONE("<?>");
+    HTML_NONE("<?");
+    HTML_NONE("<? a ? >");
+}
+
+NAOS_TEST(html_declarations)
+{
+    HTML_ALL("<!DOCTYPE html>");
+    HTML_ALL("<!a>");
+    HTML_ALL("<!Ab-c d=\"e\">");
+    NAOS_CHECK_UINT_EQ(html_in("<!a> b>"), 4);
+    HTML_NONE("<!>");
+    HTML_NONE("<!1>");
+    HTML_NONE("<! a>");
+    HTML_NONE("<!a");
+}
+
+NAOS_TEST(html_cdata_sections)
+{
+    HTML_ALL("<![CDATA[x]]>");
+    HTML_ALL("<![CDATA[]]>");
+    HTML_ALL("<![CDATA[a]]b]>]]>");
+    NAOS_CHECK_UINT_EQ(html_in("<![CDATA[a]]> b]]>"), 13);
+    HTML_NONE("<![CDATA[");
+    HTML_NONE("<![CDATA[x]>");
+    HTML_NONE("<![CDATA>");
+    HTML_NONE("<![CDAT[x]]>");
+}
+
+NAOS_TEST(html_across_lines)
+{
+    /* Between attributes, around '=' and before the end. */
+    HTML_ALL("<a\nb>");
+    HTML_ALL("<a \n b\n= 'c'\n/>");
+    HTML_ALL("<a b =\n'c'>");
+    HTML_ALL("<b2\ndata=\"foo\" >");
+    HTML_ALL("<a b\n/>");
+    /*
+     * A closing tag takes only white space after its name, which may hold
+     * one line ending. A '>' at the start of a line would open a block
+     * quote, so the continuation line is indented (an indented code block
+     * cannot interrupt a paragraph).
+     */
+    NAOS_CHECK_UINT_EQ(html_in("</a\n    >"), 9);
+    NAOS_CHECK_UINT_EQ(html_in("</a\nb>"), 0);
+    /* In a quoted value. */
+    HTML_ALL("<a b=\"c\nd\">");
+    HTML_ALL("<a b='c\nd'>");
+    HTML_ALL("<a b=\"\n\">");
+    /* The four kinds with an end string. */
+    HTML_ALL("<!-- a\nb -->");
+    HTML_ALL("<?a\nb?>");
+    HTML_ALL("<!A\nB>");
+    HTML_ALL("<![CDATA[a\nb]]>");
+    /* An unquoted value and a name end at the line ending. */
+    HTML_ALL("<a b=c\nd>");
+    NAOS_CHECK_UINT_EQ(html_in("<a\n/>x"), 5);
+    /* An end string does not span a line ending. */
+    HTML_NONE("<!-- a -\n->");
+    HTML_NONE("<!-- a --\n>");
+    HTML_NONE("<? a ?\n>");
+    HTML_NONE("<![CDATA[a]]\n>");
+    /* The opening string and the tag name stay in the line of the '<'. */
+    HTML_NONE("<\na>");
+    HTML_NONE("<!-\n- a -->");
+    HTML_NONE("</\na>");
+    HTML_NONE("<!\nA>");
+}
+
+NAOS_TEST(html_across_lines_reads_only_the_content)
+{
+    /* A block quote: the second line's prefix is "> ". */
+    PARSE("> x <a b='c\n> d'>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 4), 17);
+    /*
+     * The prefix turned into quotes behind the parser's back: they are not
+     * content, so the value still ends after "d".
+     */
+    g_buffer[12] = '\'';
+    g_buffer[13] = '\'';
+    NAOS_CHECK_UINT_EQ(html_end(0, 4), 17);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* A comment whose end would be "--" + a prefix '>'. */
+    PARSE("> x <!-- a --\n> b -->");
+    NAOS_CHECK_UINT_EQ(html_end(0, 4), 21);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* A list item's indentation turned into '>' is not the end of a tag. */
+    PARSE("- x <a\n  b>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 4), 11);
+    g_buffer[8] = '>';
+    NAOS_CHECK_UINT_EQ(html_end(0, 4), 11);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* A lazy continuation line and a setext heading. */
+    PARSE("> x <a\nb='c'>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 4), 13);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    PARSE("x <!--\n-->\n===\n");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 10);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* CR LF and CR. */
+    PARSE("x <a\r\nb='\rc'>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 13);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* The content ends: a blank line, another block, a heading. */
+    PARSE("x <a\n\nb>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 0);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    PARSE("x <a b='\n\n'>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 0);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    PARSE("# x <a\nb>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 4), 0);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    PARSE("x <!--\n# -->");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 0);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* The end of the content before trailing spaces. */
+    PARSE("x <a   \n");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 0);
+}
+
+NAOS_TEST(html_unclosed_kinds_set_their_bit)
+{
+    static const struct {
+        const char *input;
+        size_t second; /* the second opening, in "x " + input */
+        size_t fix;    /* the byte that turns into end, in "x " + input */
+        char end;
+        unsigned bit;
+    } cases[] = {
+        { "<!-- a <!-- b --x", 9, 18, '>', AMARK_INLINE_SCAN_NO_END_COMMENT },
+        { "<? a <? b ?x", 7, 13, '>', AMARK_INLINE_SCAN_NO_END_PI },
+        { "<!A a <!B b x", 8, 14, '>',
+          AMARK_INLINE_SCAN_NO_END_DECLARATION },
+        { "<![CDATA[ a <![CDATA[ b ]]x", 14, 28, '>',
+          AMARK_INLINE_SCAN_NO_END_CDATA },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        size_t length = strlen(cases[i].input);
+
+        g_buffer[0] = 'x';
+        g_buffer[1] = ' ';
+        memcpy(g_buffer + 2, cases[i].input, length);
+        parse_buffer(length + 2);
+        NAOS_CHECK_UINT_EQ(g_memo.html_no_end, 0);
+        NAOS_CHECK_UINT_EQ(html_end(0, 2), 0);
+        NAOS_CHECK_UINT_EQ(g_memo.html_no_end, cases[i].bit);
+        /*
+         * The end appears behind the memo's back. The bit says there is no
+         * end in the rest, so the scan does not search.
+         */
+        NAOS_REQUIRE_UINT_EQ(cases[i].fix, length + 1);
+        g_buffer[cases[i].fix] = cases[i].end;
+        NAOS_CHECK_UINT_EQ(html_end(0, cases[i].second), 0);
+        /* Started again, the memo knows nothing and the search finds it. */
+        amark_inline_scan_memo_begin(&g_memo);
+        NAOS_CHECK_UINT_EQ(html_end(0, cases[i].second), length + 2);
+        NAOS_CHECK_UINT_EQ(g_memo.html_no_end, 0);
+        g_doc = (amark_document_destroy(g_doc), NULL);
+    }
+}
+
+NAOS_TEST(html_bits_are_per_kind)
+{
+    /* Every kind unclosed, then each kind closed once. */
+    PARSE("x <!-- <? <!A <![CDATA[ <a b=\"");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 0);
+    NAOS_CHECK_UINT_EQ(g_memo.html_no_end, AMARK_INLINE_SCAN_NO_END_COMMENT);
+    NAOS_CHECK_UINT_EQ(html_end(0, 7), 0);
+    NAOS_CHECK_UINT_EQ(g_memo.html_no_end,
+                       AMARK_INLINE_SCAN_NO_END_COMMENT |
+                           AMARK_INLINE_SCAN_NO_END_PI);
+    NAOS_CHECK_UINT_EQ(html_end(0, 10), 0);
+    NAOS_CHECK_UINT_EQ(html_end(0, 14), 0);
+    /* An unclosed tag sets no bit. */
+    NAOS_CHECK_UINT_EQ(html_end(0, 24), 0);
+    NAOS_CHECK_UINT_EQ(g_memo.html_no_end,
+                       AMARK_INLINE_SCAN_NO_END_COMMENT |
+                           AMARK_INLINE_SCAN_NO_END_PI |
+                           AMARK_INLINE_SCAN_NO_END_DECLARATION |
+                           AMARK_INLINE_SCAN_NO_END_CDATA);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* A comment with no end does not stop the other kinds. */
+    PARSE("x <!-- <?a?> <!A> <![CDATA[]]> <a>");
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 0);
+    NAOS_CHECK_UINT_EQ(html_end(0, 7), 12);
+    NAOS_CHECK_UINT_EQ(html_end(0, 13), 17);
+    NAOS_CHECK_UINT_EQ(html_end(0, 18), 30);
+    NAOS_CHECK_UINT_EQ(html_end(0, 31), 34);
+    NAOS_CHECK_UINT_EQ(g_memo.html_no_end, AMARK_INLINE_SCAN_NO_END_COMMENT);
+    g_doc = (amark_document_destroy(g_doc), NULL);
+
+    /* "<!-->" and "<!--->" need no search, so the bit does not stop them. */
+    PARSE("x <!--> <!--->");
+    g_memo.html_no_end = AMARK_INLINE_SCAN_NO_END_COMMENT;
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 7);
+    NAOS_CHECK_UINT_EQ(html_end(0, 8), 14);
+}
+
+NAOS_TEST(html_many_unclosed_openings)
+{
+    size_t length = 0;
+    size_t i;
+    size_t n = 0;
+
+    /* "<!--" repeated: one search, then answers from the memo. */
+    fill(&length, 'x', 1);
+    for (i = 0; i < 4000; i++) {
+        fill(&length, ' ', 1);
+        fill(&length, '<', 1);
+        fill(&length, '!', 1);
+        fill(&length, '-', 2);
+    }
+    parse_buffer(length);
+    for (i = 2; i < length; i += 5) {
+        n += html_end(0, i) == 0;
+    }
+    NAOS_CHECK_UINT_EQ(n, 4000);
+    NAOS_CHECK_UINT_EQ(g_memo.html_no_end, AMARK_INLINE_SCAN_NO_END_COMMENT);
+}
+
+NAOS_TEST(html_does_not_change_the_content)
+{
+    static const char input[] = "> <a b='c\n> d'> <!-- e --> <f";
+    unsigned char copy[sizeof(input) - 1];
+
+    PARSE("> <a b='c\n> d'> <!-- e --> <f");
+    memcpy(copy, g_buffer, sizeof(copy));
+    NAOS_CHECK_UINT_EQ(html_end(0, 2), 15);
+    NAOS_CHECK_UINT_EQ(html_end(0, 16), 26);
+    NAOS_CHECK_UINT_EQ(html_end(0, 27), 0);
+    NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), copy, sizeof(copy));
+    NAOS_CHECK_MEM_EQ(g_buffer, sizeof(copy), input, sizeof(copy));
+}
+
 NAOS_SUITE(code_span,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -855,8 +1544,41 @@ NAOS_SUITE(entity,
     NAOS_ADD_TEST(entity_does_not_change_the_content)
 )
 
+NAOS_SUITE(autolink,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(autolink_uri_examples),
+    NAOS_ADD_TEST(autolink_scheme_lengths),
+    NAOS_ADD_TEST(autolink_uri_without_space_lt_or_controls),
+    NAOS_ADD_TEST(autolink_email_examples),
+    NAOS_ADD_TEST(autolink_email_label_lengths),
+    NAOS_ADD_TEST(autolink_stays_in_one_line),
+    NAOS_ADD_TEST(autolink_does_not_change_the_content)
+)
+
+NAOS_SUITE(html,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(html_open_tags_of_the_block_tests),
+    NAOS_ADD_TEST(html_closing_tags_of_the_block_tests),
+    NAOS_ADD_TEST(html_tags_the_block_tests_reject),
+    NAOS_ADD_TEST(html_spec_examples),
+    NAOS_ADD_TEST(html_comments),
+    NAOS_ADD_TEST(html_processing_instructions),
+    NAOS_ADD_TEST(html_declarations),
+    NAOS_ADD_TEST(html_cdata_sections),
+    NAOS_ADD_TEST(html_across_lines),
+    NAOS_ADD_TEST(html_across_lines_reads_only_the_content),
+    NAOS_ADD_TEST(html_unclosed_kinds_set_their_bit),
+    NAOS_ADD_TEST(html_bits_are_per_kind),
+    NAOS_ADD_TEST(html_many_unclosed_openings),
+    NAOS_ADD_TEST(html_does_not_change_the_content)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(code_span),
     NAOS_ADD_SUITE(memo),
-    NAOS_ADD_SUITE(entity)
+    NAOS_ADD_SUITE(entity),
+    NAOS_ADD_SUITE(autolink),
+    NAOS_ADD_SUITE(html)
 )
