@@ -122,4 +122,37 @@ amark_error_t amark_delimiters_push(amark_delimiters_t *delims,
                                     size_t kind, bool can_open,
                                     bool can_close, size_t length);
 
+/*
+ * Matches the delimiters on the stack whose items start at bottom or later
+ * (the stack bottom of CommonMark 0.31.2, appendix "process emphasis"),
+ * makes emphasis of them in draft, and takes all of them off the stack. The
+ * elements below are left as they are.
+ *
+ * Every closer, from the bottom up, looks down the stack for the nearest
+ * opener of its kind. A pair is skipped when either run can both open and
+ * close, the sum of the original lengths is a multiple of 3 and the closer's
+ * original length is not (rules 9 and 10). The pair uses two delimiters on
+ * each side (the kind's pair) when both runs have two or more left, and one
+ * (the kind's single) otherwise. The items between the opener's item and the
+ * closer's item are wrapped in a new item whose range is
+ * [opener's end - used, closer's start + used); the opener's end and the
+ * closer's start then shrink by the number used, and an item left empty is
+ * removed from draft and from the stack. The delimiters between the pair
+ * are taken off the stack.
+ *
+ * A closer without an opener sets the lower bound of the search for its
+ * kind, whether it can open, and its original length modulo 3, so later
+ * searches of the same class do not look below it; the bound is a position
+ * on the stack, so taking elements off does not loosen it. A closer that
+ * cannot open is then taken off the stack.
+ *
+ * The items of the delimiters on the stack must be children of the root of
+ * draft. On failure (amark_draft_wrap's AMARK_ERROR_NOMEM or
+ * AMARK_ERROR_LIMIT_EXCEEDED) returns at once; the draft is still a tree
+ * and the stack still a list, but the content is to be abandoned.
+ */
+amark_error_t amark_delimiters_process(amark_delimiters_t *delims,
+                                       amark_draft_t *draft,
+                                       size_t bottom);
+
 #endif /* AMARK_DELIMITER_H */
