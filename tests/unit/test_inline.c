@@ -16,10 +16,16 @@
  * children for the other blocks, the empty ATX heading, a parsed range that
  * does not start at 0, special bytes that start no structure as text, bytes
  * outside ASCII and U+0000 in texts, the depth and node count limits counted
- * from the paragraph's depth, and the tree check on every tree. Through the
- * public entry amark_parse: the block nodes (kinds, ranges, lines,
- * attributes and order) are those of the block parser alone, and the inline
- * nodes follow them.
+ * from the paragraph's depth, and the tree check on every tree. The
+ * structures read to their end at the special byte: backslash escapes (and
+ * a backslash before a line ending as a hard break), character references,
+ * code spans (a whole unmatched backtick string as text, a string after an
+ * escaped backtick), autolinks and raw HTML, across lines without breaks,
+ * and their precedence (the one that starts first wins, no special byte
+ * inside them starts anything, an escaped special byte starts nothing).
+ * Through the public entry amark_parse: the block nodes (kinds, ranges,
+ * lines, attributes and order) are those of the block parser alone, and
+ * the inline nodes follow them.
  */
 
 #include "arena.h"
@@ -576,6 +582,409 @@ NAOS_TEST(contents_are_parsed_in_document_order)
     check_bytes_covered();
 }
 
+/* ---- Backslash escapes ---- */
+
+NAOS_TEST(a_backslash_before_ascii_punctuation_is_an_escape)
+{
+    PARSE("a\\*b\\\\c");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"a\") (esc \"\\\\*\") "
+                              "(text \"b\") (esc \"\\\\\\\\\") "
+                              "(text \"c\")))");
+    check_child(0, AMARK_KIND_TEXT, 0, 1, 1);
+    check_child(1, AMARK_KIND_BACKSLASH_ESCAPE, 1, 3, 1);
+    check_child(2, AMARK_KIND_TEXT, 3, 4, 1);
+    check_child(3, AMARK_KIND_BACKSLASH_ESCAPE, 4, 6, 1);
+    check_child(4, AMARK_KIND_TEXT, 6, 7, 1);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 5);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(every_ascii_punctuation_character_can_be_escaped)
+{
+    static const char punctuation[] = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+    char input[2 * (sizeof(punctuation) - 1)];
+    size_t i;
+
+    for (i = 0; i < sizeof(punctuation) - 1; i++) {
+        input[2 * i] = '\\';
+        input[2 * i + 1] = punctuation[i];
+    }
+    parse_bytes(input, sizeof(input));
+    NAOS_REQUIRE_UINT_EQ(child_count(block_at(0)), sizeof(punctuation) - 1);
+    for (i = 0; i < sizeof(punctuation) - 1; i++) {
+        NAOS_TRACE_PUSH("escape %lu", (unsigned long)i);
+        check_child(i, AMARK_KIND_BACKSLASH_ESCAPE, 2 * i, 2 * i + 2, 1);
+        NAOS_TRACE_POP();
+    }
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(a_backslash_before_anything_else_is_text)
+{
+    /* A letter, a space, a byte outside ASCII and a backslash that is the
+     * last byte of the content: all text, joined into one node. */
+    PARSE("\\a \\ b\\\xC3\xA9 c\\");
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+    check_child(0, AMARK_KIND_TEXT, 0, 12, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(a_backslash_before_a_line_ending_is_a_hard_break)
+{
+    PARSE("foo\\\nbar");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"foo\") (br) (text \"bar\")))");
+    check_child(0, AMARK_KIND_TEXT, 0, 3, 1);
+    check_child(1, AMARK_KIND_HARD_BREAK, 3, 5, 1);
+    check_child(2, AMARK_KIND_TEXT, 5, 8, 2);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE("foo\\\r\nbar");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"foo\") (br) (text \"bar\")))");
+    check_child(1, AMARK_KIND_HARD_BREAK, 3, 6, 1);
+    check_child(2, AMARK_KIND_TEXT, 6, 9, 2);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE("foo\\\rbar");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"foo\") (br) (text \"bar\")))");
+    check_child(1, AMARK_KIND_HARD_BREAK, 3, 5, 1);
+    check_child(2, AMARK_KIND_TEXT, 5, 8, 2);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* The prefix of the next line is in no item. */
+    PARSE("> foo\\\n> bar");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (bq (p (text \"foo\") (br) (text \"bar\"))))");
+    check_child(0, AMARK_KIND_TEXT, 2, 5, 1);
+    check_child(1, AMARK_KIND_HARD_BREAK, 5, 7, 1);
+    check_child(2, AMARK_KIND_TEXT, 9, 12, 2);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* An escaped backslash before the line ending: a soft break. */
+    PARSE("foo\\\\\nbar");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"foo\") (esc \"\\\\\\\\\") "
+                              "(sbr) (text \"bar\")))");
+    check_child(1, AMARK_KIND_BACKSLASH_ESCAPE, 3, 5, 1);
+    check_child(2, AMARK_KIND_SOFT_BREAK, 5, 6, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+/* ---- Entity and numeric character references ---- */
+
+NAOS_TEST(character_references_are_one_node)
+{
+    PARSE("a &amp; b");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"a \") (ref \"&amp;\") "
+                              "(text \" b\")))");
+    check_child(0, AMARK_KIND_TEXT, 0, 2, 1);
+    check_child(1, AMARK_KIND_CHARACTER_REFERENCE, 2, 7, 1);
+    check_child(2, AMARK_KIND_TEXT, 7, 9, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* Numeric references, whatever their value. */
+    PARSE("&#0;&#1234567;&#xFFFFFF;&#XD800;");
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 4);
+    check_child(0, AMARK_KIND_CHARACTER_REFERENCE, 0, 4, 1);
+    check_child(1, AMARK_KIND_CHARACTER_REFERENCE, 4, 14, 1);
+    check_child(2, AMARK_KIND_CHARACTER_REFERENCE, 14, 24, 1);
+    check_child(3, AMARK_KIND_CHARACTER_REFERENCE, 24, 32, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* On the second line. */
+    PARSE("a\n&copy;");
+    check_child(2, AMARK_KIND_CHARACTER_REFERENCE, 2, 8, 2);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(an_ampersand_that_starts_no_reference_is_text)
+{
+    /* No ';', a name not in the table, too many digits, a reference cut by
+     * a line ending. */
+    PARSE("&amp &nosuch; &#12345678; &#x1234567; &am\np;");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"&amp &nosuch; &#12345678; "
+                              "&#x1234567; &am\") (sbr) (text \"p;\")))");
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 3);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+/* ---- Code spans ---- */
+
+NAOS_TEST(a_code_span_runs_from_the_opening_to_the_closing_string)
+{
+    PARSE("a `b` c");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"a \") (code \"`b`\") "
+                              "(text \" c\")))");
+    check_child(0, AMARK_KIND_TEXT, 0, 2, 1);
+    check_child(1, AMARK_KIND_CODE_SPAN, 2, 5, 1);
+    check_child(2, AMARK_KIND_TEXT, 5, 7, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* Only a string of the same length closes. */
+    PARSE("``a`b``");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (code \"``a`b``\")))");
+    check_child(0, AMARK_KIND_CODE_SPAN, 0, 7, 1);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(an_unmatched_backtick_string_is_text_as_a_whole)
+{
+    /* If only the first backtick were text, "``a``" would be a code span. */
+    PARSE("```a``b``");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"```a\") (code \"``b``\")))");
+    check_child(0, AMARK_KIND_TEXT, 0, 4, 1);
+    check_child(1, AMARK_KIND_CODE_SPAN, 4, 9, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(a_code_span_crosses_lines_without_breaks)
+{
+    PARSE("a `b  \nc` d");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"a \") (code \"`b  \\nc`\") "
+                              "(text \" d\")))");
+    check_child(1, AMARK_KIND_CODE_SPAN, 2, 9, 1);
+    check_child(2, AMARK_KIND_TEXT, 9, 11, 2);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 3);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* In a block quote: the range holds the prefix of the second line, and
+     * no break is made for the line ending inside. */
+    PARSE("> `a\n> b`");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (bq (p (code \"`a\\n> b`\"))))");
+    check_child(0, AMARK_KIND_CODE_SPAN, 2, 9, 1);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+    NAOS_CHECK_UINT_EQ(amark_node_end_line(g_doc, child_at(block_at(0), 0)),
+                       2);
+    NAOS_CHECK_TRUE(tree_ok());
+}
+
+NAOS_TEST(an_escaped_backtick_starts_a_new_string)
+{
+    /* The backticks after the escaped one are a string of their own. */
+    PARSE("\\``a`");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (esc \"\\\\`\") (code \"`a`\")))");
+    check_child(0, AMARK_KIND_BACKSLASH_ESCAPE, 0, 2, 1);
+    check_child(1, AMARK_KIND_CODE_SPAN, 2, 5, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE("\\```a``");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (esc \"\\\\`\") (code \"``a``\")))");
+    check_child(1, AMARK_KIND_CODE_SPAN, 2, 7, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* Inside a code span a backslash escapes nothing. */
+    PARSE("`a\\`b`");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (code \"`a\\\\`\") (text \"b`\")))");
+    check_child(0, AMARK_KIND_CODE_SPAN, 0, 4, 1);
+    check_child(1, AMARK_KIND_TEXT, 4, 6, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+/* ---- Autolinks ---- */
+
+NAOS_TEST(autolinks_are_one_node_with_their_type)
+{
+    PARSE("a <http://x.y/*_]> <foo@bar.example.com>");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (p (text \"a \") (autolink uri "
+                      "\"<http://x.y/*_]>\") (text \" \") (autolink email "
+                      "\"<foo@bar.example.com>\")))");
+    check_child(1, AMARK_KIND_AUTOLINK, 2, 18, 1);
+    check_child(3, AMARK_KIND_AUTOLINK, 19, 40, 1);
+    NAOS_CHECK_INT_EQ(amark_autolink_type(g_doc, child_at(block_at(0), 1)),
+                      AMARK_AUTOLINK_URI);
+    NAOS_CHECK_INT_EQ(amark_autolink_type(g_doc, child_at(block_at(0), 3)),
+                      AMARK_AUTOLINK_EMAIL);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* Backslashes and references inside are not read. */
+    PARSE("<made-up-scheme://a\\[&amp;>");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (autolink uri "
+                              "\"<made-up-scheme://a\\\\[&amp;>\")))");
+    check_child(0, AMARK_KIND_AUTOLINK, 0, 27, 1);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(a_less_than_sign_that_starts_nothing_is_text)
+{
+    /* A space in a URI, a line ending in an autolink, no tag. */
+    PARSE("<http://a b> <http://a\nb> < c");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"<http://a b> <http://a\") "
+                              "(sbr) (text \"b> < c\")))");
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+/* ---- Raw HTML ---- */
+
+NAOS_TEST(raw_html_is_one_node)
+{
+    PARSE("a <b>c</b>");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"a \") (html \"<b>\") "
+                              "(text \"c\") (html \"</b>\")))");
+    check_child(1, AMARK_KIND_RAW_HTML, 2, 5, 1);
+    check_child(2, AMARK_KIND_TEXT, 5, 6, 1);
+    check_child(3, AMARK_KIND_RAW_HTML, 6, 10, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    /* The other forms, and \ and & inside that are not read; after a
+     * text, as at the start of a line they would open an HTML block. */
+    PARSE("a <!-- *a* --><!--><?p \\* ?><!X &amp;><![CDATA[`]]>");
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (p (text \"a \") (html \"<!-- *a* -->\") "
+                      "(html \"<!-->\") (html \"<?p \\\\* ?>\") "
+                      "(html \"<!X &amp;>\") (html \"<![CDATA[`]]>\")))");
+    check_child(1, AMARK_KIND_RAW_HTML, 2, 14, 1);
+    check_child(2, AMARK_KIND_RAW_HTML, 14, 19, 1);
+    check_child(3, AMARK_KIND_RAW_HTML, 19, 28, 1);
+    check_child(4, AMARK_KIND_RAW_HTML, 28, 38, 1);
+    check_child(5, AMARK_KIND_RAW_HTML, 38, 51, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(raw_html_crosses_lines_without_breaks)
+{
+    PARSE("a <b\nc=\"d  \ne\">f");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"a \") "
+                              "(html \"<b\\nc=\\\"d  \\ne\\\">\") "
+                              "(text \"f\")))");
+    check_child(1, AMARK_KIND_RAW_HTML, 2, 15, 1);
+    check_child(2, AMARK_KIND_TEXT, 15, 16, 3);
+    NAOS_CHECK_UINT_EQ(amark_node_end_line(g_doc, child_at(block_at(0), 1)),
+                       3);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 3);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(html_that_does_not_close_is_text)
+{
+    /* Not at the start of a line, which would open an HTML block. */
+    PARSE("a <!-- b\nc <a href=\"x> <? d");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (text \"a <!-- b\") (sbr) "
+                              "(text \"c <a href=\\\"x> <? d\")))");
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+/* ---- Precedence ---- */
+
+NAOS_TEST(the_structure_that_starts_first_wins)
+{
+    PARSE("`<a href=\"`\">`");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (code \"`<a href=\\\"`\") "
+                              "(text \"\\\">`\")))");
+    check_child(0, AMARK_KIND_CODE_SPAN, 0, 11, 1);
+    check_child(1, AMARK_KIND_TEXT, 11, 14, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE("<a href=\"`\">`");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (html \"<a href=\\\"`\\\">\") "
+                              "(text \"`\")))");
+    check_child(0, AMARK_KIND_RAW_HTML, 0, 12, 1);
+    check_child(1, AMARK_KIND_TEXT, 12, 13, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE("`<http://foo.bar.`baz>`");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (code \"`<http://foo.bar.`\") "
+                              "(text \"baz>`\")))");
+    check_child(0, AMARK_KIND_CODE_SPAN, 0, 18, 1);
+    check_child(1, AMARK_KIND_TEXT, 18, 23, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+
+    PARSE("<http://foo.bar.`baz>`");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (autolink uri "
+                              "\"<http://foo.bar.`baz>\") (text \"`\")))");
+    check_child(0, AMARK_KIND_AUTOLINK, 0, 21, 1);
+    check_child(1, AMARK_KIND_TEXT, 21, 22, 1);
+    NAOS_CHECK_TRUE(tree_ok());
+}
+
+NAOS_TEST(special_bytes_inside_a_structure_start_nothing)
+{
+    /* Brackets, delimiters, backslashes and ampersands inside a code span,
+     * an autolink and raw HTML are part of that one node. */
+    PARSE("`[*_\\&amp;]`<ab:c/[*_]><x y='[*_\\&amp;]'>");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (code \"`[*_\\\\&amp;]`\") "
+                              "(autolink uri \"<ab:c/[*_]>\") "
+                              "(html \"<x y='[*_\\\\&amp;]'>\")))");
+    check_child(0, AMARK_KIND_CODE_SPAN, 0, 12, 1);
+    check_child(1, AMARK_KIND_AUTOLINK, 12, 23, 1);
+    check_child(2, AMARK_KIND_RAW_HTML, 23, 41, 1);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 3);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
+NAOS_TEST(an_escaped_special_byte_starts_nothing)
+{
+    PARSE("\\`a` \\<b> \\&amp; \\<http://c>");
+    NAOS_CHECK_STR_EQ(dump(), "(doc (p (esc \"\\\\`\") (text \"a` \") "
+                              "(esc \"\\\\<\") (text \"b> \") "
+                              "(esc \"\\\\&\") (text \"amp; \") "
+                              "(esc \"\\\\<\") (text \"http://c>\")))");
+    check_child(0, AMARK_KIND_BACKSLASH_ESCAPE, 0, 2, 1);
+    check_child(2, AMARK_KIND_BACKSLASH_ESCAPE, 5, 7, 1);
+    check_child(4, AMARK_KIND_BACKSLASH_ESCAPE, 10, 12, 1);
+    check_child(6, AMARK_KIND_BACKSLASH_ESCAPE, 17, 19, 1);
+    NAOS_CHECK_UINT_EQ(child_count(block_at(0)), 8);
+    NAOS_CHECK_TRUE(tree_ok());
+    check_bytes_covered();
+}
+
 /* ---- The parsed range ---- */
 
 NAOS_TEST(a_range_that_does_not_start_at_0)
@@ -908,6 +1317,54 @@ NAOS_SUITE(prefix,
     NAOS_ADD_TEST(lazy_continuation_lines_follow_the_same_rules)
 )
 
+NAOS_SUITE(escape,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(a_backslash_before_ascii_punctuation_is_an_escape),
+    NAOS_ADD_TEST(every_ascii_punctuation_character_can_be_escaped),
+    NAOS_ADD_TEST(a_backslash_before_anything_else_is_text),
+    NAOS_ADD_TEST(a_backslash_before_a_line_ending_is_a_hard_break)
+)
+
+NAOS_SUITE(reference,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(character_references_are_one_node),
+    NAOS_ADD_TEST(an_ampersand_that_starts_no_reference_is_text)
+)
+
+NAOS_SUITE(code_span,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(a_code_span_runs_from_the_opening_to_the_closing_string),
+    NAOS_ADD_TEST(an_unmatched_backtick_string_is_text_as_a_whole),
+    NAOS_ADD_TEST(a_code_span_crosses_lines_without_breaks),
+    NAOS_ADD_TEST(an_escaped_backtick_starts_a_new_string)
+)
+
+NAOS_SUITE(autolink,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(autolinks_are_one_node_with_their_type),
+    NAOS_ADD_TEST(a_less_than_sign_that_starts_nothing_is_text)
+)
+
+NAOS_SUITE(raw_html,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(raw_html_is_one_node),
+    NAOS_ADD_TEST(raw_html_crosses_lines_without_breaks),
+    NAOS_ADD_TEST(html_that_does_not_close_is_text)
+)
+
+NAOS_SUITE(precedence,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(the_structure_that_starts_first_wins),
+    NAOS_ADD_TEST(special_bytes_inside_a_structure_start_nothing),
+    NAOS_ADD_TEST(an_escaped_special_byte_starts_nothing)
+)
+
 NAOS_SUITE(content,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -937,6 +1394,12 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(text),
     NAOS_ADD_SUITE(line_break),
     NAOS_ADD_SUITE(prefix),
+    NAOS_ADD_SUITE(escape),
+    NAOS_ADD_SUITE(reference),
+    NAOS_ADD_SUITE(code_span),
+    NAOS_ADD_SUITE(autolink),
+    NAOS_ADD_SUITE(raw_html),
+    NAOS_ADD_SUITE(precedence),
     NAOS_ADD_SUITE(content),
     NAOS_ADD_SUITE(entry),
     NAOS_ADD_SUITE(limit)

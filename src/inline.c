@@ -130,11 +130,135 @@ static amark_error_t scan_text(inline_parser_t *parser)
                               &unused);
 }
 
+/* ASCII punctuation as CommonMark defines it: what a backslash escapes. */
+static bool is_ascii_punctuation(unsigned char c)
+{
+    return (c >= 0x21 && c <= 0x2F) || (c >= 0x3A && c <= 0x40) ||
+           (c >= 0x5B && c <= 0x60) || (c >= 0x7B && c <= 0x7E);
+}
+
+/* Appends an item of kind for [start, the position). */
+static amark_error_t append_to_cursor(inline_parser_t *parser,
+                                      amark_kind_t kind, size_t start,
+                                      amark_draft_id_t *out)
+{
+    return amark_draft_append(&parser->draft, kind, start, parser->cursor.pos,
+                              out);
+}
+
+/*
+ * '\': before an ASCII punctuation character of the line, an escape of the
+ * two bytes; right before a line ending (not the end of the content), a
+ * hard break from the backslash to right after the line ending, and then
+ * the content of the next line; otherwise (the end of the content
+ * included) a text of the backslash.
+ */
+static amark_error_t scan_backslash(inline_parser_t *parser)
+{
+    amark_cursor_t *cursor = &parser->cursor;
+    size_t start = cursor->pos;
+    amark_draft_id_t unused;
+    amark_error_t err;
+
+    if (start + 1 < cursor->line_end &&
+        is_ascii_punctuation(cursor->bytes[start + 1])) {
+        amark_cursor_seek(cursor, start + 2);
+        return append_to_cursor(parser, AMARK_KIND_BACKSLASH_ESCAPE, start,
+                                &unused);
+    }
+    amark_cursor_seek(cursor, start + 1);
+    if (!amark_cursor_at_line_end(cursor) || amark_cursor_at_end(cursor)) {
+        return append_to_cursor(parser, AMARK_KIND_TEXT, start, &unused);
+    }
+    err = amark_draft_append(&parser->draft, AMARK_KIND_HARD_BREAK, start,
+                             amark_cursor_line_break_end(cursor), &unused);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    amark_cursor_next_line(cursor);
+    parser->has_break_start = false;
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * '`': the whole backtick string, which no backtick precedes (a string
+ * before it was taken as a whole, and an escaped backtick is its own item),
+ * opens a code span up to the next string of the same length, read through
+ * the lines by the scan; if there is none, the whole string is a text.
+ */
+static amark_error_t scan_backticks(inline_parser_t *parser)
+{
+    amark_cursor_t *cursor = &parser->cursor;
+    size_t start = cursor->pos;
+    size_t end = start;
+    bool found;
+    amark_draft_id_t unused;
+    amark_error_t err;
+
+    while (end < cursor->line_end && cursor->bytes[end] == '`') {
+        end++;
+    }
+    err = amark_inline_scan_code_span(cursor, &parser->memo, end - start,
+                                      &found);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    if (found) {
+        return append_to_cursor(parser, AMARK_KIND_CODE_SPAN, start,
+                                &unused);
+    }
+    amark_cursor_seek(cursor, end);
+    return append_to_cursor(parser, AMARK_KIND_TEXT, start, &unused);
+}
+
+/* '&': a character reference, or a text of the '&'. */
+static amark_error_t scan_ampersand(inline_parser_t *parser)
+{
+    amark_cursor_t *cursor = &parser->cursor;
+    size_t start = cursor->pos;
+    amark_draft_id_t unused;
+
+    if (amark_inline_scan_entity(cursor)) {
+        return append_to_cursor(parser, AMARK_KIND_CHARACTER_REFERENCE, start,
+                                &unused);
+    }
+    amark_cursor_seek(cursor, start + 1);
+    return append_to_cursor(parser, AMARK_KIND_TEXT, start, &unused);
+}
+
+/*
+ * '<': an autolink, tried first, then raw HTML, which the scan may read
+ * through the lines; otherwise a text of the '<'.
+ */
+static amark_error_t scan_less_than(inline_parser_t *parser)
+{
+    amark_cursor_t *cursor = &parser->cursor;
+    size_t start = cursor->pos;
+    amark_autolink_type_t type;
+    amark_draft_id_t id;
+    amark_error_t err;
+
+    if (amark_inline_scan_autolink(cursor, &type)) {
+        err = append_to_cursor(parser, AMARK_KIND_AUTOLINK, start, &id);
+        if (err == AMARK_ERROR_NONE) {
+            amark_draft_set_autolink(&parser->draft, id, type);
+        }
+        return err;
+    }
+    if (amark_inline_scan_html(cursor, &parser->memo)) {
+        return append_to_cursor(parser, AMARK_KIND_RAW_HTML, start, &id);
+    }
+    amark_cursor_seek(cursor, start + 1);
+    return append_to_cursor(parser, AMARK_KIND_TEXT, start, &id);
+}
+
 /*
  * A special byte at the position: the one place where the rules of the
  * inline structures (and those a dialect adds) are called, chosen by the
- * byte. A special byte that starts no structure is a text of that byte. The
- * position moves forward by one byte or more.
+ * byte. A structure read here is read to its end at once, so the special
+ * bytes inside it are never scanned. A special byte that starts no
+ * structure is a text of that byte. The position moves forward by one byte
+ * or more.
  */
 static amark_error_t scan_special(inline_parser_t *parser)
 {
@@ -142,6 +266,18 @@ static amark_error_t scan_special(inline_parser_t *parser)
     size_t start = cursor->pos;
     amark_draft_id_t unused;
 
+    switch (cursor->bytes[start]) {
+    case '\\':
+        return scan_backslash(parser);
+    case '`':
+        return scan_backticks(parser);
+    case '&':
+        return scan_ampersand(parser);
+    case '<':
+        return scan_less_than(parser);
+    default:
+        break;
+    }
     amark_cursor_seek(cursor, start + 1);
     return amark_draft_append(&parser->draft, AMARK_KIND_TEXT, start,
                               start + 1, &unused);
