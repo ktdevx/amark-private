@@ -13,6 +13,20 @@
  * (NULL arguments, AMARK_NODE_NONE, an ID past the nodes created, a removed
  * node) returns false and leaves both outputs unchanged; U+0000 and invalid
  * UTF-8 come back unchanged; and the allocator is never called.
+ *
+ * amark_node_text, the part and kind table: every row of the table (the
+ * logical text of non-container blocks and of inlines, dialect inlines
+ * included; the value of text, escapes, character references, autolinks,
+ * code spans and code blocks; the destination and title of inline links,
+ * images and link reference definitions; the info of fenced code blocks)
+ * and pairs that are not in it (containers, dialect blocks, the value of
+ * other kinds, the destination of reference links, the info of indented
+ * code blocks). A destination or title that is not written is not
+ * available, one that is written but empty gives length 0, in agreement
+ * with the tree readers; reference links get their values from the
+ * definition. Every call that cannot be answered (NULL document or length,
+ * an invalid ID or part, a document without parse data) leaves the buffer
+ * and *length unchanged and allocates nothing.
  */
 
 #include "document.h"
@@ -445,6 +459,568 @@ NAOS_SUITE(text_raw,
     NAOS_ADD_TEST(raw_never_calls_the_allocator)
 )
 
+/* --- amark_node_text: the part and kind table ---------------------------- */
+
+/*
+ * Checks that part of node of g_doc gives want, of want_length bytes, with
+ * AMARK_ERROR_NONE, in a buffer that is large enough.
+ */
+static void check_text_n(amark_node_id_t node, amark_text_part_t part,
+                         const char *want, size_t want_length)
+{
+    char buffer[256];
+    size_t length = (size_t)-1;
+
+    NAOS_REQUIRE_UINT_NE(node, AMARK_NODE_NONE);
+    memset(buffer, '#', sizeof buffer);
+    NAOS_REQUIRE_INT_EQ(amark_node_text(g_doc, node, part, buffer,
+                                        sizeof buffer, &length),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_MEM_EQ(buffer, length, want, want_length);
+}
+
+static void check_text(amark_node_id_t node, amark_text_part_t part,
+                       const char *want)
+{
+    check_text_n(node, part, want, strlen(want));
+}
+
+/*
+ * Checks that part of node of doc is AMARK_ERROR_NOT_AVAILABLE and that the
+ * buffer, *length and the allocator are untouched.
+ */
+static void check_none(const amark_document_t *doc, amark_node_id_t node,
+                       int part)
+{
+    char buffer[16];
+    size_t length = 12345;
+    size_t mallocs = g_state.malloc_calls;
+    size_t i;
+
+    memset(buffer, 'S', sizeof buffer);
+    NAOS_CHECK_INT_EQ(amark_node_text(doc, node, (amark_text_part_t)part,
+                                      buffer, sizeof buffer, &length),
+                      AMARK_ERROR_NOT_AVAILABLE);
+    NAOS_CHECK_UINT_EQ(length, 12345);
+    for (i = 0; i < sizeof buffer; i++) {
+        NAOS_CHECK_INT_EQ(buffer[i], 'S');
+    }
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+}
+
+/* Returns whether kind is a container (document, block quote, list, item). */
+static bool is_container(amark_kind_t kind)
+{
+    return kind == AMARK_KIND_DOCUMENT || kind == AMARK_KIND_BLOCK_QUOTE ||
+           kind == AMARK_KIND_LIST || kind == AMARK_KIND_LIST_ITEM;
+}
+
+NAOS_TEST(logical_of_non_container_blocks_and_inlines)
+{
+    static const char content[] =
+        "> # Head *x*\n"
+        "> ***\n"
+        ">\n"
+        "> para `one`\r\n"
+        "> \tline *two*\n"
+        "\n"
+        "```c\n"
+        "code\n"
+        "```\n"
+        "\n"
+        "<div>\n"
+        "</div>\n"
+        "\n"
+        "[ref]: /u\n"
+        "  'title'\n";
+    amark_node_id_t para;
+
+    parse_bytes(content, sizeof content - 1);
+    check_text(find(AMARK_KIND_HEADING, 0), AMARK_TEXT_LOGICAL,
+               "# Head *x*");
+    check_text(find(AMARK_KIND_THEMATIC_BREAK, 0), AMARK_TEXT_LOGICAL,
+               "***");
+    para = find(AMARK_KIND_PARAGRAPH, 0);
+    /* The prefix and the leading tab of the continuation line are not part
+       of the line's content. */
+    check_text(para, AMARK_TEXT_LOGICAL, "para `one`\nline *two*");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_LOGICAL,
+               "```c\ncode\n```");
+    check_text(find(AMARK_KIND_HTML_BLOCK, 0), AMARK_TEXT_LOGICAL,
+               "<div>\n</div>");
+    check_text(find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0),
+               AMARK_TEXT_LOGICAL, "[ref]: /u\n'title'");
+    /* Inlines: written as they are. */
+    check_text(find(AMARK_KIND_EMPHASIS, 0), AMARK_TEXT_LOGICAL, "*x*");
+    check_text(find(AMARK_KIND_CODE_SPAN, 0), AMARK_TEXT_LOGICAL, "`one`");
+    check_text(find(AMARK_KIND_SOFT_BREAK, 0), AMARK_TEXT_LOGICAL, "\n");
+}
+
+NAOS_TEST(logical_of_every_inline_kind_is_its_range)
+{
+    static const char content[] =
+        "*em* **st** `c` [l](/d) ![i](/s) <http://a> <b> \\* &amp; x  \n"
+        "y\\\n"
+        "z\n";
+    amark_node_id_t node;
+    size_t inlines = 0;
+
+    parse_bytes(content, sizeof content - 1);
+    node = amark_document_root(g_doc);
+    while (node != AMARK_NODE_NONE) {
+        amark_kind_t kind = amark_node_kind(g_doc, node);
+
+        if (amark_node_is_inline(g_doc, node)) {
+            const char *bytes = NULL;
+            size_t length = 0;
+            size_t i;
+
+            /* Within one line, the logical text is the raw bytes (2.12);
+               a line ending becomes '\n' (only the breaks hold one). */
+            NAOS_REQUIRE_TRUE(amark_node_raw(g_doc, node, &bytes, &length));
+            for (i = 0; i < length; i++) {
+                NAOS_REQUIRE_INT_NE(bytes[i], '\r');
+            }
+            check_text_n(node, AMARK_TEXT_LOGICAL, bytes, length);
+            inlines++;
+        } else if (is_container(kind)) {
+            check_none(g_doc, node, AMARK_TEXT_LOGICAL);
+        } else {
+            NAOS_CHECK_UINT_EQ(kind, AMARK_KIND_PARAGRAPH);
+        }
+        node = next_in_order(node);
+    }
+    NAOS_CHECK_UINT_GE(inlines, 12);
+    NAOS_CHECK_UINT_NE(find(AMARK_KIND_HARD_BREAK, 1), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_NE(find(AMARK_KIND_RAW_HTML, 0), AMARK_NODE_NONE);
+}
+
+NAOS_TEST(logical_of_containers_is_not_available)
+{
+    static const char content[] = "> - a\n>   - b\n> c\n";
+    amark_node_id_t node;
+    size_t containers = 0;
+
+    parse_bytes(content, sizeof content - 1);
+    node = amark_document_root(g_doc);
+    while (node != AMARK_NODE_NONE) {
+        if (is_container(amark_node_kind(g_doc, node))) {
+            check_none(g_doc, node, AMARK_TEXT_LOGICAL);
+            check_none(g_doc, node, AMARK_TEXT_VALUE);
+            containers++;
+        }
+        node = next_in_order(node);
+    }
+    NAOS_CHECK_UINT_EQ(containers, 6);
+}
+
+NAOS_TEST(dialect_kinds_answer_the_logical_text_of_inlines_only)
+{
+    static const char content[] = "abcdef\n";
+    amark_node_id_t para;
+    amark_node_id_t block;
+    amark_node_id_t inl;
+    int part;
+
+    parse_bytes(content, sizeof content - 1);
+    para = find(AMARK_KIND_PARAGRAPH, 0);
+    NAOS_REQUIRE_UINT_NE(para, AMARK_NODE_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(g_doc, 1, AMARK_KIND_DIALECT_MIN,
+                                          AMARK_NODE_CLASS_BLOCK, 0, 6,
+                                          &block),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(g_doc, para,
+                                          AMARK_KIND_DIALECT_MIN + 1,
+                                          AMARK_NODE_CLASS_INLINE, 1, 4,
+                                          &inl),
+                        AMARK_ERROR_NONE);
+    check_text(inl, AMARK_TEXT_LOGICAL, "bcd");
+    check_none(g_doc, block, AMARK_TEXT_LOGICAL);
+    for (part = AMARK_TEXT_VALUE; part <= AMARK_TEXT_INFO; part++) {
+        check_none(g_doc, block, part);
+        check_none(g_doc, inl, part);
+    }
+}
+
+NAOS_TEST(value_of_text_escape_reference_autolink)
+{
+    static const char content[] =
+        "a\\q \\* &amp; &#x41; &nbsp; <http://x.example/a\\b&amp;> "
+        "<me@x.example>\n";
+
+    parse_bytes(content, sizeof content - 1);
+    /* Text is written as it is (a backslash before a non-punctuation
+       character stays). */
+    check_text(find(AMARK_KIND_TEXT, 0), AMARK_TEXT_VALUE, "a\\q ");
+    check_text(find(AMARK_KIND_BACKSLASH_ESCAPE, 0), AMARK_TEXT_VALUE, "*");
+    check_text(find(AMARK_KIND_CHARACTER_REFERENCE, 0), AMARK_TEXT_VALUE,
+               "&");
+    check_text(find(AMARK_KIND_CHARACTER_REFERENCE, 1), AMARK_TEXT_VALUE,
+               "A");
+    check_text(find(AMARK_KIND_CHARACTER_REFERENCE, 2), AMARK_TEXT_VALUE,
+               "\xC2\xA0");
+    /* An autolink without '<' and '>', nothing decoded, no "mailto:". */
+    check_text(find(AMARK_KIND_AUTOLINK, 0), AMARK_TEXT_VALUE,
+               "http://x.example/a\\b&amp;");
+    check_text(find(AMARK_KIND_AUTOLINK, 1), AMARK_TEXT_VALUE,
+               "me@x.example");
+}
+
+NAOS_TEST(value_of_code_span_strips_the_backtick_strings)
+{
+    static const char content[] =
+        "`a` `` b`c `` ```\\&amp;``` ` `\n"
+        "\n"
+        "> x `` one\n"
+        "> two ``\n";
+
+    parse_bytes(content, sizeof content - 1);
+    check_text(find(AMARK_KIND_CODE_SPAN, 0), AMARK_TEXT_VALUE, "a");
+    check_text(find(AMARK_KIND_CODE_SPAN, 1), AMARK_TEXT_VALUE, "b`c");
+    check_text(find(AMARK_KIND_CODE_SPAN, 2), AMARK_TEXT_VALUE,
+               "\\&amp;");
+    check_text(find(AMARK_KIND_CODE_SPAN, 3), AMARK_TEXT_VALUE, " ");
+    /* Across lines in a block quote: the line ending is one space and the
+       prefix is left out. */
+    check_text(find(AMARK_KIND_CODE_SPAN, 4), AMARK_TEXT_VALUE, "one two");
+}
+
+NAOS_TEST(value_of_code_blocks_is_the_code_lines)
+{
+    static const char content[] =
+        "    a\\*\n"
+        "\n"
+        "     b\n"
+        "\n"
+        "```\n"
+        "c &amp;\n"
+        "```\n"
+        "\n"
+        "~~~\n"
+        "~~~\n"
+        "\n"
+        "> ```\n"
+        "> d";
+
+    parse_bytes(content, sizeof content - 1);
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_VALUE,
+               "a\\*\n\n b\n");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 1), AMARK_TEXT_VALUE,
+               "c &amp;\n");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 2), AMARK_TEXT_VALUE, "");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 3), AMARK_TEXT_VALUE, "d\n");
+}
+
+NAOS_TEST(value_of_other_kinds_is_not_available)
+{
+    static const char content[] =
+        "# h\n"
+        "\n"
+        "***\n"
+        "\n"
+        "<div>\n"
+        "\n"
+        "*e* **s** [l](/d) ![i](/s) <b> x  \n"
+        "y\n"
+        "z\n"
+        "\n"
+        "[r]: /u\n";
+    static const amark_kind_t kinds[] = {
+        AMARK_KIND_HEADING,     AMARK_KIND_THEMATIC_BREAK,
+        AMARK_KIND_HTML_BLOCK,  AMARK_KIND_PARAGRAPH,
+        AMARK_KIND_EMPHASIS,    AMARK_KIND_STRONG,
+        AMARK_KIND_LINK,        AMARK_KIND_IMAGE,
+        AMARK_KIND_RAW_HTML,    AMARK_KIND_HARD_BREAK,
+        AMARK_KIND_SOFT_BREAK,  AMARK_KIND_LINK_REFERENCE_DEFINITION,
+        AMARK_KIND_DOCUMENT,
+    };
+    size_t i;
+
+    parse_bytes(content, sizeof content - 1);
+    for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        amark_node_id_t node = find(kinds[i], 0);
+
+        NAOS_REQUIRE_UINT_NE(node, AMARK_NODE_NONE);
+        check_none(g_doc, node, AMARK_TEXT_VALUE);
+        check_none(g_doc, node, AMARK_TEXT_INFO);
+    }
+}
+
+NAOS_TEST(destination_and_title_of_inline_links_and_images)
+{
+    static const char content[] =
+        "[a](</d\\)&amp;> \"t &quot;x&quot;\") "
+        "![i](/s 't') "
+        "[e](<> \"\") "
+        "[n](/only) "
+        "[m]()\n";
+    amark_node_id_t link;
+    amark_node_id_t image;
+    amark_node_id_t empty;
+    amark_node_id_t no_title;
+
+    parse_bytes(content, sizeof content - 1);
+    link = find(AMARK_KIND_LINK, 0);
+    image = find(AMARK_KIND_IMAGE, 0);
+    empty = find(AMARK_KIND_LINK, 1);
+    no_title = find(AMARK_KIND_LINK, 2);
+    /* Written: decoded, without the delimiters. */
+    check_text(link, AMARK_TEXT_DESTINATION, "/d)&");
+    check_text(link, AMARK_TEXT_TITLE, "t \"x\"");
+    check_text(image, AMARK_TEXT_DESTINATION, "/s");
+    check_text(image, AMARK_TEXT_TITLE, "t");
+    /* Written but empty: success with length 0. */
+    check_text(empty, AMARK_TEXT_DESTINATION, "");
+    check_text(empty, AMARK_TEXT_TITLE, "");
+    /* Not written. */
+    check_text(no_title, AMARK_TEXT_DESTINATION, "/only");
+    check_none(g_doc, no_title, AMARK_TEXT_TITLE);
+    /* Neither a value nor an info. */
+    check_none(g_doc, link, AMARK_TEXT_VALUE);
+    check_none(g_doc, image, AMARK_TEXT_INFO);
+}
+
+NAOS_TEST(written_or_not_agrees_with_the_tree_readers)
+{
+    static const char content[] =
+        "[a](/d \"t\") [b](<>) [c]() [d](/e '') ![f]( \"g\" ) [h](</i> ())\n"
+        "\n"
+        "[j]: <> ''\n"
+        "[k]: /l\n";
+    amark_node_id_t node;
+    size_t checked = 0;
+
+    parse_bytes(content, sizeof content - 1);
+    node = amark_document_root(g_doc);
+    while (node != AMARK_NODE_NONE) {
+        amark_kind_t kind = amark_node_kind(g_doc, node);
+        bool is_link = kind == AMARK_KIND_LINK || kind == AMARK_KIND_IMAGE;
+
+        if (is_link || kind == AMARK_KIND_LINK_REFERENCE_DEFINITION) {
+            amark_range_t range;
+            size_t length = (size_t)-1;
+            char buffer[64];
+            bool dest = is_link ? amark_link_destination(g_doc, node, &range)
+                                : amark_definition_destination(g_doc, node,
+                                                               &range);
+            bool title;
+
+            NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node,
+                                              AMARK_TEXT_DESTINATION, buffer,
+                                              sizeof buffer, &length),
+                              dest ? AMARK_ERROR_NONE
+                                   : AMARK_ERROR_NOT_AVAILABLE);
+            if (dest && range.start == range.end) {
+                NAOS_CHECK_UINT_EQ(length, 0);
+            }
+            length = (size_t)-1;
+            title = is_link ? amark_link_title(g_doc, node, &range)
+                            : amark_definition_title(g_doc, node, &range);
+            NAOS_CHECK_INT_EQ(amark_node_text(g_doc, node, AMARK_TEXT_TITLE,
+                                              buffer, sizeof buffer, &length),
+                              title ? AMARK_ERROR_NONE
+                                    : AMARK_ERROR_NOT_AVAILABLE);
+            if (title && range.start == range.end) {
+                NAOS_CHECK_UINT_EQ(length, 0);
+            }
+            checked++;
+        }
+        node = next_in_order(node);
+    }
+    NAOS_CHECK_UINT_EQ(checked, 8);
+}
+
+NAOS_TEST(reference_links_take_their_values_from_the_definition)
+{
+    static const char content[] =
+        "[a] [b][] [x][c] ![a]\n"
+        "\n"
+        "[a]: /u&amp;\\* \"t&#33;\"\n"
+        "[b]: <>\n"
+        "[c]: /v ''\n";
+    amark_node_id_t node;
+    amark_node_id_t def;
+    size_t i;
+
+    parse_bytes(content, sizeof content - 1);
+    for (i = 0; i < 3; i++) {
+        node = find(AMARK_KIND_LINK, i);
+        NAOS_REQUIRE_UINT_NE(node, AMARK_NODE_NONE);
+        check_none(g_doc, node, AMARK_TEXT_DESTINATION);
+        check_none(g_doc, node, AMARK_TEXT_TITLE);
+    }
+    node = find(AMARK_KIND_IMAGE, 0);
+    check_none(g_doc, node, AMARK_TEXT_DESTINATION);
+    check_none(g_doc, node, AMARK_TEXT_TITLE);
+    def = amark_link_definition(g_doc, node);
+    check_text(def, AMARK_TEXT_DESTINATION, "/u&*");
+    check_text(def, AMARK_TEXT_TITLE, "t!");
+
+    def = amark_link_definition(g_doc, find(AMARK_KIND_LINK, 1));
+    check_text(def, AMARK_TEXT_DESTINATION, "");
+    check_none(g_doc, def, AMARK_TEXT_TITLE);
+
+    def = amark_link_definition(g_doc, find(AMARK_KIND_LINK, 2));
+    check_text(def, AMARK_TEXT_DESTINATION, "/v");
+    check_text(def, AMARK_TEXT_TITLE, "");
+    check_none(g_doc, def, AMARK_TEXT_VALUE);
+    check_none(g_doc, def, AMARK_TEXT_INFO);
+}
+
+NAOS_TEST(titles_start_on_the_line_of_their_range)
+{
+    /* The title starts on a later line than the node: its first line is
+       looked up from the start of its range, so the prefixes of the lines
+       after it are left out and the first is read from the range start. */
+    static const char content[] =
+        "> [a](/u\n"
+        ">  \"one\n"
+        "> two\")\n"
+        "\n"
+        "> - [d]:\n"
+        ">   /v\n"
+        ">   'three\n"
+        ">   four'\n";
+
+    parse_bytes(content, sizeof content - 1);
+    check_text(find(AMARK_KIND_LINK, 0), AMARK_TEXT_TITLE, "one\ntwo");
+    check_text(find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0),
+               AMARK_TEXT_DESTINATION, "/v");
+    check_text(find(AMARK_KIND_LINK_REFERENCE_DEFINITION, 0),
+               AMARK_TEXT_TITLE, "three\nfour");
+}
+
+NAOS_TEST(info_of_fenced_code_blocks_only)
+{
+    static const char content[] =
+        "``` c&amp;  \\*d\n"
+        "```\n"
+        "\n"
+        "```\n"
+        "```\n"
+        "\n"
+        "    indented\n";
+    amark_node_id_t fenced;
+    amark_node_id_t bare;
+    amark_node_id_t indented;
+
+    parse_bytes(content, sizeof content - 1);
+    fenced = find(AMARK_KIND_CODE_BLOCK, 0);
+    bare = find(AMARK_KIND_CODE_BLOCK, 1);
+    indented = find(AMARK_KIND_CODE_BLOCK, 2);
+    check_text(fenced, AMARK_TEXT_INFO, "c&  *d");
+    check_none(g_doc, bare, AMARK_TEXT_INFO);
+    check_none(g_doc, indented, AMARK_TEXT_INFO);
+    check_none(g_doc, fenced, AMARK_TEXT_DESTINATION);
+    check_none(g_doc, fenced, AMARK_TEXT_TITLE);
+    check_none(g_doc, find(AMARK_KIND_PARAGRAPH, 0), AMARK_TEXT_INFO);
+}
+
+NAOS_TEST(text_calls_that_cannot_be_answered_change_nothing)
+{
+    static const char content[] = "para\n\npara two\n";
+    amark_allocator_t allocator = amark_test_allocator(&g_state);
+    amark_document_t *bare = NULL;
+    amark_node_id_t para;
+    amark_node_id_t removed;
+    char buffer[8];
+    size_t i;
+
+    parse_bytes(content, sizeof content - 1);
+    para = find(AMARK_KIND_PARAGRAPH, 0);
+    NAOS_REQUIRE_UINT_NE(para, AMARK_NODE_NONE);
+
+    /* NULL document, invalid IDs. */
+    check_none(NULL, para, AMARK_TEXT_LOGICAL);
+    check_none(g_doc, AMARK_NODE_NONE, AMARK_TEXT_LOGICAL);
+    check_none(g_doc, (amark_node_id_t)amark_document_node_count(g_doc) + 1,
+               AMARK_TEXT_LOGICAL);
+    check_none(g_doc, (amark_node_id_t)0xFFFFFFFFu, AMARK_TEXT_LOGICAL);
+    /* A part that is none of the five. */
+    check_none(g_doc, para, 0);
+    check_none(g_doc, para, 6);
+    check_none(g_doc, para, -1);
+    /* NULL length: the buffer is unchanged. */
+    memset(buffer, 'S', sizeof buffer);
+    NAOS_CHECK_INT_EQ(amark_node_text(g_doc, para, AMARK_TEXT_LOGICAL,
+                                      buffer, sizeof buffer, NULL),
+                      AMARK_ERROR_NOT_AVAILABLE);
+    for (i = 0; i < sizeof buffer; i++) {
+        NAOS_CHECK_INT_EQ(buffer[i], 'S');
+    }
+    /* A removed node. */
+    removed = find(AMARK_KIND_PARAGRAPH, 1);
+    NAOS_REQUIRE_UINT_NE(removed, AMARK_NODE_NONE);
+    amark_tree_remove(g_doc, removed);
+    check_none(g_doc, removed, AMARK_TEXT_LOGICAL);
+    check_text(para, AMARK_TEXT_LOGICAL, "para");
+
+    /* A document without parse data (made with the internal API). */
+    NAOS_REQUIRE_INT_EQ(amark_document_create(&allocator,
+                                              (const unsigned char *)content,
+                                              sizeof content - 1, 0,
+                                              sizeof content - 1, NULL,
+                                              &bare),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(bare, 1, AMARK_KIND_PARAGRAPH,
+                                          AMARK_NODE_CLASS_AUTO, 0, 4,
+                                          &para),
+                        AMARK_ERROR_NONE);
+    check_none(bare, para, AMARK_TEXT_LOGICAL);
+    check_none(bare, 1, AMARK_TEXT_LOGICAL);
+    amark_document_destroy(bare);
+}
+
+NAOS_TEST(results_that_fit_are_written_without_allocating)
+{
+    static const char content[] = "> a `b` [c](/d 'e')\n\n```f\ng\n```\n";
+    size_t mallocs;
+    size_t frees;
+    char buffer[4];
+    size_t length = 99;
+    amark_node_id_t span;
+
+    parse_bytes(content, sizeof content - 1);
+    mallocs = g_state.malloc_calls;
+    frees = g_state.free_calls;
+    check_text(find(AMARK_KIND_PARAGRAPH, 0), AMARK_TEXT_LOGICAL,
+               "a `b` [c](/d 'e')");
+    check_text(find(AMARK_KIND_LINK, 0), AMARK_TEXT_DESTINATION, "/d");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_VALUE, "g\n");
+    check_text(find(AMARK_KIND_CODE_BLOCK, 0), AMARK_TEXT_INFO, "f");
+    /* A buffer of exactly the length; nothing past it is written. */
+    span = find(AMARK_KIND_CODE_SPAN, 0);
+    memset(buffer, 'S', sizeof buffer);
+    NAOS_REQUIRE_INT_EQ(amark_node_text(g_doc, span, AMARK_TEXT_LOGICAL,
+                                        buffer, 3, &length),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(length, 3);
+    NAOS_CHECK_MEM_EQ(buffer, (size_t)4, "`b`S", (size_t)4);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, mallocs);
+    NAOS_CHECK_UINT_EQ(g_state.free_calls, frees);
+}
+
+NAOS_SUITE(text_table,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(logical_of_non_container_blocks_and_inlines),
+    NAOS_ADD_TEST(logical_of_every_inline_kind_is_its_range),
+    NAOS_ADD_TEST(logical_of_containers_is_not_available),
+    NAOS_ADD_TEST(dialect_kinds_answer_the_logical_text_of_inlines_only),
+    NAOS_ADD_TEST(value_of_text_escape_reference_autolink),
+    NAOS_ADD_TEST(value_of_code_span_strips_the_backtick_strings),
+    NAOS_ADD_TEST(value_of_code_blocks_is_the_code_lines),
+    NAOS_ADD_TEST(value_of_other_kinds_is_not_available),
+    NAOS_ADD_TEST(destination_and_title_of_inline_links_and_images),
+    NAOS_ADD_TEST(written_or_not_agrees_with_the_tree_readers),
+    NAOS_ADD_TEST(reference_links_take_their_values_from_the_definition),
+    NAOS_ADD_TEST(titles_start_on_the_line_of_their_range),
+    NAOS_ADD_TEST(info_of_fenced_code_blocks_only),
+    NAOS_ADD_TEST(text_calls_that_cannot_be_answered_change_nothing),
+    NAOS_ADD_TEST(results_that_fit_are_written_without_allocating)
+)
+
 NAOS_MAIN(
-    NAOS_ADD_SUITE(text_raw)
+    NAOS_ADD_SUITE(text_raw),
+    NAOS_ADD_SUITE(text_table)
 )
