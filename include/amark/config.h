@@ -71,11 +71,12 @@ AMARK_API void amark_config_init(amark_config_t *config);
  * 0, an extension without a name, a kind id outside the dialect space or
  * registered twice, a rule or delimiter kind naming a kind its extension
  * did not register or of the wrong class, an invalid delimiter character or
- * length set, too many delimiter kinds, or only one of the two state
- * functions). A dialect with no extension is valid and parses as no
- * dialect. amark_parse makes the same check before it parses and returns
- * the same error. The resource limits are not compared with the content. A
- * NULL config is treated as the defaults. Calls no rule of the dialect,
+ * length set, too many delimiter kinds, blank_columns out of range or set
+ * on a kind that is not a container going on over blank lines, or only one
+ * of the two state functions). A dialect with no extension is valid and
+ * parses as no dialect. amark_parse makes the same check before it parses
+ * and returns the same error. The resource limits are not compared with the
+ * content. A NULL config is treated as the defaults. Calls no rule of the dialect,
  * allocates nothing, and changes neither *config nor the dialect.
  */
 AMARK_API amark_error_t amark_config_validate(const amark_config_t *config,

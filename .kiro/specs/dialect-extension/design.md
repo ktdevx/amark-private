@@ -279,18 +279,19 @@ flowchart TD
 | 1.6 | 契約の版 | DialectApi、DialectDef | `struct_size`、`abi`、`AMARK_DIALECT_ABI` | — |
 | 1.7、14.3 | 公開ヘッダだけで、静的な const のデータとして書ける | DialectApi、TestDialect | 指示付き初期化子で書ける構造体 | — |
 | 1.8 | 組み込みの方言なし | — | ライブラリに方言の定義を置かない | — |
-| 2.1, 2.2, 2.3, 2.9 | 種類の登録 | DialectApi | `amark_dialect_kind_t`（`id`、`cls`、`blank`） | — |
+| 2.1, 2.2, 2.3, 2.9 | 種類の登録 | DialectApi | `amark_dialect_kind_t`（`id`、`cls`、`blank`、`blank_columns`） | — |
 | 2.4, 2.5, 2.6 | ノードの ID・別・属性 | DialectReply、Draft、DialectEdit | `amark_tree_append` の `cls`、`amark_tree_set_dialect_data` | — |
 | 2.7, 2.8 | 登録されていない種類、別と合わない位置 | DialectReply、DialectEdit | 理由 `KIND`、`NESTING` | 閉じるときの返事 |
 | 3.1, 3.12 | 検査の入口 | Config、DialectDef | `amark_config_resolve` の規則 5、`amark_dialect_validate` | 解析 1 回 |
 | 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9 | 定義の誤り | DialectDef | `amark_dialect_validate` の規則 | — |
 | 3.10, 3.11 | 拡張が 0 個 | Config | `dialect` を `NULL` に解決する | — |
 | 3.13 | 規則を呼ばず、確保しない | DialectDef | `amark_dialect_validate` | — |
+| 3.14 | 空行で消費する桁の数 | DialectDef | `amark_dialect_validate` の規則 4 | — |
 | 4.1, 4.2, 4.3, 4.4, 4.6, 4.7, 4.12 | 開始の規則を呼ぶ | BlockParser | `start_block`、`amark_dialect_line_t`、`amark_dialect_block_start_t` | ブロックの 1 行 |
 | 4.5, 4.8, 4.9 | 方言のブロックを開く | BlockParser | `push_block`、`add_line` | ブロックの 1 行 |
 | 4.10, 4.11 | 開始の結果の検査 | BlockParser、DialectDef | 理由 `ORIGIN`、`LINE`、`EMPTY`、`amark_dialect_reject` | ブロックの 1 行 |
 | 5.1, 5.2, 5.3, 5.4, 5.5, 5.7 | 継続の規則 | BlockParser | `continue_block`、`amark_dialect_open_block_t`、`amark_dialect_block_continue_t` | ブロックの 1 行 |
-| 5.6 | 空行 | BlockParser | `blank` の登録、空行の打ち切りは変えない | ブロックの 1 行 |
+| 5.6 | 空行 | BlockParser | `blank` と `blank_columns` の登録、空行の打ち切りの `content_indent` | ブロックの 1 行 |
 | 5.8, 5.9 | 継続の結果の検査 | BlockParser、DialectDef | 理由 `ORIGIN`、`LINE` | ブロックの 1 行 |
 | 5.10, 5.11 | 終わりで閉じる、範囲と行 | BlockParser | `close_above`、方言のブロックの範囲の決まり | — |
 | 6.1, 6.2, 6.3, 6.4, 6.12, 6.13 | 閉じるときの規則を呼ぶ | BlockParser、DialectReply | `close_block`、`close_paragraph`、`amark_dialect_closing_t`、`amark_dialect_closing_line` | 閉じるときの返事 |
@@ -380,6 +381,7 @@ flowchart TD
 #define AMARK_DIALECT_ABI 1u
 #define AMARK_DIALECT_DELIMITER_MAX 6        /* 1 つの方言の区切りの種類の数 */
 #define AMARK_DIALECT_DELIMITER_LENGTH_MAX 4 /* 対応に使える列の長さの上限 */
+#define AMARK_DIALECT_BLANK_COLUMNS_MAX 8    /* 空行で消費する桁の数の上限 */
 #define AMARK_DIALECT_LENGTH(n) (1u << ((n) - 1)) /* lengths のビット */
 #define AMARK_DIALECT_TOP ((size_t)-1)       /* 返事の、親のないブロック */
 
@@ -400,6 +402,7 @@ typedef struct amark_dialect_kind {
     int blank;         /* amark_dialect_blank_t。ブロックだけが使う */
     amark_dialect_block_continue_fn continue_fn; /* ブロックだけ。NULL：続かない */
     amark_dialect_block_close_fn close_fn;       /* ブロックだけ。NULL：そのまま */
+    unsigned blank_columns; /* 空行でも続くコンテナだけ。空行で消費する桁の数 */
 } amark_dialect_kind_t;
 
 typedef struct amark_dialect_block_start {
@@ -623,7 +626,7 @@ amark_error_t amark_dialect_reject(amark_dialect_run_t *run, size_t extension,
   1. `struct_size == sizeof(amark_dialect_t)` かつ `abi == AMARK_DIALECT_ABI`（3.2）。
   2. `extension_count > 0` なら `extensions` とその各要素が `NULL` でない。数が 0 でない配列は `NULL` でない。
   3. 各拡張の `name` が `NULL` でなく、空でない（3.3）。
-  4. 各種類：`id >= AMARK_KIND_DIALECT_MIN`（3.4）。`cls` と `blank` が定義された値。インラインの種類は `continue_fn` と `close_fn` が `NULL`（3.7）。同じ `id` が方言の全体で 1 回だけ（3.5。種類の数の 2 乗の比較）。
+  4. 各種類：`id >= AMARK_KIND_DIALECT_MIN`（3.4）。`cls` と `blank` が定義された値。インラインの種類は `continue_fn` と `close_fn` が `NULL`（3.7）。`blank_columns` は `AMARK_DIALECT_BLANK_COLUMNS_MAX` 以下で、`BLANK_CONTINUES` のコンテナでない種類では 0（3.14）。同じ `id` が方言の全体で 1 回だけ（3.5。種類の数の 2 乗の比較）。
   5. 各開始の規則：`fn` が `NULL` でない。`kind` がその拡張のブロックの種類（3.6、3.7）。
   6. 各インラインの規則：`fn` が `NULL` でない。`trigger` が 0x21 から 0x7E。`kind` がその拡張のインラインの種類（3.6、3.7）。
   7. 各区切りの種類：`ch` が ASCII の句読点で、CommonMark の起動文字（`` \ ` & < * _ [ ] ! ``）でない。方言の全体で、ほかの区切りの `ch` とも、どのインラインの規則の `trigger` とも重ならない（8.6）。`lengths` が 0 でなく、下位 4 ビットの外にビットがない（8.7）。`kind` がその拡張のインラインの種類（3.6、3.7）。方言の全体の数が `AMARK_DIALECT_DELIMITER_MAX` 以下（8.8）。
@@ -772,12 +775,12 @@ amark_error_t amark_block_parse(amark_document_t *doc,
 - ブロックの開始は `position`、つまり空白でない最初のバイトである。
 
 **継続**（`continue_block` の `default` の枝）
-- 行の残りが空行のとき：規則を呼ばない。`blank` が `BLANK_CLOSES` なら `CONTINUE_NO`、`BLANK_CONTINUES` なら、何も消費せずに `CONTINUE_YES`（5.6）。
+- 行の残りが空行のとき：規則を呼ばない。`blank` が `BLANK_CLOSES` なら `CONTINUE_NO`、`BLANK_CONTINUES` なら `CONTINUE_YES`（5.6）。そのとき、コンテナは、子を持つリスト項目と同じく、`indent >= blank_columns` なら `blank_columns` 桁を（タブの途中まで、桁で）、そうでなければ空白のすべてを消費する。リーフは何も消費しない。`blank_columns` が 0 なら、どちらも何も消費しない。方言のコンテナの `content_indent` は、親の `content_indent` に `blank_columns` を足したものにする（空行の打ち切りが、リスト項目と同じ計算で消費を求める）。
 - `BLANK_CONTINUES` のコンテナは、リストと同じく `blank_run` の印を持つ。空行で続いたときに印を付け、空行でない行で消す。印が付いている所へ次の空行が来て、`blank_run_continues` が真なら、`CONTINUE_BLANK_RUN` を返して、内側の要素の照合を省く。これで、空行でも続くコンテナを深く入れ子にして空行を並べても、空行 1 つの費用が深さによらない（13.5）。
 - 空行でないとき：`continue_fn` が `NULL` なら `CONTINUE_NO`（5.7）。あれば 1 回呼ぶ。入力の `position` は、プレフィックスの後ろの、いまの位置である（空白の上にあることがある）。
 - 検査：`consumed.start == position`（`ORIGIN`）、`consumed.end <= line_end` かつ `start <= end`（`LINE`）。
 - 採用：`consumed.end` までバイトで進み（タブは 1 つを丸ごと消費する）、`data` を書き戻す。コンテナは、`end` をその行の内容の終わりにする。
-- 空行の打ち切りの中身（`blank_run_continues`、`add_blank_run_line`）は変えない。前の空行で、`BLANK_CLOSES` のブロックは閉じてあり、残る方言のブロックは `BLANK_CONTINUES` なので、「内側に残っている要素は、次の空行でも必ず続く」の前提が保たれる。`add_blank_run_line` は、打ち切りを始めた要素の添字を受け取るだけで、その種類を見ないので、方言のコンテナから始めても同じに働く。打ち切りの行で、いちばん内側が方言のブロックなら、いまの「コードブロックでも HTML ブロックでもない」枝（空行の記録を書く）に入る。
+- 空行の打ち切りの中身（`blank_run_continues`、`add_blank_run_line`）は、方言のコンテナの `content_indent` を、子を持つリスト項目の `content_indent` と同じに扱う。前の空行で、`BLANK_CLOSES` のブロックは閉じてあり、残る方言のブロックは `BLANK_CONTINUES` なので、「内側に残っている要素は、次の空行でも必ず続く」の前提が保たれる。`add_blank_run_line` は、打ち切りを始めた要素の添字を受け取るだけで、その種類を見ないので、方言のコンテナから始めても同じに働く。打ち切りの行で、いちばん内側が方言のブロックなら、いまの「コードブロックでも HTML ブロックでもない」枝（空行の記録を書く）に入る。
 
 **行を足す**（`add_line` に、方言のリーフの枝を足す）
 - 空行でない行：行の記録を、段落と同じく、空白でない最初のバイトにする。`end` をその行の内容の終わりにする（5.11）。
@@ -996,7 +999,7 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 
 ### 単体テスト：`tests/unit/test_dialect_block.c`
 - BOX と NOTE：種類、別、範囲、行、親子の関係。入れ子（BOX の中のリスト、リスト項目の中の BOX、BOX の中の BOX）。BOX が段落に割り込む。BOX の中の怠惰な継続行（4.5、4.8、5.4、5.5、5.11、15.3、15.11）。
-- 空行：BOX は空行で閉じ、NOTE は空行をまたいで続く。NOTE の中にリスト、コードブロック、HTML ブロック、FENCE を入れ、空行を 1 行・2 行・3 行と続けても、どのブロックも同じ所で終わる（空行の打ち切り）（5.6、15.11）。
+- 空行：BOX は空行で閉じ、NOTE は空行をまたいで続く。NOTE の中にリスト、コードブロック、HTML ブロック、FENCE を入れ、空行を 1 行・2 行・3 行と続けても、どのブロックも同じ所で終わる（空行の打ち切り）（5.6、15.11）。空白だけの行（空白の数が `blank_columns` より少ない・等しい・多い）を挟んでも、同じ内容のリスト項目と同じ所で終わる（5.6）。
 - FENCE：段落に割り込まない。空行をまたぐ。閉じる行を `data` で覚える。属性の値が読める。範囲が最後の空行でない行で終わる（4.7、4.9、5.3、6.1、6.5）。
 - LINE：インラインとして解析する範囲が、ブロックの子のインラインのノードになる（6.8）。
 - GRID：段落の前半が段落のまま残り、後半が GRID・ROW・CELL になる。セルの中の強調とコードスパンがインラインのノードになる。リンク参照定義で始まる段落では、定義が先に取り出される。Setext 見出しになる段落では呼ばれない（6.2、6.6、6.7、6.13）。
@@ -1058,3 +1061,4 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 - **規則が `INVALID_INPUT` をそのまま返したとき**：閉じるときの規則では、返事の最初の違反の診断が 1 件だけ残る。後処理の規則でも、その呼び出しの中で不採用になった操作があれば、操作の診断の 1 件だけにし、戻り値の `STATUS` の診断は足さない（2 つの差し込み口をそろえた）。不採用の操作がないのに `INVALID_INPUT` を返したときと、`INVALID_INPUT` のほかの定めていない値は、これまでどおり `STATUS` にする。
 - **テスト用の方言**：GRID は、最初の行の後で `|` で始まらない行を、前の行の最後のセルの続きにする（6.9 のテストのため）。NOTE と LINE の開始は段落に割り込む。TASK の属性は、文書の中での TASK の番号。
 - **上流の設計の更新**：inline-parser の `design.md`（下限の表の大きさ、区切りの種類の項目、インラインの親）と、`structure.md` の依存の図は、この spec の変更に合わせて更新が要る。
+- **空行で消費する桁の数**：空行でも続くコンテナは、空行で何も消費しなかったため、中の空のリスト項目が、空白だけの行で、リスト項目の中と違って続いていた。種類の登録に `blank_columns` を足し、空行ではリスト項目と同じ決まりで消費するようにした（要件 2.9、3.14、5.6 を合わせて直した）。公開前なので、`AMARK_DIALECT_ABI` は 1 のままにした。テスト用の方言の NOTE は 2 桁。

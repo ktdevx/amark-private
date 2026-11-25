@@ -182,13 +182,30 @@ NAOS_TEST(rule3_same_names_are_valid)
 }
 
 /* ---------------------------------------------------------------------- */
-/* Rule 4: the kinds (3.4, 3.5, 3.7) */
+/* Rule 4: the kinds (3.4, 3.5, 3.7, 3.14) */
 
 NAOS_TEST(rule4_lowest_dialect_id_is_valid)
 {
     VALID_DEF(d);
     NAOS_CHECK_UINT_EQ(d.kinds1[0].id, AMARK_KIND_DIALECT_MIN);
     NAOS_CHECK_TRUE(amark_dialect_validate(&d.dialect));
+}
+
+NAOS_TEST(rule4_blank_columns_of_a_continuing_container_are_valid)
+{
+    unsigned columns;
+    VALID_DEF(d);
+
+    /* BOX is a container that goes on over blank lines. */
+    NAOS_CHECK_INT_EQ(d.kinds1[0].cls, AMARK_DIALECT_CONTAINER);
+    NAOS_CHECK_INT_EQ(d.kinds1[0].blank, AMARK_DIALECT_BLANK_CONTINUES);
+    NAOS_CHECK_UINT_EQ(AMARK_DIALECT_BLANK_COLUMNS_MAX, 8);
+    for (columns = 0; columns <= AMARK_DIALECT_BLANK_COLUMNS_MAX; columns++) {
+        d.kinds1[0].blank_columns = columns;
+        NAOS_CHECK_TRUE(amark_dialect_validate(&d.dialect));
+    }
+    d.kinds1[0].blank_columns = AMARK_DIALECT_BLANK_COLUMNS_MAX + 1;
+    NAOS_CHECK_FALSE(amark_dialect_validate(&d.dialect));
 }
 
 /* ---------------------------------------------------------------------- */
@@ -293,6 +310,7 @@ NAOS_SUITE(validate,
     NAOS_ADD_TEST(rule2_null_arrays_with_no_count_are_valid),
     NAOS_ADD_TEST(rule3_same_names_are_valid),
     NAOS_ADD_TEST(rule4_lowest_dialect_id_is_valid),
+    NAOS_ADD_TEST(rule4_blank_columns_of_a_continuing_container_are_valid),
     NAOS_ADD_TEST(rule6_trigger_bounds_are_valid),
     NAOS_ADD_TEST(rule6_same_trigger_in_two_rules_is_valid),
     NAOS_ADD_TEST(rule7_every_allowed_character_is_valid),

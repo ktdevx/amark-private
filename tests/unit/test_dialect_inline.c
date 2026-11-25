@@ -721,8 +721,8 @@ static amark_error_t rule_star(const amark_dialect_inline_t *in, void *state,
 }
 
 static const amark_dialect_kind_t k_first_kinds[] = {
-    {K_A, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL},
-    {K_B, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL},
+    {K_A, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL, 0},
+    {K_B, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL, 0},
 };
 /* "%a" and "%b"; '^' and '=' are always rejected. */
 static const amark_dialect_inline_rule_t k_first_inlines[] = {
@@ -736,8 +736,8 @@ static const amark_dialect_extension_t k_first_ext = {
     NULL, NULL, NULL};
 
 static const amark_dialect_kind_t k_second_kinds[] = {
-    {K_C, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL},
-    {K_STAR, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL},
+    {K_C, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL, 0},
+    {K_STAR, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL, 0},
 };
 /* Any "%x" and "^x" that "first" did not make; "*...*" on one line. */
 static const amark_dialect_inline_rule_t k_second_inlines[] = {

@@ -19,7 +19,7 @@
  * amark_test_def_init builds a valid definition of two extensions in a
  * caller's amark_test_def_t; each breaker then changes that definition so
  * that exactly one condition of a configuration error (Requirements 3.2 to
- * 3.9, 8.6 to 8.8) holds.
+ * 3.9, 3.14, 8.6 to 8.8) holds.
  */
 
 /* Kinds of the first extension. */

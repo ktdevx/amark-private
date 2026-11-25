@@ -73,6 +73,9 @@ extern "C" {
 /* The longest run of a delimiter character that may be matched. */
 #define AMARK_DIALECT_DELIMITER_LENGTH_MAX 4
 
+/* The most columns amark_dialect_kind_t.blank_columns may be. */
+#define AMARK_DIALECT_BLANK_COLUMNS_MAX 8
+
 /*
  * The bit of amark_dialect_delimiter_t.lengths for runs of n characters,
  * 1 <= n <= AMARK_DIALECT_DELIMITER_LENGTH_MAX.
@@ -89,7 +92,15 @@ typedef enum amark_dialect_class {
     AMARK_DIALECT_INLINE = 3     /* an inline */
 } amark_dialect_class_t;
 
-/* What a blank line does to an open block of a dialect kind. */
+/*
+ * What a blank line does to an open block of a dialect kind. A blank line
+ * is one whose rest (after the prefixes of the blocks that contain the
+ * block) is spaces and tabs only; the continue rule is not called on it.
+ * A container that goes on over it consumes its blank_columns as a list
+ * item with children consumes its content indent: that many columns if the
+ * line has as many columns of white space (part of a tab may be left), or
+ * else all the white space. A leaf that goes on over it consumes nothing.
+ */
 typedef enum amark_dialect_blank {
     AMARK_DIALECT_BLANK_CLOSES = 0,   /* a blank line closes it */
     AMARK_DIALECT_BLANK_CONTINUES = 1 /* it goes on over a blank line */
@@ -260,6 +271,11 @@ typedef struct amark_dialect_kind {
                                                     non-blank line ends it */
     amark_dialect_block_close_fn close_fn;       /* blocks only; NULL: as it
                                                     is */
+    unsigned blank_columns; /* containers that go on over a blank line
+                               only: the columns they consume on one, like
+                               a list item's content indent (see
+                               amark_dialect_blank_t); 0 for other kinds; at
+                               most AMARK_DIALECT_BLANK_COLUMNS_MAX */
 } amark_dialect_kind_t;
 
 /* A block start rule and the block kind of the extension it opens. */

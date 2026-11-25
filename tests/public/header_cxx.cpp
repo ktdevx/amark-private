@@ -96,6 +96,8 @@ static_assert(AMARK_DIALECT_ABI == 1u, "AMARK_DIALECT_ABI");
 static_assert(AMARK_DIALECT_DELIMITER_MAX == 6, "AMARK_DIALECT_DELIMITER_MAX");
 static_assert(AMARK_DIALECT_DELIMITER_LENGTH_MAX == 4,
               "AMARK_DIALECT_DELIMITER_LENGTH_MAX");
+static_assert(AMARK_DIALECT_BLANK_COLUMNS_MAX == 8,
+              "AMARK_DIALECT_BLANK_COLUMNS_MAX");
 static_assert(AMARK_DIALECT_LENGTH(1) == 1u && AMARK_DIALECT_LENGTH(4) == 8u,
               "AMARK_DIALECT_LENGTH");
 static_assert(AMARK_DIALECT_TOP == static_cast<size_t>(-1),
@@ -111,7 +113,8 @@ static_assert(AMARK_DIALECT_BLANK_CLOSES == 0 &&
 // C++11 has no designated initializers): one extension, one kind, no rules.
 const amark_dialect_kind_t dialect_kinds[] = {
     {AMARK_KIND_DIALECT_MIN, AMARK_DIALECT_CONTAINER,
-     AMARK_DIALECT_BLANK_CONTINUES, NULL, NULL},
+     AMARK_DIALECT_BLANK_CONTINUES, NULL, NULL,
+     AMARK_DIALECT_BLANK_COLUMNS_MAX},
 };
 
 const amark_dialect_extension_t dialect_extension = {

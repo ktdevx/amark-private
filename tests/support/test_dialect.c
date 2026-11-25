@@ -261,7 +261,8 @@ static amark_error_t note_start(const amark_dialect_line_t *line, void *state,
 /*
  * NOTE goes on over a line indented at least 2 columns from the position:
  * the prefix is the bytes of the first 2 columns (a tab, whole, may give
- * more). A blank line does not reach the rule: the note goes on over it.
+ * more). A blank line does not reach the rule: the note goes on over it,
+ * consuming its blank_columns (2).
  */
 static amark_error_t note_continue(const amark_dialect_line_t *line,
                                    const amark_dialect_open_block_t *block,
@@ -1010,27 +1011,27 @@ static const amark_dialect_delimiter_t k_test_delimiters[] = {
 
 static const amark_dialect_kind_t k_test_kinds[] = {
     {AMARK_TEST_KIND_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
-     box_continue, box_close},
+     box_continue, box_close, 0},
     {AMARK_TEST_KIND_NOTE, AMARK_DIALECT_CONTAINER,
-     AMARK_DIALECT_BLANK_CONTINUES, note_continue, NULL},
+     AMARK_DIALECT_BLANK_CONTINUES, note_continue, NULL, 2},
     {AMARK_TEST_KIND_FENCE, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CONTINUES,
-     fence_continue, fence_close},
+     fence_continue, fence_close, 0},
     {AMARK_TEST_KIND_LINE, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, line_close},
+     NULL, line_close, 0},
     {AMARK_TEST_KIND_GRID, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, NULL, 0},
     {AMARK_TEST_KIND_ROW, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, NULL, 0},
     {AMARK_TEST_KIND_CELL, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, NULL, 0},
     {AMARK_TEST_KIND_VAR, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, NULL, 0},
     {AMARK_TEST_KIND_STRIKE, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, NULL, 0},
     {AMARK_TEST_KIND_CHECK, AMARK_DIALECT_INLINE, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, NULL, 0},
     {AMARK_TEST_KIND_TASK, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, NULL, 0},
 };
 
 /* The block start rules, in the order they are tried. */
@@ -1126,11 +1127,11 @@ static amark_error_t plain_post(const amark_dialect_post_t *post, void *state,
 
 static const amark_dialect_kind_t k_plain_kinds[] = {
     {AMARK_TEST_KIND_PLAIN_BLOCK, AMARK_DIALECT_CONTAINER,
-     AMARK_DIALECT_BLANK_CONTINUES, plain_continue, plain_close},
+     AMARK_DIALECT_BLANK_CONTINUES, plain_continue, plain_close, 0},
     {AMARK_TEST_KIND_PLAIN_LEAF, AMARK_DIALECT_LEAF,
-     AMARK_DIALECT_BLANK_CLOSES, plain_continue, plain_close},
+     AMARK_DIALECT_BLANK_CLOSES, plain_continue, plain_close, 0},
     {AMARK_TEST_KIND_PLAIN_INLINE, AMARK_DIALECT_INLINE,
-     AMARK_DIALECT_BLANK_CLOSES, NULL, NULL},
+     AMARK_DIALECT_BLANK_CLOSES, NULL, NULL, 0},
 };
 
 static const amark_dialect_block_start_t k_plain_starts[] = {

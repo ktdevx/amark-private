@@ -244,7 +244,7 @@ static void name_empty(amark_test_def_t *d, unsigned long arg)
     d->ext1.name = "";
 }
 
-/* Rule 4: the kinds (3.4, 3.5, 3.7). */
+/* Rule 4: the kinds (3.4, 3.5, 3.7, 3.14). */
 
 /* The id of BOX and of its start rule. */
 static void box_id_set(amark_test_def_t *d, unsigned long arg)
@@ -295,6 +295,33 @@ static void blank_negative(amark_test_def_t *d, unsigned long arg)
 {
     (void)arg;
     d->kinds1[0].blank = -1;
+}
+
+/* blank_columns of the kind at index arg of the first extension. */
+static void blank_columns_on_kind(amark_test_def_t *d, unsigned long arg)
+{
+    d->kinds1[arg].blank_columns = 1;
+}
+
+static void blank_columns_on_continuing_leaf(amark_test_def_t *d,
+                                             unsigned long arg)
+{
+    (void)arg;
+    d->kinds1[1].blank = AMARK_DIALECT_BLANK_CONTINUES;
+    d->kinds1[1].blank_columns = 1;
+}
+
+static void blank_columns_on_closing_container(amark_test_def_t *d,
+                                               unsigned long arg)
+{
+    (void)arg;
+    d->kinds1[0].blank = AMARK_DIALECT_BLANK_CLOSES;
+    d->kinds1[0].blank_columns = 1;
+}
+
+static void blank_columns_set(amark_test_def_t *d, unsigned long arg)
+{
+    d->kinds1[0].blank_columns = (unsigned)arg;
 }
 
 static void inline_kind_continue_fn(amark_test_def_t *d, unsigned long arg)
@@ -419,6 +446,16 @@ const amark_test_def_breaker_t amark_test_def_breakers[] = {
     {"blank negative", blank_negative, 0},
     {"inline kind with a continue rule", inline_kind_continue_fn, 0},
     {"inline kind with a close rule", inline_kind_close_fn, 0},
+    /* Rule 4, blank_columns (3.14). */
+    {"blank_columns on a leaf", blank_columns_on_kind, 1},
+    {"blank_columns on a leaf that goes on over blank lines",
+     blank_columns_on_continuing_leaf, 0},
+    {"blank_columns on an inline kind", blank_columns_on_kind, 2},
+    {"blank_columns on a container that a blank line closes",
+     blank_columns_on_closing_container, 0},
+    {"blank_columns above the most", blank_columns_set,
+     AMARK_DIALECT_BLANK_COLUMNS_MAX + 1},
+    {"blank_columns of all bits", blank_columns_set, (unsigned)-1},
     {"same kind id in one extension", note_id_set, AMARK_TEST_DEF_BOX},
     {"same kind id in two extensions", rule_id_set, AMARK_TEST_DEF_NOTE},
     /* Rule 5 (3.6, 3.7). */

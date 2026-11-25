@@ -152,10 +152,12 @@ typedef struct open_block {
     char marker;
     uint32_t start_number;
     size_t content_indent; /* the sum of the content indents (marker_offset
-                              plus padding) of the list items from the root
-                              to this element, itself included; every element
-                              has it, so the difference of two is what the
-                              items between them consume */
+                              plus padding) of the list items, and of the
+                              blank_columns of the dialect containers, from
+                              the root to this element, itself included;
+                              every element has it, so the difference of two
+                              is what the elements between them consume on
+                              a blank line */
 
     /* Fenced code blocks. */
     char fence_char;
@@ -898,9 +900,11 @@ static continue_result_t continue_list_item(block_parser_t *p,
  * over a blank line). The one exception is an item with nothing
  * in it, which can only be the top: it went on over the previous line by
  * its indentation (a line of white space), and goes on over this one only
- * with as many columns as the items from the list to it consume, the
- * difference of the sums from the root; otherwise it closes, and the
- * elements are matched one by one. That happens once for the item.
+ * with as many columns as the elements from the one at index to it consume
+ * (the dialect container at index consumes its blank_columns, a list
+ * nothing), the difference of the sums from the root of it and of the
+ * parent of the one at index; otherwise it closes, and the elements are
+ * matched one by one. That happens once for the item.
  */
 static bool blank_run_continues(const block_parser_t *p, size_t index)
 {
@@ -908,7 +912,7 @@ static bool blank_run_continues(const block_parser_t *p, size_t index)
 
     if (top->kind == AMARK_KIND_LIST_ITEM && top->child_count == 0) {
         return p->pos.indent >=
-               top->content_indent - stack_at(p, index)->content_indent;
+               top->content_indent - stack_at(p, index - 1)->content_indent;
     }
     return true;
 }
@@ -917,8 +921,12 @@ static bool blank_run_continues(const block_parser_t *p, size_t index)
  * The continuation of the dialect block at index, block (5.1 to 5.9).
  *
  * When the rest of the line is blank, the rule is not called: the
- * registration of the kind closes the block or continues it, consuming
- * nothing (5.6). A container that goes on over blank lines keeps the blank
+ * registration of the kind closes the block or continues it (5.6). A
+ * container that continues consumes its blank_columns as a list item with
+ * children consumes its content indent: by columns (a tab crossing it keeps
+ * the rest of its columns as pad) when the line has as many, otherwise all
+ * of the white space; a leaf consumes nothing. A container that goes on
+ * over blank lines keeps the blank
  * line run mark as a list does, and from the second blank line of a run the
  * elements inside it are not matched (CONTINUE_BLANK_RUN): the previous
  * line closed every element inside it that a blank line does not continue,
@@ -962,6 +970,14 @@ static continue_result_t continue_dialect_block(block_parser_t *p,
                 return CONTINUE_BLANK_RUN;
             }
             block->blank_run = true;
+            if (pos->indent >= dkind->blank_columns) {
+                amark_line_pos_advance(pos, p->bytes, dkind->blank_columns,
+                                       AMARK_ADVANCE_COLUMNS);
+            } else {
+                amark_line_pos_advance(pos, p->bytes,
+                                       pos->first_nonspace - pos->offset,
+                                       AMARK_ADVANCE_BYTES);
+            }
         }
         return CONTINUE_YES;
     }
@@ -1491,6 +1507,8 @@ static amark_error_t open_dialect_block(
     block->dkind = dkind;
     block->extension = extension;
     block->data = out->data;
+    /* 0 unless a container that goes on over blank lines (3.14). */
+    block->content_indent += dkind->blank_columns;
     amark_line_pos_advance(pos, p->bytes, out->consumed.end - pos->offset,
                            AMARK_ADVANCE_BYTES);
     *container = index;
@@ -1863,8 +1881,8 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
 
 /*
  * The blank line cutoff: the first phase came to the list at index list (or
- * to a dialect container that goes on over blank lines, which consumes
- * nothing on them), the rest of the line is blank, it was blank there on
+ * to a dialect container that goes on over blank lines, which consumes its
+ * blank_columns on them), the rest of the line is blank, it was blank there on
  * the previous line too, and every element inside it continues
  * (blank_run_continues). The line changes nothing else: nothing opens or
  * closes on it, and the blank line marks stay as the previous line left
@@ -1873,19 +1891,22 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
  * line of a run of blank lines.
  *
  * The line gets the record of a blank line, or is added to the code or HTML
- * block at the top. Then the items between the list and the top consume
- * their content indents: all of their columns, which are the difference of
- * the sums from the root, when the line has as many; otherwise the item
- * where the columns run out takes all of the white space, and so do the
- * items after it. The leaf then consumes its own prefix, as on any blank
- * line.
+ * block at the top. Then the elements from the one at index list to the top
+ * consume their content indents (the items) and blank_columns (the dialect
+ * containers, that at index list included): all of their columns, which
+ * are the difference of the sums from the root of the top and of the parent
+ * of the one at index list, when the line has as many; otherwise the
+ * element where the columns run out takes all of the white space, and so
+ * do the elements after it. The leaf then consumes its own prefix, as on
+ * any blank line.
  */
 static amark_error_t add_blank_run_line(block_parser_t *p, size_t list)
 {
     amark_line_pos_t *pos = &p->pos;
     size_t top = stack_top(p);
     open_block_t *leaf = stack_at(p, top);
-    size_t items = leaf->content_indent - stack_at(p, list)->content_indent;
+    size_t items =
+        leaf->content_indent - stack_at(p, list - 1)->content_indent;
 
     p->all_matched = true;
     if (leaf->kind != AMARK_KIND_CODE_BLOCK &&

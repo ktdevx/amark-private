@@ -40,7 +40,9 @@
  *         it, are its prefix); a blank line closes it.
  *   NOTE  "@note:" at the start of a block opens a note, which interrupts
  *         a paragraph. It goes on over a line indented at least 2 columns
- *         (the first 2 columns are its prefix) and over blank lines.
+ *         (the first 2 columns are its prefix) and over blank lines, on
+ *         which it consumes 2 columns as a list item with a content indent
+ *         of 2 does (its blank_columns is 2).
  *   FENCE "@@@" at the start of a block opens a fence, which does not
  *         interrupt a paragraph. It goes on over every line (blank ones
  *         included), consuming nothing, up to and with the next line whose

@@ -187,6 +187,14 @@ static bool kinds_are_valid(const amark_dialect_t *dialect)
                 (kind->continue_fn != NULL || kind->close_fn != NULL)) {
                 return false;
             }
+            /* blank_columns: containers that go on over blank lines only
+               (3.14). */
+            if (kind->blank_columns > AMARK_DIALECT_BLANK_COLUMNS_MAX ||
+                (kind->blank_columns != 0 &&
+                 (kind->cls != AMARK_DIALECT_CONTAINER ||
+                  kind->blank != AMARK_DIALECT_BLANK_CONTINUES))) {
+                return false;
+            }
             if (is_registered_before(dialect, i, k, kind->id)) {
                 return false;
             }

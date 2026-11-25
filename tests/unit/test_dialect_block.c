@@ -1595,9 +1595,9 @@ static amark_error_t good_start(const amark_dialect_line_t *line, void *state,
 
 static const amark_dialect_kind_t k_probe_kinds[] = {
     {K_PROBE, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES, NULL,
-     NULL},
+     NULL, 0},
     {K_PROBE_LEAF, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CLOSES, NULL,
-     NULL},
+     NULL, 0},
 };
 static const amark_dialect_block_start_t k_probe_starts[] = {
     {K_PROBE_LEAF, false, probe_other},
@@ -1608,7 +1608,8 @@ static const amark_dialect_extension_t k_probe_ext = {
     NULL, NULL, NULL};
 
 static const amark_dialect_kind_t k_bad_kinds[] = {
-    {K_BAD, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES, NULL, NULL},
+    {K_BAD, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES, NULL,
+     NULL, 0},
 };
 static const amark_dialect_block_start_t k_bad_starts[] = {
     {K_BAD, true, bad_start},
@@ -1619,7 +1620,7 @@ static const amark_dialect_extension_t k_bad_ext = {
 
 static const amark_dialect_kind_t k_good_kinds[] = {
     {K_GOOD, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES, NULL,
-     NULL},
+     NULL, 0},
 };
 static const amark_dialect_block_start_t k_good_starts[] = {
     {K_GOOD, true, good_start},
@@ -2225,7 +2226,7 @@ static amark_error_t cont_continue(const amark_dialect_line_t *line,
 
 static const amark_dialect_kind_t k_cont_kinds[] = {
     {K_CONT, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CONTINUES,
-     cont_continue, NULL},
+     cont_continue, NULL, 0},
 };
 static const amark_dialect_block_start_t k_cont_starts[] = {
     {K_CONT, false, cont_start},
@@ -2424,11 +2425,16 @@ NAOS_TEST(dialect_blocks_close_at_the_end_of_the_content)
  * Parses "@note:" + rest and "-     " + rest (a list item whose first line
  * is blank, with the same content indent of 2 columns, so that the bytes
  * after the first line are the same) and requires the note and the item to
- * have the same range, the same blocks inside and the same blocks after.
+ * have the same range, the same blocks inside and the same blocks after,
+ * and every line after the first to have the same line record.
  */
 static void check_note_as_item(const char *rest)
 {
     char input[256];
+    amark_line_record_t records[256];
+    amark_line_record_t record;
+    size_t lines;
+    size_t line;
     char inside[SHAPE_SIZE];
     char after[SHAPE_SIZE];
     char want[SHAPE_SIZE];
@@ -2448,6 +2454,9 @@ static void check_note_as_item(const char *rest)
     NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &note));
     shape_of(amark_node_first_child(g_doc, node), inside);
     shape_of(amark_node_next_sibling(g_doc, node), after);
+    for (lines = 0; amark_line_get(g_doc, lines + 2, &records[lines]);
+         lines++) {
+    }
 
     (void)memcpy(input, "-     ", 6);
     parse_with(amark_test_dialect(), input, length, 0);
@@ -2464,6 +2473,12 @@ static void check_note_as_item(const char *rest)
     NAOS_CHECK_UINT_EQ(note.end, range.end);
     shape_of(amark_node_first_child(g_doc, node), want);
     NAOS_CHECK_STR_EQ(inside, want);
+    for (line = 0; line < lines; line++) {
+        NAOS_REQUIRE_TRUE(amark_line_get(g_doc, line + 2, &record));
+        NAOS_CHECK_UINT_EQ(record.content_start, records[line].content_start);
+        NAOS_CHECK_UINT_EQ(record.pad, records[line].pad);
+    }
+    NAOS_CHECK_FALSE(amark_line_get(g_doc, lines + 2, &record));
 }
 
 /* The parts of the inputs below, between which the blank lines go. */
@@ -2491,7 +2506,18 @@ static const note_case_t k_note_cases[] = {
 
 /* The blank lines put between the parts. */
 static const char *const k_note_blanks[] = {
-    "\n", "\n\n", "\n\n\n", "  \n", " \n\t\n      \n"};
+    "\n",
+    "\n\n",
+    "\n\n\n",
+    " \n",
+    "  \n",
+    "   \n",
+    "    \n",
+    "\t\n",
+    " \n\t\n      \n",
+    "   \n   \n",
+    "  \n\n    \n",
+    "\t\n \n\t\n"};
 
 NAOS_TEST(blocks_in_a_note_end_where_they_end_in_a_list_item)
 {
@@ -2518,6 +2544,22 @@ NAOS_TEST(blocks_in_a_note_end_where_they_end_in_a_list_item)
     /* An empty item inside: one empty line closes it in both. */
     check_note_as_item("\n  -\n\n    a\n");
     check_note_as_item("\n  -\n\n\n    a\n");
+    check_note_as_item("\n  -\n  \n    a\n");
+    check_note_as_item("\n  -\n   \n    a\n");
+    check_note_as_item("\n  -\n    \n    a\n");
+    check_note_as_item("\n  -\n\t\n    a\n");
+    check_note_as_item("\n  -\n \n    a\n");
+    /*
+     * The empty item goes on over a line of 4 columns; on the next one,
+     * the cutoff, only with as many columns as the note and the item take.
+     */
+    check_note_as_item("\n  -\n    \n   \n    a\n");
+    check_note_as_item("\n  -\n    \n    \n    a\n");
+    check_note_as_item("\n  -\n     \n  \n    a\n");
+    check_note_as_item("\n  -\n\t\n   \n    a\n");
+    check_note_as_item("\n  -\n\t\n\t\n    a\n");
+    check_note_as_item("\n  - b\n    -\n      \n     \n      a\n");
+    check_note_as_item("\n  - b\n    -\n      \n      \n      a\n");
 }
 
 NAOS_TEST(blank_lines_in_a_note_are_added_the_same_with_and_without_cutoff)
@@ -2533,13 +2575,92 @@ NAOS_TEST(blank_lines_in_a_note_are_added_the_same_with_and_without_cutoff)
     PARSE(amark_test_dialect(), content, 0);
     check_shape("doc[0,50](note[0,49](code[13,49]))");
     /*
-     * On the blank lines the note consumes nothing and the code takes 4
-     * columns, with or without the cutoff; elsewhere the note takes 2.
+     * On every line the note takes its 2 columns (on the blank lines, its
+     * blank_columns) and the code 4, with or without the cutoff.
      */
-    check_line_record(3, 19);
-    check_line_record(4, 28);
-    check_line_record(5, 37);
+    check_line_record(3, 21);
+    check_line_record(4, 30);
+    check_line_record(5, 39);
     check_line_record(6, 48);
+}
+
+NAOS_TEST(a_container_of_no_blank_columns_consumes_nothing_on_blank_lines)
+{
+    static const char content[] =
+        "%     x\n"   /* 0: the container takes "%", the code 4 columns */
+        "      \n"    /* 8: the first blank line, matched */
+        "      \n"    /* 15: the cutoff from the second one */
+        "      \n";   /* 22 */
+    amark_line_record_t record;
+
+    PARSE(&k_cont_dialect, content, 0);
+    check_shape("doc[0,29](cont[0,7](code[5,7]))");
+    /* The container consumes nothing: the code takes the first 4. */
+    check_line_record(2, 12);
+    check_line_record(3, 19);
+    check_line_record(4, 26);
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, 4, &record));
+    NAOS_CHECK_UINT_EQ(record.pad, 0);
+}
+
+/*
+ * The first blank line of a run is matched element by element, the later
+ * ones are cut off (blank_run_continues): a line of the same white space
+ * gets the same record either way, whatever is open inside the note.
+ */
+NAOS_TEST(whitespace_blank_lines_in_a_note_are_added_the_same_with_cutoff)
+{
+    static const char *const insides[] = {
+        "      x\n",       /* indented code */
+        "  - a\n",         /* a list item with children */
+        "  - a\n    - b\n", /* nested items */
+        "  @note: a\n",    /* a note in the note */
+        "  a\n",           /* a paragraph, closed by the first blank */
+        "  -\n",           /* an empty item, closed by the first blank */
+    };
+    static const char *const blanks[] = {
+        "", " ", "  ", "   ", "    ", "     ", "      ", "        ",
+        "\t", " \t", "  \t", "   \t", "\t\t", "  \t  "};
+    size_t i;
+    size_t b;
+
+    for (i = 0; i < sizeof insides / sizeof insides[0]; i++) {
+        for (b = 0; b < sizeof blanks / sizeof blanks[0]; b++) {
+            char input[128];
+            amark_line_record_t first;
+            amark_line_record_t record;
+            size_t first_line;
+            size_t first_start;
+            size_t line;
+            size_t start;
+
+            (void)strcpy(input, "@note:\n");
+            (void)strcat(input, insides[i]);
+            first_start = strlen(input);
+            for (line = 0; line < 3; line++) {
+                (void)strcat(input, blanks[b]);
+                (void)strcat(input, "\n");
+            }
+            (void)strcat(input, "  z\n");
+            parse_with(amark_test_dialect(), input, strlen(input), 0);
+            first_line = 2;
+            for (line = 0; insides[i][line] != '\0'; line++) {
+                first_line += insides[i][line] == '\n';
+            }
+            NAOS_REQUIRE_TRUE(amark_line_get(g_doc, first_line, &first));
+            start = first_start;
+            for (line = 1; line < 3; line++) {
+                start += strlen(blanks[b]) + 1;
+                NAOS_REQUIRE_TRUE(
+                    amark_line_get(g_doc, first_line + line, &record));
+                (void)naos_check(record.content_start - start ==
+                                     first.content_start - first_start,
+                                 input, __FILE__, __LINE__);
+                (void)naos_check(record.pad == first.pad, input, __FILE__,
+                                 __LINE__);
+            }
+        }
+    }
 }
 
 NAOS_TEST(blank_lines_after_a_deep_note_cost_no_more_than_the_depth_once)
@@ -2762,6 +2883,10 @@ NAOS_SUITE(cont,
     NAOS_ADD_TEST(dialect_blocks_close_at_the_end_of_the_content),
     NAOS_ADD_TEST(blocks_in_a_note_end_where_they_end_in_a_list_item),
     NAOS_ADD_TEST(blank_lines_in_a_note_are_added_the_same_with_and_without_cutoff),
+    NAOS_ADD_TEST(
+        a_container_of_no_blank_columns_consumes_nothing_on_blank_lines),
+    NAOS_ADD_TEST(
+        whitespace_blank_lines_in_a_note_are_added_the_same_with_cutoff),
     NAOS_ADD_TEST(blank_lines_after_a_deep_note_cost_no_more_than_the_depth_once),
     NAOS_ADD_TEST(continue_rules_see_the_line_the_position_and_the_block),
     NAOS_ADD_TEST(an_accepted_continue_writes_back_data_and_extends_the_block),
@@ -2887,11 +3012,11 @@ static amark_error_t shut_close(const amark_dialect_closing_t *closing,
 
 static const amark_dialect_kind_t k_shut_kinds[] = {
     {K_SHUT_LEAF, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CLOSES, NULL,
-     shut_close},
+     shut_close, 0},
     {K_SHUT_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES, NULL,
-     shut_close},
+     shut_close, 0},
     {K_SHUT_BARE, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CLOSES, NULL,
-     NULL},
+     NULL, 0},
 };
 static const amark_dialect_block_start_t k_shut_starts[] = {
     {K_SHUT_LEAF, true, shut_start_leaf},

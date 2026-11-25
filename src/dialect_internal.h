@@ -33,8 +33,11 @@
  *      not NULL.
  *   3. The name of each extension is not NULL and not empty.
  *   4. Each kind: id >= AMARK_KIND_DIALECT_MIN; cls and blank are defined
- *      values; an inline kind has no continue_fn and no close_fn; no id is
- *      registered twice in the whole dialect.
+ *      values; an inline kind has no continue_fn and no close_fn;
+ *      blank_columns is at most AMARK_DIALECT_BLANK_COLUMNS_MAX, and 0
+ *      unless the kind is a container whose blank is
+ *      AMARK_DIALECT_BLANK_CONTINUES (3.14); no id is registered twice in
+ *      the whole dialect.
  *   5. Each block start rule: fn is not NULL and kind is a block kind of
  *      its extension.
  *   6. Each inline rule: fn is not NULL, trigger is 0x21 to 0x7E and kind
