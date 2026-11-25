@@ -376,7 +376,7 @@ AMARK_API amark_error_t amark_parse(const char *content, size_t length,
                                     const amark_config_t *config,
                                     amark_document_t **out);
 ```
-- Preconditions: `content` は、`length` バイトを読めるバイト列。`length` が 0 のときは `NULL` でもよい。`config` は `NULL`（既定の設定）か、`AMARK_CONFIG_INIT` または `amark_config_init(&config, AMARK_CONFIG_VERSION)` で初期化した設定。成功したとき、利用者は、文書を解放するまで `content` を変更も解放もしない。
+- Preconditions: `content` は、`length` バイトを読めるバイト列。`length` が 0 のときは `NULL` でもよい。`config` は `NULL`（既定の設定）か、`AMARK_CONFIG_INIT` または `amark_config_init(&config, sizeof(config), AMARK_CONFIG_ABI)` で初期化した設定。成功したとき、利用者は、文書を解放するまで `content` を変更も解放もしない。
 - Postconditions（成功）: `AMARK_ERROR_NONE` を返す。`*out` は、ブロックの木を持つ文書である。根の範囲は解析する範囲と同じ。木は syntax-tree の不変条件をすべて満たす。文書には、解析のデータ（行の記録、定義の表、インラインに渡す内容）が付いている。
 - Postconditions（失敗）: 確保したものをすべて解放してある。`out` が `NULL` でなければ、`*out` は `NULL` である。
 - 検査の順と、返すエラー:
