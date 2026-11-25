@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <amark/dialect.h>
 #include <amark/error.h>
@@ -60,6 +61,7 @@ typedef struct amark_dialect_reply_block {
     size_t child_end;      /* end of the last child added (start of the
                               range while there is none) */
     bool has_children;
+    amark_node_id_t node;  /* the node made by amark_dialect_reply_apply */
 } amark_dialect_reply_block_t;
 
 /*
@@ -116,5 +118,69 @@ amark_error_t amark_dialect_reply_begin(amark_dialect_run_t *run,
 amark_error_t amark_dialect_reply_finish(amark_dialect_run_t *run,
                                          amark_dialect_reply_t *reply,
                                          bool *valid);
+
+/*
+ * Applies reply, which amark_dialect_reply_finish found valid, to run->doc
+ * in one pass over its blocks, in the order they were added (a parent comes
+ * before its children, siblings in the order of the content):
+ *   - Each block becomes a node, the last child of the node of its parent
+ *     block, or of parent for a block without one: a dialect kind as a
+ *     block (AMARK_NODE_CLASS_BLOCK), a paragraph part as a paragraph.
+ *     Block 0 of a container reply is not made: it is existing, the node
+ *     the block parser made when the container opened.
+ *   - The attributes of a block are copied into the document (2.5, 12.2).
+ *   - The inline content of a leaf is added to the inline contents. A
+ *     paragraph part gets the inline content of a paragraph: its range
+ *     without the spaces and tabs at its end (6.7).
+ *
+ * parent is a node at depth parent_depth (the root is at depth 0); a block
+ * at level n of the reply is at depth parent_depth + 1 + n. Before adding
+ * anything, checks that no new node is deeper than max_depth and that the
+ * document will have at most max_nodes nodes (0: no limit), and returns
+ * AMARK_ERROR_LIMIT_EXCEEDED if not (10.11). A failed allocation returns
+ * AMARK_ERROR_NOMEM; the parse then fails, so the nodes already added are
+ * not removed.
+ */
+amark_error_t amark_dialect_reply_apply(amark_dialect_run_t *run,
+                                        amark_dialect_reply_t *reply,
+                                        amark_node_id_t parent,
+                                        size_t parent_depth,
+                                        amark_node_id_t existing,
+                                        size_t max_depth, size_t max_nodes);
+
+/* ---------------------------------------------------------------------- */
+/* The lines of a closing block or of an inline content */
+
+/*
+ * The lines a rule reads with amark_dialect_closing_line or
+ * amark_dialect_inline_next_line: those of a range of doc, as the lines of
+ * a node over that range (amark_document_range_lines). The line records of
+ * the document are the ones the block parser wrote.
+ */
+struct amark_dialect_lines {
+    const amark_document_t *doc;
+    size_t first_line; /* the line of the start of the range */
+    size_t line_count; /* lines from first_line to the line of its end */
+};
+
+/*
+ * Sets *lines to the lines of range of doc, which has parse data;
+ * range.start <= range.end <= the content length.
+ */
+void amark_dialect_lines_init(struct amark_dialect_lines *lines,
+                              const amark_document_t *doc,
+                              amark_range_t range);
+
+/*
+ * Fills in *closing, the input of a close rule, for the block of kind over
+ * range of doc with data (0 for a paragraph), and *lines, the lines of that
+ * range, which closing refers to; both stay valid while doc does and lines
+ * is not changed.
+ */
+void amark_dialect_closing_init(amark_dialect_closing_t *closing,
+                                struct amark_dialect_lines *lines,
+                                const amark_document_t *doc,
+                                amark_kind_t kind, amark_range_t range,
+                                uint64_t data);
 
 #endif /* AMARK_DIALECT_REPLY_H */

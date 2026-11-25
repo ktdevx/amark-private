@@ -48,6 +48,8 @@ amark_node_raw
 amark_node_text
 amark_node_text_alloc
 amark_text_free
+amark_dialect_closing_line
+amark_dialect_inline_next_line
 amark_dialect_reply_add_block
 amark_dialect_reply_set_data
 amark_dialect_reply_set_inline

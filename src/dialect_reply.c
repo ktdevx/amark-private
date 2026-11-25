@@ -15,6 +15,7 @@
 #include "line.h"
 #include "line_index.h"
 #include "parse_data.h"
+#include "tree_internal.h"
 
 /* ---------------------------------------------------------------------- */
 /* Begin and finish */
@@ -394,4 +395,263 @@ amark_error_t amark_dialect_reply_set_inline(
     block->has_inline = true;
     block->inline_range = range;
     return AMARK_ERROR_NONE;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Apply */
+
+/*
+ * Checks the limits for the nodes reply adds under a parent at
+ * parent_depth, before any is added (10.11).
+ */
+static amark_error_t check_limits(const amark_dialect_reply_t *reply,
+                                  const amark_document_t *doc,
+                                  size_t parent_depth, size_t max_depth,
+                                  size_t max_nodes)
+{
+    size_t count = amark_array_len(&reply->blocks);
+    size_t first = reply->mode == AMARK_DIALECT_REPLY_CONTAINER ? 1 : 0;
+    size_t added;
+    size_t deepest = 0;
+    size_t nodes;
+    size_t i;
+
+    if (count <= first) {
+        return AMARK_ERROR_NONE;
+    }
+    added = count - first;
+    for (i = first; i < count; i++) {
+        size_t level = block_at(reply, i)->level;
+
+        if (level > deepest) {
+            deepest = level;
+        }
+    }
+    /* parent_depth + 1 + deepest > max_depth, without overflow. */
+    if (max_depth != 0 &&
+        (parent_depth >= max_depth ||
+         deepest > max_depth - parent_depth - 1)) {
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    }
+    /* nodes + added > max_nodes, without overflow. */
+    nodes = amark_document_node_count(doc);
+    if (max_nodes != 0 && (nodes > max_nodes || added > max_nodes - nodes)) {
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * The end of the inline content of a paragraph part over [start, end): end
+ * without the spaces and tabs before it (as the block parser cuts the last
+ * line of a paragraph).
+ */
+static size_t trim_end(const unsigned char *bytes, size_t start, size_t end)
+{
+    while (end > start && (bytes[end - 1] == ' ' || bytes[end - 1] == '\t')) {
+        end--;
+    }
+    return end;
+}
+
+amark_error_t amark_dialect_reply_apply(amark_dialect_run_t *run,
+                                        amark_dialect_reply_t *reply,
+                                        amark_node_id_t parent,
+                                        size_t parent_depth,
+                                        amark_node_id_t existing,
+                                        size_t max_depth, size_t max_nodes)
+{
+    amark_document_t *doc = run->doc;
+    const unsigned char *bytes = amark_document_content(doc);
+    size_t count = amark_array_len(&reply->blocks);
+    size_t i;
+    amark_error_t err;
+
+    err = check_limits(reply, doc, parent_depth, max_depth, max_nodes);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+
+    for (i = 0; i < count; i++) {
+        amark_dialect_reply_block_t *block = block_at(reply, i);
+        amark_node_id_t node;
+
+        if (i == 0 && reply->mode == AMARK_DIALECT_REPLY_CONTAINER) {
+            node = existing;
+        } else {
+            amark_node_id_t up = block->parent == AMARK_DIALECT_TOP
+                                     ? parent
+                                     : block_at(reply, block->parent)->node;
+
+            err = amark_tree_append(doc, up, block->kind,
+                                    block->cls == 0 ? AMARK_NODE_CLASS_AUTO
+                                                    : AMARK_NODE_CLASS_BLOCK,
+                                    block->range.start, block->range.end,
+                                    &node);
+            if (err != AMARK_ERROR_NONE) {
+                return err;
+            }
+        }
+        block->node = node;
+
+        if (block->data_size > 0) {
+            err = amark_tree_set_dialect_data(
+                doc, node, amark_array_at(&reply->bytes, block->data_offset),
+                block->data_size);
+            if (err != AMARK_ERROR_NONE) {
+                return err;
+            }
+        }
+        if (block->cls == 0) {
+            err = amark_inline_content_add(
+                doc, node, block->range.start,
+                trim_end(bytes, block->range.start, block->range.end));
+        } else if (block->has_inline) {
+            err = amark_inline_content_add(doc, node,
+                                           block->inline_range.start,
+                                           block->inline_range.end);
+        }
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/* ---------------------------------------------------------------------- */
+/* The line readers */
+
+void amark_dialect_lines_init(struct amark_dialect_lines *lines,
+                              const amark_document_t *doc,
+                              amark_range_t range)
+{
+    size_t first;
+    size_t last;
+
+    amark_document_range_lines(doc, range.start, range.end, &first, &last);
+    lines->doc = doc;
+    lines->first_line = first;
+    lines->line_count = last - first + 1;
+}
+
+void amark_dialect_closing_init(amark_dialect_closing_t *closing,
+                                struct amark_dialect_lines *lines,
+                                const amark_document_t *doc,
+                                amark_kind_t kind, amark_range_t range,
+                                uint64_t data)
+{
+    amark_dialect_lines_init(lines, doc, range);
+    closing->content = (const char *)amark_document_content(doc);
+    closing->content_length = amark_document_content_length(doc);
+    closing->kind = kind;
+    closing->range = range;
+    closing->line_count = lines->line_count;
+    closing->data = data;
+    closing->lines = lines;
+}
+
+/*
+ * Reads line (a line number) of doc: its first byte, where its content
+ * starts (the line record) and where its content ends. Returns false if the
+ * parsed range does not cover it.
+ */
+static bool read_line(const amark_document_t *doc, size_t line,
+                      size_t *start, size_t *content_start, size_t *end)
+{
+    amark_line_bounds_t bounds;
+    amark_line_record_t record;
+
+    if (!amark_line_bounds(doc, line, &bounds) ||
+        !amark_line_get(doc, line, &record)) {
+        return false;
+    }
+    *start = bounds.start;
+    *content_start = record.content_start;
+    *end = bounds.content_end;
+    return true;
+}
+
+bool amark_dialect_closing_line(const amark_dialect_closing_t *closing,
+                                size_t index, amark_dialect_line_span_t *out)
+{
+    const struct amark_dialect_lines *lines;
+    size_t start;
+    size_t content_start;
+    size_t end;
+
+    if (closing == NULL || out == NULL || closing->lines == NULL) {
+        return false;
+    }
+    lines = closing->lines;
+    if (index >= lines->line_count ||
+        !read_line(lines->doc, lines->first_line + index, &start,
+                   &content_start, &end)) {
+        return false;
+    }
+    /* Cut the first line to the start of the block, the last to its end. */
+    if (index == 0) {
+        if (start < closing->range.start) {
+            start = closing->range.start;
+        }
+        if (content_start < closing->range.start) {
+            content_start = closing->range.start;
+        }
+    }
+    if (index == lines->line_count - 1 && end > closing->range.end) {
+        end = closing->range.end;
+    }
+    if (content_start > end) {
+        content_start = end;
+    }
+    if (start > content_start) {
+        start = content_start;
+    }
+    out->start = start;
+    out->content_start = content_start;
+    out->end = end;
+    return true;
+}
+
+bool amark_dialect_inline_next_line(const amark_dialect_inline_t *in,
+                                    size_t line_end, amark_range_t *out)
+{
+    const struct amark_dialect_lines *lines;
+    size_t line;
+    size_t start;
+    size_t content_start;
+    size_t end;
+
+    if (in == NULL || out == NULL || in->lines == NULL) {
+        return false;
+    }
+    lines = in->lines;
+    /* A line ends inside the inline content, and a line follows it. */
+    if (line_end < in->inline_content.start ||
+        line_end >= in->inline_content.end ||
+        in->inline_content.end > amark_document_content_length(lines->doc)) {
+        return false;
+    }
+    line = amark_line_index_line_at(amark_document_line_index(lines->doc),
+                                    line_end);
+    if (line < lines->first_line ||
+        line - lines->first_line + 1 >= lines->line_count ||
+        !read_line(lines->doc, line, &start, &content_start, &end) ||
+        end != line_end) {
+        return false;
+    }
+    line++;
+    if (!read_line(lines->doc, line, &start, &content_start, &end)) {
+        return false;
+    }
+    /* The last line ends where the inline content ends. */
+    if (line - lines->first_line + 1 == lines->line_count ||
+        end > in->inline_content.end) {
+        end = in->inline_content.end;
+    }
+    if (content_start > end) {
+        content_start = end;
+    }
+    out->start = content_start;
+    out->end = end;
+    return true;
 }
