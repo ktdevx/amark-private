@@ -7,6 +7,9 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
+
+#include "document.h"
 
 /* ---------------------------------------------------------------------- */
 /* Kind lookup */
@@ -328,4 +331,177 @@ bool amark_dialect_validate(const amark_dialect_t *dialect)
            kinds_are_valid(dialect) && block_starts_are_valid(dialect) &&
            inline_rules_are_valid(dialect) && delimiters_are_valid(dialect) &&
            state_functions_are_valid(dialect);
+}
+
+/* ---------------------------------------------------------------------- */
+/* The run state */
+
+/* Frees the states of the first `count` extensions, in order. */
+static void free_states(amark_dialect_run_t *run, size_t count)
+{
+    const amark_dialect_extension_t *ext;
+    size_t i;
+
+    for (i = 0; i < count; i++) {
+        ext = run->dialect->extensions[i];
+        if (ext->state_free != NULL) {
+            ext->state_free(run->allocator, run->states[i]);
+        }
+    }
+}
+
+amark_error_t amark_dialect_run_begin(amark_dialect_run_t *run,
+                                      const amark_dialect_t *dialect,
+                                      const amark_allocator_t *allocator,
+                                      amark_document_t *doc)
+{
+    const amark_dialect_extension_t *ext;
+    void *table;
+    amark_error_t err;
+    size_t count = dialect->extension_count;
+    size_t i;
+
+    run->dialect = dialect;
+    run->allocator = allocator;
+    run->doc = doc;
+    run->states = NULL;
+    run->states_made = 0;
+    run->reply = NULL;
+    amark_arena_init(&run->arena, allocator);
+
+    if (count > 0) {
+        err = amark_arena_alloc_array(&run->arena, count, sizeof(void *),
+                                      &table);
+        if (err != AMARK_ERROR_NONE) {
+            amark_arena_deinit(&run->arena);
+            return AMARK_ERROR_NOMEM;
+        }
+        run->states = (void **)table;
+    }
+    for (i = 0; i < count; i++) {
+        ext = dialect->extensions[i];
+        run->states[i] = NULL;
+        if (ext->state_new != NULL &&
+            ext->state_new(allocator, &run->states[i]) != AMARK_ERROR_NONE) {
+            free_states(run, run->states_made);
+            run->states_made = 0;
+            run->states = NULL;
+            amark_arena_deinit(&run->arena);
+            return AMARK_ERROR_NOMEM;
+        }
+        run->states_made = i + 1;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+void amark_dialect_run_end(amark_dialect_run_t *run)
+{
+    free_states(run, run->states_made);
+    run->states_made = 0;
+    run->states = NULL;
+    run->reply = NULL;
+    amark_arena_deinit(&run->arena);
+}
+
+/* ---------------------------------------------------------------------- */
+/* The rejection diagnostic */
+
+/* The longest message: the 64-byte name, "block continue" and the
+ * PARAGRAPH reason make 134 bytes with the NUL. */
+#define REJECT_MESSAGE_SIZE 160
+
+static const char *hook_text(amark_dialect_hook_t hook)
+{
+    switch (hook) {
+    case AMARK_DIALECT_HOOK_BLOCK_START:
+        return "block start";
+    case AMARK_DIALECT_HOOK_BLOCK_CONTINUE:
+        return "block continue";
+    case AMARK_DIALECT_HOOK_BLOCK_CLOSE:
+        return "block close";
+    case AMARK_DIALECT_HOOK_INLINE:
+        return "inline";
+    case AMARK_DIALECT_HOOK_POSTPROCESS:
+        return "postprocess";
+    }
+    return "unknown hook";
+}
+
+static const char *reason_text(amark_dialect_reason_t reason)
+{
+    switch (reason) {
+    case AMARK_DIALECT_REASON_STATUS:
+        return "unknown return value";
+    case AMARK_DIALECT_REASON_ORIGIN:
+        return "range does not start at the position";
+    case AMARK_DIALECT_REASON_LINE:
+        return "range leaves the line";
+    case AMARK_DIALECT_REASON_EMPTY:
+        return "empty range";
+    case AMARK_DIALECT_REASON_BOUNDS:
+        return "range leaves the content";
+    case AMARK_DIALECT_REASON_KIND:
+        return "kind not registered by the extension";
+    case AMARK_DIALECT_REASON_NESTING:
+        return "node not allowed at this place";
+    case AMARK_DIALECT_REASON_INDEX:
+        return "parent is not an earlier block";
+    case AMARK_DIALECT_REASON_PARENT:
+        return "range leaves the parent";
+    case AMARK_DIALECT_REASON_ORDER:
+        return "siblings overlap or are out of order";
+    case AMARK_DIALECT_REASON_INLINE:
+        return "inline content not allowed here";
+    case AMARK_DIALECT_REASON_PREFIX:
+        return "range ends inside a line prefix";
+    case AMARK_DIALECT_REASON_PARAGRAPH:
+        return "paragraph part does not cover whole lines";
+    case AMARK_DIALECT_REASON_NODE:
+        return "not a node of this document";
+    case AMARK_DIALECT_REASON_PROTECTED:
+        return "node cannot be changed";
+    case AMARK_DIALECT_REASON_TEXT:
+        return "not a text node, or a bad split position";
+    }
+    return "unknown reason";
+}
+
+/* Appends the first `length` bytes of text to buffer at *used. The caller
+ * makes sure they fit. */
+static void append(char *buffer, size_t *used, const char *text,
+                   size_t length)
+{
+    memcpy(buffer + *used, text, length);
+    *used += length;
+}
+
+static void append_string(char *buffer, size_t *used, const char *text)
+{
+    append(buffer, used, text, strlen(text));
+}
+
+amark_error_t amark_dialect_reject(amark_dialect_run_t *run, size_t extension,
+                                   amark_dialect_hook_t hook,
+                                   amark_dialect_reason_t reason,
+                                   size_t offset)
+{
+    char message[REJECT_MESSAGE_SIZE];
+    const char *name = run->dialect->extensions[extension]->name;
+    size_t name_length = 0;
+    size_t used = 0;
+
+    /* strnlen is not C99. */
+    while (name_length < AMARK_DIALECT_REJECT_NAME_MAX &&
+           name[name_length] != '\0') {
+        name_length++;
+    }
+    append_string(message, &used, "dialect \"");
+    append(message, &used, name, name_length);
+    append_string(message, &used, "\": ");
+    append_string(message, &used, hook_text(hook));
+    append_string(message, &used, ": ");
+    append_string(message, &used, reason_text(reason));
+    message[used] = '\0';
+    return amark_document_add_diagnostic(run->doc, offset,
+                                         AMARK_SEVERITY_ERROR, message);
 }
