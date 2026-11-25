@@ -4,9 +4,11 @@
  */
 
 /*
- * Unit tests of the postprocessing edits (src/dialect_edit.h) that change a
- * node in place: amark_dialect_edit_set_kind, _set_data and _shrink
- * (Requirements 2.7, 2.8, 9.3, 9.4, 9.6, 9.7, 9.8, 10.1, 10.2, 10.9).
+ * Unit tests of the postprocessing edits (src/dialect_edit.h): those that
+ * change a node in place, amark_dialect_edit_set_kind, _set_data and
+ * _shrink, and those that add nodes, _add_child and _split_text
+ * (Requirements 2.4, 2.5, 2.7, 2.8, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.10,
+ * 10.1, 10.2, 10.9, 10.11, 10.12).
  *
  * Each test builds the same tree with the tree builder (src/tree_internal.h)
  * over k_content, begins a run of a local dialect of two extensions and
@@ -89,7 +91,8 @@ static const char k_content[] =
     "box note mark\n"
     "```\ncode\n```\n"
     "[link](/x) tail\n"
-    "rule\n";
+    "rule\n"
+    "caf\xc3\xa9\n";
 #define CONTENT_LENGTH (sizeof(k_content) - 1)
 
 /* The IDs of the tree that every test starts from, in creation order. */
@@ -269,7 +272,7 @@ NAOS_TEARDOWN(edit)
 /* ---------------------------------------------------------------------- */
 /* Snapshots and checks */
 
-#define SNAPSHOT_SIZE 8192
+#define SNAPSHOT_SIZE 16384
 
 static char g_before[SNAPSHOT_SIZE];
 static char g_after[SNAPSHOT_SIZE];
@@ -354,22 +357,33 @@ static void check_diagnostic(size_t index, size_t offset,
 #define R_PARENT "range leaves the parent"
 #define R_NODE "not a node of this document"
 #define R_PROTECTED "node cannot be changed"
+#define R_BOUNDS "range leaves the content"
+#define R_ORDER "siblings overlap or are out of order"
+#define R_TEXT "not a text node, or a bad split position"
 
 /* The kinds of edit, to run one by its arguments. */
 typedef enum op {
     OP_SET_KIND,
     OP_SET_DATA,
-    OP_SHRINK
+    OP_SHRINK,
+    OP_ADD_CHILD,
+    OP_SPLIT_TEXT
 } op_t;
 
 typedef struct edit {
     op_t op;
-    amark_node_id_t node;
-    amark_kind_t kind;   /* set_kind */
-    const void *data;    /* set_data */
-    size_t size;         /* set_data */
-    amark_range_t range; /* shrink */
+    amark_node_id_t node; /* the parent for add_child */
+    amark_node_id_t hint; /* add_child */
+    amark_kind_t kind;    /* set_kind, add_child */
+    const void *data;     /* set_data, add_child */
+    size_t size;          /* set_data, add_child */
+    amark_range_t range;  /* shrink, add_child */
+    size_t at;            /* split_text */
+    amark_node_id_t *out; /* add_child, split_text */
 } edit_t;
+
+/* Where add_child and split_text store the new node's ID. */
+static amark_node_id_t g_out;
 
 static amark_error_t run_edit(amark_dialect_editor_t *editor,
                               const edit_t *e)
@@ -382,6 +396,12 @@ static amark_error_t run_edit(amark_dialect_editor_t *editor,
                                            e->size);
     case OP_SHRINK:
         return amark_dialect_edit_shrink(editor, e->node, e->range);
+    case OP_ADD_CHILD:
+        return amark_dialect_edit_add_child(editor, e->node, e->hint,
+                                            e->kind, e->range, e->data,
+                                            e->size, e->out);
+    case OP_SPLIT_TEXT:
+        return amark_dialect_edit_split_text(editor, e->node, e->at, e->out);
     }
     return AMARK_ERROR_NONE;
 }
@@ -420,6 +440,33 @@ static edit_t shrink(amark_node_id_t node, size_t start, size_t end)
     return e;
 }
 
+static edit_t add_child(amark_node_id_t parent, amark_node_id_t hint,
+                        amark_kind_t kind, size_t start, size_t end)
+{
+    edit_t e;
+
+    memset(&e, 0, sizeof(e));
+    e.op = OP_ADD_CHILD;
+    e.node = parent;
+    e.hint = hint;
+    e.kind = kind;
+    e.range = rng(start, end);
+    e.out = &g_out;
+    return e;
+}
+
+static edit_t split_text(amark_node_id_t node, size_t at)
+{
+    edit_t e;
+
+    memset(&e, 0, sizeof(e));
+    e.op = OP_SPLIT_TEXT;
+    e.node = node;
+    e.at = at;
+    e.out = &g_out;
+    return e;
+}
+
 /*
  * Runs e, which must be invalid: checks that it returns INVALID_INPUT,
  * leaves the tree exactly as it was, and adds one diagnostic at offset
@@ -430,7 +477,11 @@ static void check_invalid(edit_t e, size_t offset, const char *message)
     size_t diagnostics = amark_document_diagnostic_count(g_doc);
 
     snapshot(g_before);
+    g_out = (amark_node_id_t)12345;
     NAOS_CHECK_INT_EQ(run_edit(&g_editor, &e), AMARK_ERROR_INVALID_INPUT);
+    if (e.out != NULL) {
+        NAOS_CHECK_UINT_EQ(g_out, AMARK_NODE_NONE);
+    }
     snapshot(g_after);
     NAOS_CHECK_STR_EQ(g_after, g_before);
     NAOS_REQUIRE_UINT_EQ(amark_document_diagnostic_count(g_doc),
@@ -471,6 +522,20 @@ NAOS_TEST(null_editor_changes_nothing)
                                                 rng(start_of(N_HELLO),
                                                     start_of(N_HELLO))),
                       AMARK_ERROR_INVALID_INPUT);
+    g_out = (amark_node_id_t)12345;
+    NAOS_CHECK_INT_EQ(amark_dialect_edit_add_child(NULL, N_BOX,
+                                                   AMARK_NODE_NONE, K_NOTE,
+                                                   rng(start_of(N_BOX),
+                                                       start_of(N_BOX)),
+                                                   NULL, 0, &g_out),
+                      AMARK_ERROR_INVALID_INPUT);
+    NAOS_CHECK_UINT_EQ(g_out, AMARK_NODE_NONE);
+    g_out = (amark_node_id_t)12345;
+    NAOS_CHECK_INT_EQ(amark_dialect_edit_split_text(NULL, N_HELLO,
+                                                    start_of(N_HELLO) + 1,
+                                                    &g_out),
+                      AMARK_ERROR_INVALID_INPUT);
+    NAOS_CHECK_UINT_EQ(g_out, AMARK_NODE_NONE);
     snapshot(g_after);
     NAOS_CHECK_STR_EQ(g_after, g_before);
     NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), 0);
@@ -489,6 +554,9 @@ NAOS_TEST(every_edit_rejects_a_node_not_in_the_document)
         check_invalid(set_kind(bad[i], K_NOTE), 0, MSG_FIRST R_NODE);
         check_invalid(set_data(bad[i], bytes, 1), 0, MSG_FIRST R_NODE);
         check_invalid(shrink(bad[i], 0, 0), 0, MSG_FIRST R_NODE);
+        check_invalid(add_child(bad[i], AMARK_NODE_NONE, K_NOTE, 0, 0), 0,
+                      MSG_FIRST R_NODE);
+        check_invalid(split_text(bad[i], 1), 0, MSG_FIRST R_NODE);
     }
 }
 
@@ -507,6 +575,9 @@ NAOS_TEST(every_edit_rejects_a_removed_node)
     check_invalid(set_kind(extra, K_CELL), 0, MSG_FIRST R_NODE);
     check_invalid(set_data(extra, bytes, 1), 0, MSG_FIRST R_NODE);
     check_invalid(shrink(extra, 0, 0), 0, MSG_FIRST R_NODE);
+    check_invalid(add_child(extra, AMARK_NODE_NONE, K_MARK, 0, 0), 0,
+                  MSG_FIRST R_NODE);
+    check_invalid(split_text(extra, 1), 0, MSG_FIRST R_NODE);
 }
 
 NAOS_TEST(an_invalid_edit_keeps_earlier_edits_and_allows_later_ones)
@@ -972,9 +1043,790 @@ NAOS_SUITE(shrink,
     NAOS_ADD_TEST(shrink_rejects_a_range_that_leaves_out_a_child)
 )
 
+/* ---------------------------------------------------------------------- */
+/* add_child */
+
+/*
+ * Appends an empty node of kind at the end of parent, with the attributes
+ * the tree check needs, as a node the tests can add children to.
+ */
+static amark_node_id_t extra(amark_node_id_t parent, amark_kind_t kind)
+{
+    size_t at = node_at(parent)->end;
+    amark_node_id_t id = AMARK_NODE_NONE;
+
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(g_doc, parent, kind,
+                                          AMARK_NODE_CLASS_AUTO, at, at, &id),
+                        AMARK_ERROR_NONE);
+    switch (kind) {
+    case AMARK_KIND_HEADING:
+        NAOS_REQUIRE_INT_EQ(amark_tree_set_heading(g_doc, id, 1,
+                                                   AMARK_HEADING_ATX),
+                            AMARK_ERROR_NONE);
+        break;
+    case AMARK_KIND_IMAGE:
+        NAOS_REQUIRE_INT_EQ(amark_tree_set_link(g_doc, id, AMARK_LINK_INLINE,
+                                                NULL, NULL, AMARK_NODE_NONE),
+                            AMARK_ERROR_NONE);
+        break;
+    case AMARK_KIND_AUTOLINK:
+        NAOS_REQUIRE_INT_EQ(amark_tree_set_autolink(g_doc, id,
+                                                    AMARK_AUTOLINK_URI),
+                            AMARK_ERROR_NONE);
+        break;
+    default:
+        break;
+    }
+    return id;
+}
+
+/* Checks the links and the range of a node add_child or split_text made. */
+static void check_added(amark_node_id_t id, amark_kind_t kind,
+                        amark_node_id_t parent, amark_node_id_t prev,
+                        amark_node_id_t next, size_t start, size_t end)
+{
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, id), kind);
+    NAOS_CHECK_UINT_EQ(amark_node_parent(g_doc, id), parent);
+    NAOS_CHECK_UINT_EQ(node_at(id)->prev_sibling, prev);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, id), next);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, id), AMARK_NODE_NONE);
+    check_range(id, start, end);
+}
+
+/* The rows of the table of the child classes each kind can hold (2.8). */
+typedef enum held {
+    HELD_NOTHING,
+    HELD_BLOCKS,
+    HELD_INLINES
+} held_t;
+
+NAOS_TEST(add_child_follows_the_table_of_child_classes)
+{
+    struct row {
+        amark_node_id_t parent;
+        held_t held;
+    } rows[32];
+    size_t count = 0;
+    size_t i;
+
+    /* Blocks: the document, a block quote, a list item, a container. */
+    rows[count].parent = N_ROOT;
+    rows[count++].held = HELD_BLOCKS;
+    rows[count].parent = extra(N_ROOT, AMARK_KIND_BLOCK_QUOTE);
+    rows[count++].held = HELD_BLOCKS;
+    rows[count].parent = N_ITEM;
+    rows[count++].held = HELD_BLOCKS;
+    rows[count].parent = N_BOX;
+    rows[count++].held = HELD_BLOCKS;
+    /* Inlines: a paragraph, a heading, a leaf (of either extension), an
+     * emphasis, a strong emphasis, a link, an image, a dialect inline. */
+    rows[count].parent = N_P1;
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = extra(N_ROOT, AMARK_KIND_HEADING);
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = N_NOTE;
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = N_RULE;
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = N_EM;
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = extra(N_P3, AMARK_KIND_STRONG);
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = N_LINK;
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = extra(N_P3, AMARK_KIND_IMAGE);
+    rows[count++].held = HELD_INLINES;
+    rows[count].parent = N_MARK;
+    rows[count++].held = HELD_INLINES;
+    /* Nothing: a list and the other kinds. */
+    rows[count].parent = N_LIST;
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_ROOT, AMARK_KIND_THEMATIC_BREAK);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = N_CODE;
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_ROOT, AMARK_KIND_HTML_BLOCK);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = N_DEF;
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = N_HELLO;
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_P3, AMARK_KIND_CODE_SPAN);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_P3, AMARK_KIND_AUTOLINK);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_P3, AMARK_KIND_RAW_HTML);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_P3, AMARK_KIND_HARD_BREAK);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_P3, AMARK_KIND_SOFT_BREAK);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_P3, AMARK_KIND_BACKSLASH_ESCAPE);
+    rows[count++].held = HELD_NOTHING;
+    rows[count].parent = extra(N_P3, AMARK_KIND_CHARACTER_REFERENCE);
+    rows[count++].held = HELD_NOTHING;
+    check_tree();
+
+    /* Each row with a container, a leaf and an inline kind, placed as the
+     * first child (an empty range at the start of the parent). */
+    for (i = 0; i < count; i++) {
+        amark_node_id_t parent = rows[i].parent;
+        size_t s = start_of(parent);
+
+        if (rows[i].held == HELD_BLOCKS) {
+            amark_node_id_t first = amark_node_first_child(g_doc, parent);
+
+            check_valid(add_child(parent, AMARK_NODE_NONE, K_TASK, s, s));
+            check_added(g_out, K_TASK, parent, AMARK_NODE_NONE, first, s, s);
+            NAOS_CHECK_FALSE(amark_node_is_inline(g_doc, g_out));
+            first = g_out;
+            check_valid(add_child(parent, AMARK_NODE_NONE, K_CELL, s, s));
+            check_added(g_out, K_CELL, parent, AMARK_NODE_NONE, first, s, s);
+            NAOS_CHECK_FALSE(amark_node_is_inline(g_doc, g_out));
+        } else {
+            check_invalid(add_child(parent, AMARK_NODE_NONE, K_TASK, s, s), s,
+                          MSG_FIRST R_NESTING);
+            check_invalid(add_child(parent, AMARK_NODE_NONE, K_CELL, s, s), s,
+                          MSG_FIRST R_NESTING);
+        }
+        if (rows[i].held == HELD_INLINES) {
+            amark_node_id_t first = amark_node_first_child(g_doc, parent);
+
+            check_valid(add_child(parent, AMARK_NODE_NONE, K_SPAN, s, s));
+            check_added(g_out, K_SPAN, parent, AMARK_NODE_NONE, first, s, s);
+            NAOS_CHECK_TRUE(amark_node_is_inline(g_doc, g_out));
+        } else {
+            check_invalid(add_child(parent, AMARK_NODE_NONE, K_SPAN, s, s), s,
+                          MSG_FIRST R_NESTING);
+        }
+    }
+    /* The second extension uses the same table. */
+    use_extension(1);
+    check_valid(add_child(N_BOX, AMARK_NODE_NONE, K_RULE, start_of(N_BOX),
+                          start_of(N_BOX)));
+    check_invalid(add_child(N_BOX, AMARK_NODE_NONE, K_SUB, start_of(N_BOX),
+                            start_of(N_BOX)),
+                  start_of(N_BOX), MSG_SECOND R_NESTING);
+}
+
+NAOS_TEST(add_child_places_the_node_between_its_siblings)
+{
+    size_t s = start_of(N_BOX);
+    amark_node_id_t first;
+    amark_node_id_t second;
+
+    /* Before the first child, between two, after the last. */
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 0, 0));
+    first = g_out;
+    check_added(g_out, K_MARK, N_P1, AMARK_NODE_NONE, N_HELLO, 0, 0);
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_SPAN, 6, 6));
+    check_added(g_out, K_SPAN, N_P1, N_HELLO, N_EM, 6, 6);
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 17, 17));
+    check_added(g_out, K_MARK, N_P1, N_END, AMARK_NODE_NONE, 17, 17);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, N_P1), first);
+    NAOS_CHECK_UINT_EQ(node_at(N_P1)->last_child, g_out);
+
+    /* A range with bytes in it: "box" before the NOTE, "\n" after the
+     * paragraph; the lines are derived from the range. */
+    check_valid(add_child(N_BOX, AMARK_NODE_NONE, K_CELL, s, s + 3));
+    check_added(g_out, K_CELL, N_BOX, AMARK_NODE_NONE, N_NOTE, s, s + 3);
+    check_valid(add_child(N_ROOT, AMARK_NODE_NONE, K_BOX, 17, 18));
+    second = g_out;
+    check_added(g_out, K_BOX, N_ROOT, N_P1, N_DEF, 17, 18);
+    /* A child of a node added before. */
+    check_valid(add_child(second, AMARK_NODE_NONE, K_NOTE, 17, 18));
+    check_added(g_out, K_NOTE, second, AMARK_NODE_NONE, AMARK_NODE_NONE, 17,
+                18);
+    /* The whole range of a parent without children. */
+    check_valid(add_child(N_RULE, AMARK_NODE_NONE, K_MARK, start_of(N_RULE),
+                          node_at(N_RULE)->end));
+    check_added(g_out, K_MARK, N_RULE, AMARK_NODE_NONE, AMARK_NODE_NONE,
+                start_of(N_RULE), node_at(N_RULE)->end);
+}
+
+NAOS_TEST(add_child_keeps_siblings_in_source_order)
+{
+    static const size_t starts[] = {17, 0, 13, 6, 6, 0, 17};
+    amark_node_id_t id;
+    size_t last = 0;
+    size_t count = 0;
+    size_t i;
+
+    /* Added out of order, the children are still in source order. */
+    for (i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+        check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, starts[i],
+                              starts[i]));
+    }
+    for (id = amark_node_first_child(g_doc, N_P1); id != AMARK_NODE_NONE;
+         id = amark_node_next_sibling(g_doc, id)) {
+        NAOS_CHECK_UINT_GE(start_of(id), last);
+        last = node_at(id)->end;
+        count++;
+    }
+    NAOS_CHECK_UINT_EQ(count, 3 + sizeof(starts) / sizeof(starts[0]));
+    /* An empty node goes before a sibling that starts at its offset. */
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_COUNT + 6),
+                       N_COUNT + 2);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_COUNT + 2), N_HELLO);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_COUNT + 5),
+                       N_COUNT + 4);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_COUNT + 4), N_EM);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_COUNT + 3), N_END);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_END), N_COUNT + 7);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_COUNT + 7),
+                       N_COUNT + 1);
+}
+
+/* Starts a new run over a new tree, as the setup does. */
+static void rebuild(void)
+{
+    amark_dialect_run_end(&g_run);
+    g_run_begun = 0;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    memset(&g_run, 0, sizeof(g_run));
+    build_tree();
+    NAOS_REQUIRE_INT_EQ(amark_dialect_run_begin(&g_run, &k_dialect,
+                                                &g_allocator, g_doc),
+                        AMARK_ERROR_NONE);
+    g_run_begun = 1;
+    use_extension(0);
+}
+
+NAOS_TEST(add_child_gives_the_same_tree_with_or_without_a_hint)
+{
+    static char without[SNAPSHOT_SIZE];
+    size_t b = start_of(N_BOX);
+    amark_node_id_t prev;
+
+    /* Without hints. */
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 0, 0));
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6));
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6));
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 13, 13));
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 17, 17));
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_SPAN, 17, 17));
+    check_valid(add_child(N_BOX, AMARK_NODE_NONE, K_CELL, b, b + 3));
+    check_valid(add_child(N_ROOT, AMARK_NODE_NONE, K_NOTE, 17, 18));
+    snapshot(without);
+
+    /* With the first child, the next sibling, or the node added last as
+     * the hint (left to right, each search is O(1)). */
+    rebuild();
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 0, 0));
+    prev = g_out;
+    check_valid(add_child(N_P1, prev, K_MARK, 6, 6));
+    prev = g_out;
+    check_valid(add_child(N_P1, N_HELLO, K_MARK, 6, 6));
+    check_valid(add_child(N_P1, prev, K_MARK, 13, 13));
+    check_valid(add_child(N_P1, N_END, K_MARK, 17, 17));
+    /* As the hint, the empty sibling the node goes before. */
+    check_valid(add_child(N_P1, g_out, K_SPAN, 17, 17));
+    check_valid(add_child(N_BOX, AMARK_NODE_NONE, K_CELL, b, b + 3));
+    check_valid(add_child(N_ROOT, N_P1, K_NOTE, 17, 18));
+    snapshot(g_after);
+    NAOS_CHECK_STR_EQ(g_after, without);
+
+    /* With the first child as the hint each time. */
+    rebuild();
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 0, 0));
+    prev = g_out;
+    check_valid(add_child(N_P1, prev, K_MARK, 6, 6));
+    check_valid(add_child(N_P1, prev, K_MARK, 6, 6));
+    check_valid(add_child(N_P1, prev, K_MARK, 13, 13));
+    check_valid(add_child(N_P1, prev, K_MARK, 17, 17));
+    check_valid(add_child(N_P1, prev, K_SPAN, 17, 17));
+    check_valid(add_child(N_BOX, AMARK_NODE_NONE, K_CELL, b, b + 3));
+    check_valid(add_child(N_ROOT, N_P1, K_NOTE, 17, 18));
+    snapshot(g_after);
+    NAOS_CHECK_STR_EQ(g_after, without);
+}
+
+NAOS_TEST(add_child_copies_the_data)
+{
+    char bytes[3] = {'a', '\0', 'c'};
+    const void *data;
+    size_t size = 0;
+
+    edit_t e = add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6);
+    e.data = bytes;
+    e.size = 3;
+    check_valid(e);
+    bytes[0] = 'z'; /* the copy does not change */
+    data = amark_node_dialect_data(g_doc, g_out, &size);
+    NAOS_REQUIRE_NOT_NULL(data);
+    NAOS_CHECK_UINT_EQ(size, 3);
+    NAOS_CHECK_MEM_EQ(data, 3, "a\0c", 3);
+    /* Size 0: no data, and data may be NULL. */
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 13, 13));
+    size = 1;
+    NAOS_CHECK_NULL(amark_node_dialect_data(g_doc, g_out, &size));
+    NAOS_CHECK_UINT_EQ(size, 0);
+}
+
+NAOS_TEST(add_child_rejects_kinds_the_extension_did_not_register)
+{
+    size_t s = start_of(N_P1);
+
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_SUB, 6, 6), s,
+                  MSG_FIRST R_KIND);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, AMARK_KIND_TEXT, 6, 6), s,
+                  MSG_FIRST R_KIND);
+    check_invalid(add_child(N_ROOT, AMARK_NODE_NONE, AMARK_KIND_PARAGRAPH,
+                            17, 17),
+                  0, MSG_FIRST R_KIND);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_UNKNOWN, 6, 6), s,
+                  MSG_FIRST R_KIND);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, AMARK_KIND_NONE, 6, 6), s,
+                  MSG_FIRST R_KIND);
+    use_extension(1);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6), s,
+                  MSG_SECOND R_KIND);
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_SUB, 6, 6));
+}
+
+NAOS_TEST(add_child_rejects_a_hint_that_is_not_a_child_of_the_parent)
+{
+    size_t s = start_of(N_P1);
+    amark_node_id_t removed = AMARK_NODE_NONE;
+
+    /* A grandchild, a node elsewhere, the parent itself, no node. */
+    check_invalid(add_child(N_P1, N_WORLD, K_MARK, 6, 6), s,
+                  MSG_FIRST R_NODE);
+    check_invalid(add_child(N_P1, N_TAIL, K_MARK, 6, 6), s, MSG_FIRST R_NODE);
+    check_invalid(add_child(N_P1, N_P1, K_MARK, 6, 6), s, MSG_FIRST R_NODE);
+    check_invalid(add_child(N_P1, N_COUNT + 1, K_MARK, 6, 6), s,
+                  MSG_FIRST R_NODE);
+    check_invalid(add_child(N_P1, (amark_node_id_t)0xFFFFFFFFu, K_MARK, 6,
+                            6),
+                  s, MSG_FIRST R_NODE);
+    /* A removed child. */
+    NAOS_REQUIRE_INT_EQ(amark_tree_append(g_doc, N_P1, K_MARK,
+                                          AMARK_NODE_CLASS_INLINE, 17, 17,
+                                          &removed),
+                        AMARK_ERROR_NONE);
+    amark_tree_remove(g_doc, removed);
+    check_invalid(add_child(N_P1, removed, K_MARK, 17, 17), s,
+                  MSG_FIRST R_NODE);
+}
+
+NAOS_TEST(add_child_rejects_a_range_outside_the_content)
+{
+    size_t s = start_of(N_ROOT);
+
+    check_invalid(add_child(N_ROOT, AMARK_NODE_NONE, K_NOTE, 18, 17), s,
+                  MSG_FIRST R_BOUNDS);
+    check_invalid(add_child(N_ROOT, AMARK_NODE_NONE, K_NOTE, CONTENT_LENGTH,
+                            CONTENT_LENGTH + 1),
+                  s, MSG_FIRST R_BOUNDS);
+    check_invalid(add_child(N_ROOT, AMARK_NODE_NONE, K_NOTE, (size_t)-1,
+                            (size_t)-1),
+                  s, MSG_FIRST R_BOUNDS);
+    s = start_of(N_EM);
+    check_invalid(add_child(N_EM, AMARK_NODE_NONE, K_MARK, 8, 7), s,
+                  MSG_FIRST R_BOUNDS);
+}
+
+NAOS_TEST(add_child_rejects_a_range_outside_the_parent)
+{
+    size_t s = start_of(N_EM);
+    size_t e = node_at(N_EM)->end;
+
+    check_invalid(add_child(N_EM, AMARK_NODE_NONE, K_MARK, s - 1, s), s,
+                  MSG_FIRST R_PARENT);
+    check_invalid(add_child(N_EM, AMARK_NODE_NONE, K_MARK, e, e + 1), s,
+                  MSG_FIRST R_PARENT);
+    check_invalid(add_child(N_EM, AMARK_NODE_NONE, K_MARK, 0, CONTENT_LENGTH),
+                  s, MSG_FIRST R_PARENT);
+    s = start_of(N_BOX);
+    check_invalid(add_child(N_BOX, AMARK_NODE_NONE, K_CELL, 0, 0), s,
+                  MSG_FIRST R_PARENT);
+}
+
+NAOS_TEST(add_child_rejects_a_range_that_overlaps_a_sibling)
+{
+    size_t s = start_of(N_P1);
+    amark_node_id_t later;
+    amark_node_id_t earlier;
+    edit_t e;
+
+    /* The previous sibling, the next one, both, a child covered. */
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 5, 6), s,
+                  MSG_FIRST R_ORDER);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 7), s,
+                  MSG_FIRST R_ORDER);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 5, 7), s,
+                  MSG_FIRST R_ORDER);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 0, 17), s,
+                  MSG_FIRST R_ORDER);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 16, 17), s,
+                  MSG_FIRST R_ORDER);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 3, 3), s,
+                  MSG_FIRST R_ORDER);
+    /* With a hint, the same. */
+    check_invalid(add_child(N_P1, N_HELLO, K_MARK, 6, 7), s,
+                  MSG_FIRST R_ORDER);
+    /* A hint that ends after the start of the range: the search does not
+     * go back. */
+    check_invalid(add_child(N_P1, N_END, K_MARK, 6, 6), s, MSG_FIRST R_ORDER);
+    check_invalid(add_child(N_P1, N_EM, K_MARK, 0, 0), s, MSG_FIRST R_ORDER);
+    /* An empty hint at the offset, after an empty sibling at the same
+     * offset: without the hint the node would go before that sibling. */
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6));
+    later = g_out;
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6));
+    earlier = g_out;
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, earlier), later);
+    check_invalid(add_child(N_P1, later, K_MARK, 6, 6), s, MSG_FIRST R_ORDER);
+    check_valid(add_child(N_P1, earlier, K_MARK, 6, 6));
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, g_out), earlier);
+    /* The ORDER check comes after the data check. */
+    e = add_child(N_P1, AMARK_NODE_NONE, K_MARK, 5, 6);
+    e.size = 1;
+    check_invalid(e, s, MSG_FIRST R_STATUS);
+}
+
+NAOS_TEST(add_child_rejects_arguments_the_contract_does_not_define)
+{
+    size_t s = start_of(N_P1);
+    edit_t e = add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6);
+
+    /* Data NULL with a size, no place for the ID. */
+    e.size = 2;
+    check_invalid(e, s, MSG_FIRST R_STATUS);
+    e = add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6);
+    e.out = NULL;
+    check_invalid(e, s, MSG_FIRST R_STATUS);
+}
+
+/* ---------------------------------------------------------------------- */
+/* split_text */
+
+NAOS_TEST(split_text_makes_two_texts)
+{
+    amark_node_id_t second;
+
+    /* A text with a next sibling, the last child, the new text again. */
+    check_valid(split_text(N_HELLO, 3));
+    second = g_out;
+    check_added(N_HELLO, AMARK_KIND_TEXT, N_P1, AMARK_NODE_NONE, second, 0,
+                3);
+    check_added(second, AMARK_KIND_TEXT, N_P1, N_HELLO, N_EM, 3, 6);
+    NAOS_CHECK_TRUE(amark_node_is_inline(g_doc, second));
+    check_valid(split_text(N_END, 15));
+    check_added(g_out, AMARK_KIND_TEXT, N_P1, N_END, AMARK_NODE_NONE, 15, 17);
+    check_range(N_END, 13, 15);
+    NAOS_CHECK_UINT_EQ(node_at(N_P1)->last_child, g_out);
+    check_valid(split_text(second, 4));
+    check_added(second, AMARK_KIND_TEXT, N_P1, N_HELLO, g_out, 3, 4);
+    check_added(g_out, AMARK_KIND_TEXT, N_P1, second, N_EM, 4, 6);
+    /* The only child of a dialect inline. */
+    check_valid(split_text(N_MARKT, off("mark") + 1));
+    check_added(g_out, AMARK_KIND_TEXT, N_MARK, N_MARKT, AMARK_NODE_NONE,
+                off("mark") + 1, end_of("mark"));
+}
+
+NAOS_TEST(split_text_rejects_other_kinds)
+{
+    check_invalid(split_text(N_EM, 7), start_of(N_EM), MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_P1, 3), start_of(N_P1), MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_ROOT, 3), 0, MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_MARK, off("mark") + 1), start_of(N_MARK),
+                  MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_CODE, start_of(N_CODE) + 1), start_of(N_CODE),
+                  MSG_FIRST R_TEXT);
+}
+
+NAOS_TEST(split_text_rejects_a_position_not_strictly_inside)
+{
+    size_t s = start_of(N_WORLD);
+    size_t e = node_at(N_WORLD)->end;
+
+    check_invalid(split_text(N_WORLD, s), s, MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_WORLD, e), s, MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_WORLD, s - 1), s, MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_WORLD, e + 1), s, MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_WORLD, CONTENT_LENGTH + 1), s,
+                  MSG_FIRST R_TEXT);
+    check_invalid(split_text(N_WORLD, (size_t)-1), s, MSG_FIRST R_TEXT);
+    /* Just inside both ends. */
+    check_valid(split_text(N_WORLD, e - 1));
+    check_valid(split_text(N_WORLD, s + 1));
+}
+
+NAOS_TEST(split_text_rejects_the_middle_of_a_character)
+{
+    size_t a = off("caf\xc3\xa9");
+    amark_node_id_t para;
+    amark_node_id_t text;
+
+    para = add(N_ROOT, AMARK_KIND_PARAGRAPH, AMARK_NODE_CLASS_AUTO,
+               "caf\xc3\xa9");
+    text = add(para, AMARK_KIND_TEXT, AMARK_NODE_CLASS_AUTO, "caf\xc3\xa9");
+    check_tree();
+    check_invalid(split_text(text, a + 4), a, MSG_FIRST R_TEXT);
+    check_valid(split_text(text, a + 3));
+    check_range(text, a, a + 3);
+    check_added(g_out, AMARK_KIND_TEXT, para, text, AMARK_NODE_NONE, a + 3,
+                a + 5);
+    check_invalid(split_text(g_out, a + 4), a + 3, MSG_FIRST R_TEXT);
+}
+
+NAOS_TEST(split_text_rejects_no_place_for_the_id)
+{
+    edit_t e = split_text(N_HELLO, 3);
+
+    e.out = NULL;
+    check_invalid(e, start_of(N_HELLO), MSG_FIRST R_STATUS);
+}
+
+NAOS_SUITE(split_text,
+    NAOS_SET_SETUP(edit),
+    NAOS_SET_TEARDOWN(edit),
+    NAOS_ADD_TEST(split_text_makes_two_texts),
+    NAOS_ADD_TEST(split_text_rejects_other_kinds),
+    NAOS_ADD_TEST(split_text_rejects_a_position_not_strictly_inside),
+    NAOS_ADD_TEST(split_text_rejects_the_middle_of_a_character),
+    NAOS_ADD_TEST(split_text_rejects_no_place_for_the_id)
+)
+
+/* ---------------------------------------------------------------------- */
+/* Adding nodes: limits, failures, sequences */
+
+/*
+ * Runs e, which must hit a limit or a failure err: it returns err, it is
+ * remembered, no diagnostic is added and the tree is as it was.
+ */
+static void check_failure(edit_t e, amark_error_t err)
+{
+    size_t diagnostics = amark_document_diagnostic_count(g_doc);
+
+    snapshot(g_before);
+    g_out = (amark_node_id_t)12345;
+    NAOS_CHECK_INT_EQ(run_edit(&g_editor, &e), err);
+    if (e.out != NULL) {
+        NAOS_CHECK_UINT_EQ(g_out, AMARK_NODE_NONE);
+    }
+    snapshot(g_after);
+    NAOS_CHECK_STR_EQ(g_after, g_before);
+    NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), diagnostics);
+    NAOS_CHECK_INT_EQ(g_editor.failure, err);
+    check_tree();
+}
+
+/* Every later edit, valid or not, returns err and changes nothing. */
+static void check_failure_lasts(amark_error_t err)
+{
+    check_failure(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6), err);
+    check_failure(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 5, 7), err);
+    check_failure(split_text(N_HELLO, 3), err);
+    check_failure(split_text(N_EM, 3), err);
+    check_failure(set_kind(N_P1, K_NOTE), err);
+}
+
+NAOS_TEST(add_child_checks_the_node_limit)
+{
+    amark_dialect_editor_init(&g_editor, &g_run, 0, 0, N_COUNT + 1);
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6));
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), N_COUNT + 1);
+    check_failure(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 13, 13),
+                  AMARK_ERROR_LIMIT_EXCEEDED);
+    check_failure_lasts(AMARK_ERROR_LIMIT_EXCEEDED);
+}
+
+NAOS_TEST(split_text_checks_the_node_limit)
+{
+    amark_dialect_editor_init(&g_editor, &g_run, 0, 0, N_COUNT + 1);
+    check_valid(split_text(N_HELLO, 3));
+    check_failure(split_text(N_END, 15), AMARK_ERROR_LIMIT_EXCEEDED);
+    check_failure_lasts(AMARK_ERROR_LIMIT_EXCEEDED);
+}
+
+NAOS_TEST(an_invalid_edit_at_the_node_limit_is_only_rejected)
+{
+    /* Rejected results do not count (10.12): checked before the limit. */
+    amark_dialect_editor_init(&g_editor, &g_run, 0, 0, N_COUNT);
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 5, 7),
+                  start_of(N_P1), MSG_FIRST R_ORDER);
+    check_invalid(split_text(N_HELLO, 0), start_of(N_HELLO),
+                  MSG_FIRST R_TEXT);
+    check_valid(set_kind(N_P1, K_NOTE));
+    check_failure(split_text(N_HELLO, 3), AMARK_ERROR_LIMIT_EXCEEDED);
+}
+
+NAOS_TEST(add_child_checks_the_depth_limit)
+{
+    /* N_MARK is at depth 3 (document, BOX, NOTE, MARK). */
+    amark_dialect_editor_init(&g_editor, &g_run, 0, 4, 0);
+    check_valid(add_child(N_MARK, AMARK_NODE_NONE, K_SPAN, start_of(N_MARK),
+                          start_of(N_MARK)));
+    check_valid(add_child(N_ROOT, AMARK_NODE_NONE, K_BOX, 17, 18));
+    amark_dialect_editor_init(&g_editor, &g_run, 0, 3, 0);
+    check_valid(add_child(N_NOTE, AMARK_NODE_NONE, K_SPAN, start_of(N_NOTE),
+                          start_of(N_NOTE)));
+    /* split_text changes no depth: N_MARKT is at depth 4. */
+    check_valid(split_text(N_MARKT, off("mark") + 2));
+    check_failure(add_child(N_MARK, AMARK_NODE_NONE, K_SPAN,
+                            start_of(N_MARK), start_of(N_MARK)),
+                  AMARK_ERROR_LIMIT_EXCEEDED);
+    check_failure_lasts(AMARK_ERROR_LIMIT_EXCEEDED);
+}
+
+/*
+ * Fails the k-th allocation of e on a new tree, for k = 1, 2, ... until e
+ * succeeds: each failure returns NOMEM, lasts, adds no diagnostic and
+ * leaves a tree that passes the check with the same shape. prepare runs
+ * on each new tree first.
+ */
+static void check_allocation_failures(edit_t e, void (*prepare)(void))
+{
+    amark_error_t err = AMARK_ERROR_NOMEM;
+    size_t failures = 0;
+    size_t k;
+
+    for (k = 1; k < 1000 && err == AMARK_ERROR_NOMEM; k++) {
+        rebuild();
+        prepare();
+        NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, g_before,
+                                                  SNAPSHOT_SIZE),
+                             SNAPSHOT_SIZE);
+        g_out = (amark_node_id_t)12345;
+        g_state.fail_at = g_state.malloc_calls + k;
+        err = run_edit(&g_editor, &e);
+        g_state.fail_at = 0;
+        if (err == AMARK_ERROR_NOMEM) {
+            failures++;
+            NAOS_CHECK_INT_EQ(g_editor.failure, AMARK_ERROR_NOMEM);
+            NAOS_CHECK_UINT_EQ(g_out, AMARK_NODE_NONE);
+            NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), 0);
+            NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, g_after,
+                                                      SNAPSHOT_SIZE),
+                                 SNAPSHOT_SIZE);
+            NAOS_CHECK_STR_EQ(g_after, g_before);
+            check_tree();
+            check_failure_lasts(AMARK_ERROR_NOMEM);
+        }
+    }
+    NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_GT(failures, 0);
+    check_tree();
+}
+
+/* The number of nodes fill_nodes adds. */
+static size_t g_fill;
+
+/* Adds one empty MARK at the end of N_P1. */
+static void add_mark(void)
+{
+    NAOS_REQUIRE_INT_EQ(amark_dialect_edit_add_child(&g_editor, N_P1,
+                                                     AMARK_NODE_NONE, K_MARK,
+                                                     rng(17, 17), NULL, 0,
+                                                     &g_out),
+                        AMARK_ERROR_NONE);
+}
+
+/*
+ * Sets g_fill to the number of nodes that can be added to a new tree
+ * before adding one allocates (the node array grows out of its arena
+ * block), so that the next node added after fill_nodes allocates.
+ */
+static void count_fill(void)
+{
+    size_t calls;
+
+    rebuild();
+    g_fill = 0;
+    calls = g_state.malloc_calls;
+    for (;;) {
+        add_mark();
+        if (g_state.malloc_calls != calls) {
+            break;
+        }
+        g_fill++;
+        NAOS_REQUIRE_UINT_LT(g_fill, 100000);
+    }
+}
+
+static void fill_nodes(void)
+{
+    size_t i;
+
+    for (i = 0; i < g_fill; i++) {
+        add_mark();
+    }
+}
+
+NAOS_TEST(adding_nodes_fails_on_allocation)
+{
+    static char big[100000];
+    edit_t e;
+
+    memset(big, 'b', sizeof(big));
+    count_fill();
+    /* The node array, the copy of the data, the attribute element. */
+    e = add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6);
+    e.data = big;
+    e.size = sizeof(big);
+    check_allocation_failures(e, fill_nodes);
+    check_allocation_failures(split_text(N_HELLO, 3), fill_nodes);
+}
+
+NAOS_TEST(edits_before_an_invalid_one_stay_and_later_ones_apply)
+{
+    amark_node_id_t mark;
+    amark_node_id_t text;
+
+    check_valid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 6, 6));
+    mark = g_out;
+    check_valid(split_text(N_HELLO, 2));
+    text = g_out;
+    check_invalid(add_child(N_P1, AMARK_NODE_NONE, K_MARK, 1, 3),
+                  start_of(N_P1), MSG_FIRST R_ORDER);
+    check_invalid(split_text(text, 2), 2, MSG_FIRST R_TEXT);
+    check_valid(set_data(mark, "v", 1));
+    check_valid(add_child(N_P1, text, K_SPAN, 6, 6));
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, N_HELLO), text);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, text), g_out);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, g_out), mark);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, mark), N_EM);
+    NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), 2);
+    NAOS_CHECK_INT_EQ(g_editor.failure, AMARK_ERROR_NONE);
+    check_tree();
+}
+
+NAOS_SUITE(adding,
+    NAOS_SET_SETUP(edit),
+    NAOS_SET_TEARDOWN(edit),
+    NAOS_ADD_TEST(add_child_checks_the_node_limit),
+    NAOS_ADD_TEST(split_text_checks_the_node_limit),
+    NAOS_ADD_TEST(an_invalid_edit_at_the_node_limit_is_only_rejected),
+    NAOS_ADD_TEST(add_child_checks_the_depth_limit),
+    NAOS_ADD_TEST(adding_nodes_fails_on_allocation),
+    NAOS_ADD_TEST(edits_before_an_invalid_one_stay_and_later_ones_apply)
+)
+
+NAOS_SUITE(add_child,
+    NAOS_SET_SETUP(edit),
+    NAOS_SET_TEARDOWN(edit),
+    NAOS_ADD_TEST(add_child_follows_the_table_of_child_classes),
+    NAOS_ADD_TEST(add_child_places_the_node_between_its_siblings),
+    NAOS_ADD_TEST(add_child_keeps_siblings_in_source_order),
+    NAOS_ADD_TEST(add_child_gives_the_same_tree_with_or_without_a_hint),
+    NAOS_ADD_TEST(add_child_copies_the_data),
+    NAOS_ADD_TEST(add_child_rejects_kinds_the_extension_did_not_register),
+    NAOS_ADD_TEST(add_child_rejects_a_hint_that_is_not_a_child_of_the_parent),
+    NAOS_ADD_TEST(add_child_rejects_a_range_outside_the_content),
+    NAOS_ADD_TEST(add_child_rejects_a_range_outside_the_parent),
+    NAOS_ADD_TEST(add_child_rejects_a_range_that_overlaps_a_sibling),
+    NAOS_ADD_TEST(add_child_rejects_arguments_the_contract_does_not_define)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(common),
     NAOS_ADD_SUITE(set_kind),
     NAOS_ADD_SUITE(set_data),
-    NAOS_ADD_SUITE(shrink)
+    NAOS_ADD_SUITE(shrink),
+    NAOS_ADD_SUITE(add_child),
+    NAOS_ADD_SUITE(split_text),
+    NAOS_ADD_SUITE(adding)
 )

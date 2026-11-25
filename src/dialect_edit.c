@@ -284,3 +284,241 @@ amark_error_t amark_dialect_edit_shrink(amark_dialect_editor_t *editor,
     amark_tree_set_range(editor->run->doc, node, range.start, range.end);
     return AMARK_ERROR_NONE;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Adding nodes */
+
+/*
+ * Checks the node limit before a node is added (9.10, 10.11). The count
+ * includes the root, and no edit removes a node, so it is the number of
+ * nodes the returned tree has. Rejected edits never get here (10.12).
+ */
+static bool too_many_nodes(const amark_dialect_editor_t *editor)
+{
+    return editor->max_nodes != 0 &&
+           amark_document_node_count(editor->run->doc) >= editor->max_nodes;
+}
+
+/*
+ * Checks the depth limit for a child of parent: the depth of a node is the
+ * number of its ancestors. Walks up from parent with one loop; only called
+ * when there is a limit.
+ */
+static bool too_deep(const amark_dialect_editor_t *editor,
+                     const amark_node_t *parent)
+{
+    size_t depth = 1; /* the new child's */
+
+    while (parent->parent != AMARK_NODE_NONE) {
+        depth++;
+        parent = node_at(editor, parent->parent);
+    }
+    return depth > editor->max_depth;
+}
+
+/*
+ * Finds the place of a child over range in parent (9.5): the first child,
+ * from hint (or the first child) on, that starts at or after range.start.
+ * Stores it in *next (AMARK_NODE_NONE: after the last child) and the child
+ * before the place in *prev. Returns false (ORDER) if the place is before
+ * hint, which the search does not go back to: hint ends after range.start,
+ * or hint is an empty node at range.start after a sibling that also starts
+ * there (without hint, the place would be before that sibling). So a
+ * search with a hint finds the same place as one without, or fails.
+ */
+static bool find_place(const amark_dialect_editor_t *editor,
+                       const amark_node_t *parent, amark_node_id_t hint,
+                       amark_range_t range, amark_node_id_t *prev,
+                       amark_node_id_t *next)
+{
+    amark_node_id_t id = parent->first_child;
+
+    if (hint != AMARK_NODE_NONE) {
+        const amark_node_t *h = node_at(editor, hint);
+
+        if (h->end > range.start) {
+            return false;
+        }
+        if (h->start >= range.start && h->prev_sibling != AMARK_NODE_NONE &&
+            node_at(editor, h->prev_sibling)->start >= range.start) {
+            return false;
+        }
+        id = hint;
+    }
+    /* The starts of siblings do not decrease, so the first one found is
+     * the first in the whole list. */
+    while (id != AMARK_NODE_NONE && node_at(editor, id)->start < range.start) {
+        id = node_at(editor, id)->next_sibling;
+    }
+    *next = id;
+    *prev = id != AMARK_NODE_NONE ? node_at(editor, id)->prev_sibling
+                                  : parent->last_child;
+    return true;
+}
+
+/*
+ * Creates a node of kind over [start, end) directly before next, or as the
+ * last child of parent when next is AMARK_NODE_NONE.
+ */
+static amark_error_t insert(amark_dialect_editor_t *editor,
+                            amark_node_id_t parent, amark_node_id_t next,
+                            amark_kind_t kind, amark_node_class_t cls,
+                            size_t start, size_t end, amark_node_id_t *out)
+{
+    if (next != AMARK_NODE_NONE) {
+        return amark_tree_insert_before(editor->run->doc, next, kind, cls,
+                                        start, end, out);
+    }
+    return amark_tree_append(editor->run->doc, parent, kind, cls, start, end,
+                             out);
+}
+
+amark_error_t amark_dialect_edit_add_child(amark_dialect_editor_t *editor,
+                                           amark_node_id_t parent,
+                                           amark_node_id_t hint,
+                                           amark_kind_t kind,
+                                           amark_range_t range,
+                                           const void *data, size_t size,
+                                           amark_node_id_t *out)
+{
+    const amark_dialect_kind_t *k;
+    amark_node_t *target;
+    amark_node_t *h = NULL;
+    amark_node_id_t prev;
+    amark_node_id_t next;
+    amark_node_id_t id = AMARK_NODE_NONE;
+    holds_t needed;
+    amark_error_t err;
+
+    if (out != NULL) {
+        *out = AMARK_NODE_NONE;
+    }
+    err = closed(editor);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    target = find_node(editor, parent);
+    if (out == NULL || (data == NULL && size > 0)) {
+        /* Values the contract does not define (10.4). */
+        return reject(editor, AMARK_DIALECT_REASON_STATUS,
+                      position(editor, target));
+    }
+    if (target == NULL) {
+        return reject(editor, AMARK_DIALECT_REASON_NODE,
+                      position(editor, NULL));
+    }
+
+    /* A kind of the extension (2.7, 9.6), of a class the parent can hold
+     * (2.8). */
+    k = amark_dialect_find_kind(editor->ext, kind);
+    if (k == NULL) {
+        return reject(editor, AMARK_DIALECT_REASON_KIND, target->start);
+    }
+    needed = k->cls == AMARK_DIALECT_INLINE ? HOLDS_INLINES : HOLDS_BLOCKS;
+    if (holds(editor->run->dialect, target->kind) != needed) {
+        return reject(editor, AMARK_DIALECT_REASON_NESTING, target->start);
+    }
+
+    /* The hint is none or a child of the parent. */
+    if (hint != AMARK_NODE_NONE) {
+        h = find_node(editor, hint);
+        if (h == NULL || h->parent != parent) {
+            return reject(editor, AMARK_DIALECT_REASON_NODE, target->start);
+        }
+    }
+
+    /* Inside the content, inside the parent, between the siblings. */
+    if (range.start > range.end ||
+        range.end > editor->run->doc->content_length) {
+        return reject(editor, AMARK_DIALECT_REASON_BOUNDS, target->start);
+    }
+    if (range.start < target->start || range.end > target->end) {
+        return reject(editor, AMARK_DIALECT_REASON_PARENT, target->start);
+    }
+    if (!find_place(editor, target, hint, range, &prev, &next) ||
+        (prev != AMARK_NODE_NONE &&
+         node_at(editor, prev)->end > range.start) ||
+        (next != AMARK_NODE_NONE &&
+         range.end > node_at(editor, next)->start)) {
+        return reject(editor, AMARK_DIALECT_REASON_ORDER, target->start);
+    }
+
+    /* The limits (9.10, 10.11): failures that last. */
+    if (too_many_nodes(editor) ||
+        (editor->max_depth != 0 && too_deep(editor, target))) {
+        return fail(editor, AMARK_ERROR_LIMIT_EXCEEDED);
+    }
+
+    err = insert(editor, parent, next, kind,
+                 k->cls == AMARK_DIALECT_INLINE ? AMARK_NODE_CLASS_INLINE
+                                                : AMARK_NODE_CLASS_BLOCK,
+                 range.start, range.end, &id);
+    if (err != AMARK_ERROR_NONE) {
+        return fail(editor, err);
+    }
+    if (size > 0) {
+        err = amark_tree_set_dialect_data(editor->run->doc, id, data, size);
+        if (err != AMARK_ERROR_NONE) {
+            /* Detached: the tree has the shape it had (the parse ends with
+             * the failure). */
+            amark_tree_remove(editor->run->doc, id);
+            return fail(editor, err);
+        }
+    }
+    *out = id;
+    return AMARK_ERROR_NONE;
+}
+
+amark_error_t amark_dialect_edit_split_text(amark_dialect_editor_t *editor,
+                                            amark_node_id_t node, size_t at,
+                                            amark_node_id_t *second)
+{
+    amark_node_t *target;
+    amark_node_id_t id = AMARK_NODE_NONE;
+    size_t start;
+    size_t end;
+    amark_error_t err;
+
+    if (second != NULL) {
+        *second = AMARK_NODE_NONE;
+    }
+    err = closed(editor);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    target = find_node(editor, node);
+    if (second == NULL) {
+        /* A value the contract does not define (10.4). */
+        return reject(editor, AMARK_DIALECT_REASON_STATUS,
+                      position(editor, target));
+    }
+    if (target == NULL) {
+        return reject(editor, AMARK_DIALECT_REASON_NODE,
+                      position(editor, NULL));
+    }
+
+    /* A text, split strictly inside, at the start of a UTF-8 character
+     * (9.6): at < end <= the content length, so content[at] is read. */
+    if (target->kind != AMARK_KIND_TEXT || at <= target->start ||
+        at >= target->end ||
+        (editor->run->doc->content[at] & 0xC0) == 0x80) {
+        return reject(editor, AMARK_DIALECT_REASON_TEXT, target->start);
+    }
+
+    /* The node limit; the depth of no node changes. */
+    if (too_many_nodes(editor)) {
+        return fail(editor, AMARK_ERROR_LIMIT_EXCEEDED);
+    }
+
+    start = target->start;
+    end = target->end;
+    err = insert(editor, target->parent, target->next_sibling,
+                 AMARK_KIND_TEXT, AMARK_NODE_CLASS_AUTO, at, end, &id);
+    if (err != AMARK_ERROR_NONE) {
+        return fail(editor, err);
+    }
+    /* target may have moved with the node array: use the ID. */
+    amark_tree_set_range(editor->run->doc, node, start, at);
+    *second = id;
+    return AMARK_ERROR_NONE;
+}

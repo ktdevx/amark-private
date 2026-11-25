@@ -56,3 +56,5 @@ amark_dialect_reply_set_inline
 amark_dialect_edit_set_kind
 amark_dialect_edit_set_data
 amark_dialect_edit_shrink
+amark_dialect_edit_add_child
+amark_dialect_edit_split_text
