@@ -114,6 +114,14 @@ struct amark_dialect_lines;
 /*
  * A line as a block rule sees it. Offsets count from the start of the
  * content.
+ *
+ * For a block continue rule, position is where the prefixes of the blocks
+ * that contain the open block end, first_nonspace the first non-space byte
+ * from there, and indent the columns between the two. For a block start
+ * rule, position and first_nonspace are both the first non-space byte after
+ * the prefixes of the open blocks (and of any block opened before on the
+ * line), column is its column, and indent is the columns from the end of
+ * those prefixes to it: 0 to 3, as a start rule is called only there.
  */
 typedef struct amark_dialect_line {
     const char *content;         /* the whole content */
@@ -124,7 +132,8 @@ typedef struct amark_dialect_line {
     size_t position;             /* the position to decide on */
     size_t column;               /* its column (a tab is 4 wide) */
     size_t first_nonspace;       /* the first non-space byte from position */
-    size_t indent;               /* columns from position to first_nonspace */
+    size_t indent;               /* columns of indentation before
+                                    first_nonspace (see above) */
     amark_kind_t container_kind; /* start only: kind of the new block's parent */
     bool in_paragraph;           /* start only: innermost open block is a
                                     paragraph */
@@ -213,6 +222,10 @@ typedef struct amark_dialect_post {
  *
  * state_new returns AMARK_ERROR_NONE and may leave *state NULL; any other
  * value ends the parse with AMARK_ERROR_NOMEM, before any rule is called.
+ * The allocator given to state_new and state_free is the parse's allocator,
+ * at an address that is valid during the parse only: a state may keep the
+ * pointer and use it until state_free returns, but not after amark_parse
+ * returns.
  */
 typedef amark_error_t (*amark_dialect_block_start_fn)(
     const amark_dialect_line_t *line, void *state,
@@ -363,7 +376,11 @@ AMARK_API amark_error_t amark_dialect_edit_shrink(
 /*
  * Adds a child of kind over range to parent, in source order, searching
  * for its place from hint (AMARK_NODE_NONE or a child of parent), and
- * stores its ID in *out.
+ * stores its ID in *out. The search does not go back before hint: the edit
+ * is invalid (the siblings would be out of order) if hint ends after
+ * range.start, or if hint is an empty node at range.start whose previous
+ * sibling also starts at range.start or later. So a hint never changes the
+ * place of the new child; it only shortens the search.
  */
 AMARK_API amark_error_t amark_dialect_edit_add_child(
     amark_dialect_editor_t *editor, amark_node_id_t parent,

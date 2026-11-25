@@ -4,7 +4,14 @@
 # checks.exports: the externally visible function and data symbols of the
 # Amark shared library must match exported_symbols.txt exactly.
 #
-#   cmake -DNM=<nm> -DLIBRARY=<libamark.so> -DSYMBOLS_FILE=<list> -P CheckExports.cmake
+#   cmake -DNM=<nm> -DLIBRARY=<libamark.so> -DSYMBOLS_FILE=<list>
+#         [-DPREFIX=<prefix> [-DEXPECTED_COUNT=<n>]] -P CheckExports.cmake
+#
+# With PREFIX (checks.exports.dialect), only the exported symbols that start
+# with it are compared with the list, every name of the list must start with
+# it, and the list must have EXPECTED_COUNT names when that is given. In
+# both forms no exported symbol may start with "amark_test_": the dialects
+# and helpers of the tests are never part of the library.
 #
 # Runs "nm -D --defined-only" (ELF shared libraries, i.e. Linux) and only
 # reads files.
@@ -31,6 +38,28 @@ foreach(line IN LISTS lines)
     endif()
     list(APPEND expected "${line}")
 endforeach()
+
+if(DEFINED PREFIX AND NOT PREFIX STREQUAL "")
+    string(LENGTH "${PREFIX}" prefix_length)
+    foreach(name IN LISTS expected)
+        string(SUBSTRING "${name}" 0 ${prefix_length} head)
+        if(NOT head STREQUAL PREFIX)
+            message(FATAL_ERROR
+                "CheckExports.cmake: ${SYMBOLS_FILE} lists ${name}, which "
+                "does not start with ${PREFIX}")
+        endif()
+    endforeach()
+    if(DEFINED EXPECTED_COUNT AND NOT EXPECTED_COUNT STREQUAL "")
+        list(LENGTH expected expected_count)
+        if(NOT expected_count EQUAL EXPECTED_COUNT)
+            message(FATAL_ERROR
+                "CheckExports.cmake: ${SYMBOLS_FILE} lists ${expected_count} "
+                "name(s), not ${EXPECTED_COUNT}")
+        endif()
+    endif()
+else()
+    set(prefix_length 0)
+endif()
 
 execute_process(
     COMMAND "${NM}" -D --defined-only "${LIBRARY}"
@@ -59,6 +88,16 @@ foreach(line IN LISTS nm_lines)
     string(REGEX REPLACE "@.*$" "" name "${name}")
     if(name IN_LIST linker_symbols)
         continue()
+    endif()
+    if(name MATCHES "^amark_test_")
+        message(FATAL_ERROR
+            "checks.exports: ${LIBRARY} exports ${name}, a name of the tests")
+    endif()
+    if(prefix_length GREATER 0)
+        string(SUBSTRING "${name}" 0 ${prefix_length} head)
+        if(NOT head STREQUAL PREFIX)
+            continue()
+        endif()
     endif()
     list(APPEND actual "${name}")
 endforeach()

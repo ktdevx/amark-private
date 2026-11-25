@@ -1,0 +1,19 @@
+# Copyright (c) The Amark Authors
+# SPDX-License-Identifier: MIT
+#
+# The exported symbols of the Amark shared library that start with
+# "amark_dialect_": exactly the functions the dialect contract gives to the
+# rules (dialect-extension, 14.6). checks.exports.dialect compares this list
+# with those symbols of the library, so a function that returns a dialect
+# definition, or a name of a test dialect, cannot be exported under that
+# prefix without changing this list. The library has no built-in dialect.
+amark_dialect_closing_line
+amark_dialect_inline_next_line
+amark_dialect_reply_add_block
+amark_dialect_reply_set_data
+amark_dialect_reply_set_inline
+amark_dialect_edit_set_kind
+amark_dialect_edit_set_data
+amark_dialect_edit_shrink
+amark_dialect_edit_add_child
+amark_dialect_edit_split_text

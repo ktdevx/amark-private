@@ -190,7 +190,16 @@ amark_add_public_test(test_public_parse SOURCES public/test_parse.c)
 # Named test_public_text: test_text is the unit test of the same module.
 amark_add_public_test(test_public_text SOURCES public/test_text.c)
 # Named test_public_dialect: the unit tests of the module are test_dialect_*.
-amark_add_public_test(test_public_dialect SOURCES public/test_dialect.c)
+# It compiles the test dialect (written with the public headers only) into
+# itself, with the support directory, and no internal header directory, on
+# its include path: it does not link amark_test_support, which links
+# amark_testing.
+amark_add_public_test(test_public_dialect
+    SOURCES public/test_dialect.c support/test_dialect.c
+)
+target_include_directories(test_public_dialect PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/support"
+)
 
 # amark_target_defaults sets only C properties (C99 and so on); its warning
 # flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The
@@ -222,6 +231,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND AMARK_NM)
                 "-DNM=${AMARK_NM}"
                 "-DLIBRARY=$<TARGET_FILE:amark>"
                 "-DSYMBOLS_FILE=${CMAKE_CURRENT_SOURCE_DIR}/checks/exported_symbols.txt"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckExports.cmake"
+        )
+        # The exported symbols that start with amark_dialect_ are exactly
+        # the 10 functions of the dialect contract, and none starts with
+        # amark_test_ (no test dialect is exported).
+        add_test(NAME checks.exports.dialect
+            COMMAND "${CMAKE_COMMAND}"
+                "-DNM=${AMARK_NM}"
+                "-DLIBRARY=$<TARGET_FILE:amark>"
+                "-DSYMBOLS_FILE=${CMAKE_CURRENT_SOURCE_DIR}/checks/dialect_symbols.txt"
+                "-DPREFIX=amark_dialect_"
+                "-DEXPECTED_COUNT=10"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckExports.cmake"
         )
     endif()
