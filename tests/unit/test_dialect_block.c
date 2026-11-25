@@ -770,7 +770,7 @@ NAOS_TEST(only_the_first_violation_is_reported)
 
 NAOS_TEST(failed_allocation_lasts_and_is_returned_by_finish)
 {
-    static const unsigned char big[8192];
+    static const unsigned char big[8192] = {0};
     bool valid = true;
     size_t index = 3;
 
