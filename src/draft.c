@@ -16,8 +16,10 @@
  */
 #define MAX_ITEMS_LEN ((size_t)UINT32_MAX)
 
-/* The links are named by attr, their index plus 1, a uint32_t. */
+/* The links and the blobs are named by attr, their index plus 1, a
+   uint32_t. */
 #define MAX_LINKS_LEN ((size_t)UINT32_MAX)
+#define MAX_BLOBS_LEN ((size_t)UINT32_MAX)
 
 static amark_draft_item_t *item_at(const amark_draft_t *draft,
                                    amark_draft_id_t id)
@@ -63,6 +65,8 @@ void amark_draft_init(amark_draft_t *draft, amark_arena_t *scratch)
 {
     amark_array_init(&draft->items, scratch, sizeof(amark_draft_item_t));
     amark_array_init(&draft->links, scratch, sizeof(amark_draft_link_t));
+    amark_array_init(&draft->blobs, scratch, sizeof(amark_draft_blob_t));
+    draft->scratch = scratch;
 }
 
 amark_error_t amark_draft_reset(amark_draft_t *draft)
@@ -72,6 +76,7 @@ amark_error_t amark_draft_reset(amark_draft_t *draft)
 
     amark_array_clear(&draft->items);
     amark_array_clear(&draft->links);
+    amark_array_clear(&draft->blobs);
     /* Element 0 (AMARK_DRAFT_NONE), never used, then the root. */
     err = push_item(draft, AMARK_KIND_NONE, 0, 0, &id);
     if (err == AMARK_ERROR_NONE) {
@@ -212,6 +217,37 @@ amark_error_t amark_draft_set_link(amark_draft_t *draft,
     return AMARK_ERROR_NONE;
 }
 
+amark_error_t amark_draft_set_dialect_data(amark_draft_t *draft,
+                                           amark_draft_id_t id,
+                                           const void *data, size_t size)
+{
+    size_t len = amark_array_len(&draft->blobs);
+    amark_draft_blob_t blob;
+    void *copy;
+    amark_error_t err;
+
+    if (size == 0) {
+        item_at(draft, id)->attr = 0;
+        return AMARK_ERROR_NONE;
+    }
+    if (len >= MAX_BLOBS_LEN) {
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    }
+    err = amark_arena_alloc(draft->scratch, size, &copy);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    memcpy(copy, data, size);
+    blob.data = copy;
+    blob.size = size;
+    err = amark_array_push(&draft->blobs, &blob);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    item_at(draft, id)->attr = (uint32_t)(len + 1);
+    return AMARK_ERROR_NONE;
+}
+
 void amark_draft_set_autolink(amark_draft_t *draft,
                               amark_draft_id_t id,
                               amark_autolink_type_t type)
@@ -265,6 +301,13 @@ static amark_error_t emit_item(amark_document_t *doc,
     if (item->kind == AMARK_KIND_AUTOLINK) {
         return amark_tree_set_autolink(
             doc, *out, (amark_autolink_type_t)(item->attr - 1));
+    }
+    if (item->kind >= AMARK_KIND_DIALECT_MIN) {
+        const amark_draft_blob_t *blob = (const amark_draft_blob_t *)
+            amark_array_at(&draft->blobs, (size_t)item->attr - 1);
+
+        return amark_tree_set_dialect_data(doc, *out, blob->data,
+                                           blob->size);
     }
     return AMARK_ERROR_NONE;
 }
