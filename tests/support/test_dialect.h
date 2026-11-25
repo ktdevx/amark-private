@@ -30,7 +30,13 @@
  * dialect on input that has none of the test dialect's syntax.
  */
 
-/* The kinds of the test dialect. */
+/*
+ * The kinds of the test dialect, and the syntax of those that have rules:
+ *
+ *   BOX   "@> " at the start of a block (after the prefixes, at most 3
+ *         columns of indentation) opens a box, which interrupts a
+ *         paragraph; a blank line closes it.
+ */
 #define AMARK_TEST_KIND_BOX (AMARK_KIND_DIALECT_MIN)        /* container */
 #define AMARK_TEST_KIND_NOTE (AMARK_KIND_DIALECT_MIN + 1)   /* container */
 #define AMARK_TEST_KIND_FENCE (AMARK_KIND_DIALECT_MIN + 2)  /* leaf */

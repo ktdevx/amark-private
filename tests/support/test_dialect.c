@@ -41,6 +41,33 @@ static void test_state_free(const amark_allocator_t *allocator, void *state)
     }
 }
 
+/* Counts a call of a block start rule in the state, if there is one. */
+static void count_start(void *state)
+{
+    if (state != NULL) {
+        ((amark_test_counts_t *)state)->block_starts++;
+    }
+}
+
+/*
+ * BOX: "@> " at the position (the first non-space byte after the prefixes)
+ * opens a box; the three bytes are its start marker.
+ */
+static amark_error_t box_start(const amark_dialect_line_t *line, void *state,
+                               amark_dialect_block_start_result_t *out)
+{
+    const char *at = line->content + line->position;
+
+    count_start(state);
+    if (line->line_end - line->position >= 3 && at[0] == '@' &&
+        at[1] == '>' && at[2] == ' ') {
+        out->matched = true;
+        out->consumed.start = line->position;
+        out->consumed.end = line->position + 3;
+    }
+    return AMARK_ERROR_NONE;
+}
+
 static const amark_dialect_kind_t k_test_kinds[] = {
     {AMARK_TEST_KIND_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
      NULL, NULL},
@@ -66,11 +93,17 @@ static const amark_dialect_kind_t k_test_kinds[] = {
      NULL, NULL},
 };
 
+/* The block start rules, in the order they are tried. */
+static const amark_dialect_block_start_t k_test_starts[] = {
+    {AMARK_TEST_KIND_BOX, true, box_start},
+};
+
 static const amark_dialect_extension_t k_test_extension = {
     "test",                                         /* name */
     k_test_kinds,                                   /* kinds */
     sizeof k_test_kinds / sizeof k_test_kinds[0],   /* kind_count */
-    NULL, 0,                                        /* block_starts */
+    k_test_starts,                                  /* block_starts */
+    sizeof k_test_starts / sizeof k_test_starts[0],
     NULL,                                           /* close_paragraph */
     NULL, 0,                                        /* inline_rules */
     NULL, 0,                                        /* delimiters */

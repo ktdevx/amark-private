@@ -37,8 +37,11 @@
  * The rules of each kind are in three functions, each one switch over the
  * kind: continue_block (does an open block continue on this line), start
  * blocks (does a new block start here) and close_block. Dialect kinds take
- * the default branches, which do not continue, start nothing and close
- * doing nothing.
+ * the default branches. With a dialect (run is not NULL), its block start
+ * rules are called before the CommonMark starts, and a dialect container
+ * takes the starts as the document does; dialect blocks do not continue on
+ * a later line yet, and a dialect container's node gets its range when it
+ * closes.
  */
 
 #define TAB_STOP 4
@@ -184,6 +187,15 @@ typedef struct open_block {
      */
     size_t child_count;
 
+    /*
+     * Dialect blocks: the registration of the kind (NULL for a CommonMark
+     * kind), the number of the extension whose start rule opened it, and
+     * the value the rules keep with it.
+     */
+    const amark_dialect_kind_t *dkind;
+    size_t extension;
+    uint64_t data;
+
     /* The blank line marks (tight and loose, and the blank line run). */
     bool ends_blank;       /* this block ended with a blank line */
     bool last_child_blank; /* the value its last closed child reported */
@@ -195,6 +207,7 @@ typedef struct open_block {
 
 typedef struct block_parser {
     amark_document_t *doc;
+    amark_dialect_run_t *run; /* NULL: no dialect */
     const unsigned char *bytes;
     size_t max_depth;     /* 0: no limit */
     size_t max_nodes;     /* 0: no limit */
@@ -202,6 +215,7 @@ typedef struct block_parser {
     amark_array_t definitions; /* amark_definition_entry_t, in document
                                   order, in the scratch arena */
     amark_line_pos_t pos;
+    size_t line_start;    /* the first byte of the current line */
     bool all_matched;     /* every open block matched on this line */
     bool line_taken;      /* a leaf opened on this line took all of it */
     size_t break_kill;    /* no thematic break starts on this line before
@@ -221,27 +235,41 @@ static open_block_t *stack_at(const block_parser_t *p, size_t index)
 }
 
 /*
- * Creates a node of kind over [start, end) as the last child of the node of
- * the element at parent. Checks the node count limit first: the count
- * includes the root, and nothing is removed, so it is the number of nodes
- * the returned tree has.
+ * Creates a node of kind and class cls (AMARK_NODE_CLASS_AUTO for a
+ * CommonMark kind) over [start, end) as the last child of the node of the
+ * element at parent. Checks the node count limit first: the count includes
+ * the root, and nothing is removed, so it is the number of nodes the
+ * returned tree has.
  */
 static amark_error_t append_node(block_parser_t *p, size_t parent,
-                                 amark_kind_t kind, size_t start, size_t end,
+                                 amark_kind_t kind, amark_node_class_t cls,
+                                 size_t start, size_t end,
                                  amark_node_id_t *out)
 {
     if (p->max_nodes != 0 &&
         amark_document_node_count(p->doc) >= p->max_nodes) {
         return AMARK_ERROR_LIMIT_EXCEEDED;
     }
-    return amark_tree_append(p->doc, stack_at(p, parent)->node, kind,
-                             AMARK_NODE_CLASS_AUTO, start, end, out);
+    return amark_tree_append(p->doc, stack_at(p, parent)->node, kind, cls,
+                             start, end, out);
 }
 
-/* Whether a block of kind child may be a child of a block of kind parent. */
-static bool can_contain(amark_kind_t parent, amark_kind_t child)
+/* Whether block is a dialect container. */
+static bool is_dialect_container(const open_block_t *block)
 {
-    switch (parent) {
+    return block->dkind != NULL &&
+           block->dkind->cls == AMARK_DIALECT_CONTAINER;
+}
+
+/*
+ * Whether a block of kind child may be a child of the open block parent. A
+ * dialect container, like a block quote, takes any block but a list item;
+ * a dialect leaf takes none. A dialect block goes where a block quote does
+ * (never into a list, which closes).
+ */
+static bool can_contain(const open_block_t *parent, amark_kind_t child)
+{
+    switch (parent->kind) {
     case AMARK_KIND_DOCUMENT:
     case AMARK_KIND_BLOCK_QUOTE:
     case AMARK_KIND_LIST_ITEM:
@@ -249,7 +277,8 @@ static bool can_contain(amark_kind_t parent, amark_kind_t child)
     case AMARK_KIND_LIST:
         return child == AMARK_KIND_LIST_ITEM;
     default:
-        return false;
+        return is_dialect_container(parent) &&
+               child != AMARK_KIND_LIST_ITEM;
     }
 }
 
@@ -282,7 +311,7 @@ static amark_error_t extract_definitions(block_parser_t *p, size_t parent,
             break;
         }
         err = append_node(p, parent, AMARK_KIND_LINK_REFERENCE_DEFINITION,
-                          start, def.end, &node);
+                          AMARK_NODE_CLASS_AUTO, start, def.end, &node);
         if (err != AMARK_ERROR_NONE) {
             return err;
         }
@@ -336,8 +365,8 @@ static amark_error_t close_paragraph(block_parser_t *p, size_t parent,
     if (err != AMARK_ERROR_NONE || !rest) {
         return err;
     }
-    err = append_node(p, parent, AMARK_KIND_PARAGRAPH, block->start,
-                      block->end, &node);
+    err = append_node(p, parent, AMARK_KIND_PARAGRAPH, AMARK_NODE_CLASS_AUTO,
+                      block->start, block->end, &node);
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
@@ -355,8 +384,8 @@ static amark_error_t close_heading(block_parser_t *p, size_t parent,
     amark_node_id_t node;
     amark_error_t err;
 
-    err = append_node(p, parent, AMARK_KIND_HEADING, block->start,
-                      block->end, &node);
+    err = append_node(p, parent, AMARK_KIND_HEADING, AMARK_NODE_CLASS_AUTO,
+                      block->start, block->end, &node);
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
@@ -385,8 +414,8 @@ static amark_error_t close_code_block(block_parser_t *p, size_t parent,
     if (block->fence_length == 0) {
         block->end = block->last_nonblank_end;
     }
-    err = append_node(p, parent, AMARK_KIND_CODE_BLOCK, block->start,
-                      block->end, &node);
+    err = append_node(p, parent, AMARK_KIND_CODE_BLOCK, AMARK_NODE_CLASS_AUTO,
+                      block->start, block->end, &node);
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
@@ -429,16 +458,25 @@ static amark_error_t close_block(block_parser_t *p, size_t parent,
     case AMARK_KIND_HEADING:
         return close_heading(p, parent, block);
     case AMARK_KIND_THEMATIC_BREAK:
-        return append_node(p, parent, AMARK_KIND_THEMATIC_BREAK, block->start,
-                           block->end, &node);
+        return append_node(p, parent, AMARK_KIND_THEMATIC_BREAK,
+                           AMARK_NODE_CLASS_AUTO, block->start, block->end,
+                           &node);
     case AMARK_KIND_CODE_BLOCK:
         return close_code_block(p, parent, block);
     case AMARK_KIND_HTML_BLOCK:
         /* Raw HTML is not inline content. */
-        return append_node(p, parent, AMARK_KIND_HTML_BLOCK, block->start,
-                           block->end, &node);
+        return append_node(p, parent, AMARK_KIND_HTML_BLOCK,
+                           AMARK_NODE_CLASS_AUTO, block->start, block->end,
+                           &node);
     default:
-        /* Dialect kinds close doing nothing. */
+        /*
+         * A dialect container's node was made when it opened. A dialect
+         * leaf closes doing nothing yet.
+         */
+        if (is_dialect_container(block)) {
+            amark_tree_set_range(p->doc, block->node, block->start,
+                                 block->end);
+        }
         return AMARK_ERROR_NONE;
     }
 }
@@ -540,7 +578,7 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
-    while (stack_top(p) > 0 && !can_contain(stack_at(p, stack_top(p))->kind,
+    while (stack_top(p) > 0 && !can_contain(stack_at(p, stack_top(p)),
                                             kind)) {
         err = close_top(p);
         if (err != AMARK_ERROR_NONE) {
@@ -565,7 +603,11 @@ static amark_error_t push_block(block_parser_t *p, size_t parent,
     block.end = start;
     block.content_indent = stack_at(p, parent)->content_indent;
     if (is_container) {
-        err = append_node(p, parent, kind, start, start, &block.node);
+        err = append_node(p, parent, kind,
+                          kind >= AMARK_KIND_DIALECT_MIN
+                              ? AMARK_NODE_CLASS_BLOCK
+                              : AMARK_NODE_CLASS_AUTO,
+                          start, start, &block.node);
         if (err != AMARK_ERROR_NONE) {
             return err;
         }
@@ -1161,6 +1203,143 @@ static amark_error_t start_indented_code(block_parser_t *p,
 }
 
 /*
+ * Opens the block of dkind that the start rule of extension number
+ * extension accepted with *out at the current position (its first non-space
+ * byte), inside the element at *container: push_block closes what cannot
+ * contain it, checks the depth and makes a container's node. The block
+ * keeps its registration, extension and data, and the position moves past
+ * the start marker, by bytes. A container ends at least at the end of the
+ * line's content, and the starts are looked for again inside it.
+ */
+static amark_error_t open_dialect_block(
+    block_parser_t *p, size_t *container, size_t extension,
+    const amark_dialect_kind_t *dkind,
+    const amark_dialect_block_start_result_t *out, start_result_t *result)
+{
+    amark_line_pos_t *pos = &p->pos;
+    bool is_container = dkind->cls == AMARK_DIALECT_CONTAINER;
+    open_block_t *block;
+    size_t index;
+    amark_error_t err;
+
+    err = push_block(p, *container, dkind->id, is_container,
+                     pos->first_nonspace, &index);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    block = stack_at(p, index);
+    block->dkind = dkind;
+    block->extension = extension;
+    block->data = out->data;
+    amark_line_pos_advance(pos, p->bytes, out->consumed.end - pos->offset,
+                           AMARK_ADVANCE_BYTES);
+    *container = index;
+    if (is_container) {
+        block->end = pos->content_end;
+        *result = START_CONTAINER;
+    } else {
+        *result = START_LEAF;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * The block start rules of the dialect, before the CommonMark starts
+ * (4.1): the caller has checked that the rest of the line is not blank and
+ * indented at most 3 columns. The rules are called in the order of the
+ * extensions, and of the rules in each; when the innermost open block is a
+ * paragraph, the rules that cannot interrupt one are skipped (4.7). The
+ * first valid start opens its block (open_dialect_block).
+ *
+ * A result is valid when its range starts at the position (ORIGIN), does
+ * not end before it starts or after the end of the line's content (LINE),
+ * and, for a container, is not empty (EMPTY) (4.10). A status other than
+ * AMARK_ERROR_NONE and AMARK_ERROR_NOMEM is rejected too (STATUS, 10.4). A
+ * rejected result adds a diagnostic at the position and counts as "no"
+ * (4.11); AMARK_ERROR_NOMEM from a rule, or from adding the diagnostic,
+ * ends the parse (10.10, 11.7).
+ */
+static amark_error_t start_dialect_block(block_parser_t *p,
+                                         size_t *container,
+                                         start_result_t *result)
+{
+    const amark_line_pos_t *pos = &p->pos;
+    const amark_dialect_t *dialect = p->run->dialect;
+    size_t position = pos->first_nonspace;
+    size_t parent = *container;
+    amark_dialect_line_t line;
+    size_t e;
+
+    /*
+     * The parent the new block would have: a paragraph and a list cannot
+     * contain a dialect block, and their parents can.
+     */
+    while (parent > 0 &&
+           !can_contain(stack_at(p, parent), AMARK_KIND_DIALECT_MIN)) {
+        parent--;
+    }
+    line.content = (const char *)p->bytes;
+    line.content_length = amark_document_content_length(p->doc);
+    line.line = pos->line;
+    line.line_start = p->line_start;
+    line.line_end = pos->content_end;
+    line.position = position;
+    line.column = pos->first_nonspace_column;
+    line.first_nonspace = position;
+    line.indent = pos->indent;
+    line.container_kind = stack_at(p, parent)->kind;
+    line.in_paragraph =
+        stack_at(p, stack_top(p))->kind == AMARK_KIND_PARAGRAPH;
+
+    for (e = 0; e < dialect->extension_count; e++) {
+        const amark_dialect_extension_t *ext = dialect->extensions[e];
+        size_t r;
+
+        for (r = 0; r < ext->block_start_count; r++) {
+            const amark_dialect_block_start_t *rule = &ext->block_starts[r];
+            const amark_dialect_kind_t *dkind;
+            amark_dialect_block_start_result_t out;
+            amark_dialect_reason_t reason;
+            amark_error_t status;
+
+            if (line.in_paragraph && !rule->interrupts_paragraph) {
+                continue;
+            }
+            memset(&out, 0, sizeof(out));
+            status = rule->fn(&line, p->run->states[e], &out);
+            if (status == AMARK_ERROR_NOMEM) {
+                return AMARK_ERROR_NOMEM;
+            }
+            /* Validation made sure the kind is a block kind of ext. */
+            dkind = amark_dialect_find_kind(ext, rule->kind);
+            if (status != AMARK_ERROR_NONE) {
+                reason = AMARK_DIALECT_REASON_STATUS;
+            } else if (!out.matched) {
+                continue;
+            } else if (out.consumed.start != position) {
+                reason = AMARK_DIALECT_REASON_ORIGIN;
+            } else if (out.consumed.end < out.consumed.start ||
+                       out.consumed.end > pos->content_end) {
+                reason = AMARK_DIALECT_REASON_LINE;
+            } else if (dkind->cls == AMARK_DIALECT_CONTAINER &&
+                       out.consumed.end == out.consumed.start) {
+                reason = AMARK_DIALECT_REASON_EMPTY;
+            } else {
+                return open_dialect_block(p, container, e, dkind, &out,
+                                          result);
+            }
+            status = amark_dialect_reject(p->run, e,
+                                          AMARK_DIALECT_HOOK_BLOCK_START,
+                                          reason, position);
+            if (status != AMARK_ERROR_NONE) {
+                return status;
+            }
+        }
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
  * The start rules: whether a new block starts at the current position
  * inside the element at *container (the innermost matched or opened one).
  * If one does, it is opened and *container becomes its index. The position
@@ -1180,55 +1359,7 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
     case AMARK_KIND_LIST:
     case AMARK_KIND_LIST_ITEM:
     case AMARK_KIND_PARAGRAPH:
-        /*
-         * The CommonMark starts are checked here in this order, each under
-         * its own condition: block quote, ATX heading, opening fence, HTML
-         * block, setext underline, thematic break, list item (these at most
-         * 3 columns of indentation), indented code block. A list item needs
-         * at most 3 columns even inside an open list (CommonMark example
-         * 312): the indentation counts from the list's container, so a
-         * marker indented 4 columns from it is not an item.
-         */
-        if (shallow) {
-            err = start_block_quote(p, container, result);
-            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-                return err;
-            }
-            err = start_atx_heading(p, container, result);
-            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-                return err;
-            }
-            err = start_fenced_code(p, container, result);
-            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-                return err;
-            }
-            err = start_html_block(p, container, result);
-            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-                return err;
-            }
-            err = start_setext_heading(p, container, result);
-            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-                return err;
-            }
-            err = start_thematic_break(p, container, result);
-            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-                return err;
-            }
-            err = start_list_item(p, container, result);
-            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
-                return err;
-            }
-        }
-        /*
-         * Indented code: not on a blank line, and not on a line that could
-         * be a lazy continuation of a paragraph (the innermost open block),
-         * since indented code cannot interrupt one.
-         */
-        if (pos->indent >= CODE_INDENT && !pos->blank &&
-            stack_at(p, stack_top(p))->kind != AMARK_KIND_PARAGRAPH) {
-            return start_indented_code(p, container, result);
-        }
-        return AMARK_ERROR_NONE;
+        break;
     case AMARK_KIND_CODE_BLOCK:
     case AMARK_KIND_HTML_BLOCK:
     case AMARK_KIND_THEMATIC_BREAK:
@@ -1239,9 +1370,72 @@ static amark_error_t start_block(block_parser_t *p, size_t *container,
          */
         return AMARK_ERROR_NONE;
     default:
-        /* Dialect kinds start nothing. */
-        return AMARK_ERROR_NONE;
+        /*
+         * A dialect container takes the starts as the document does; a
+         * dialect leaf starts nothing.
+         */
+        if (!is_dialect_container(stack_at(p, *container))) {
+            return AMARK_ERROR_NONE;
+        }
+        break;
     }
+
+    /*
+     * The dialect's start rules come first (start_dialect_block). Then the
+     * CommonMark starts are checked in this order, each under its own
+     * condition: block quote, ATX heading, opening fence, HTML block, setext
+     * underline, thematic break, list item (these at most 3 columns of
+     * indentation), indented code block. A list item needs at most 3
+     * columns even inside an open list (CommonMark example 312): the
+     * indentation counts from the list's container, so a marker indented 4
+     * columns from it is not an item.
+     */
+    if (shallow) {
+        if (p->run != NULL) {
+            err = start_dialect_block(p, container, result);
+            if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+                return err;
+            }
+        }
+        err = start_block_quote(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+        err = start_atx_heading(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+        err = start_fenced_code(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+        err = start_html_block(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+        err = start_setext_heading(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+        err = start_thematic_break(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+        err = start_list_item(p, container, result);
+        if (err != AMARK_ERROR_NONE || *result != START_NONE) {
+            return err;
+        }
+    }
+    /*
+     * Indented code: not on a blank line, and not on a line that could
+     * be a lazy continuation of a paragraph (the innermost open block),
+     * since indented code cannot interrupt one.
+     */
+    if (pos->indent >= CODE_INDENT && !pos->blank &&
+        stack_at(p, stack_top(p))->kind != AMARK_KIND_PARAGRAPH) {
+        return start_indented_code(p, container, result);
+    }
+    return AMARK_ERROR_NONE;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1498,6 +1692,7 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
     size_t i;
 
     amark_line_pos_init(&p->pos, line, bounds);
+    p->line_start = bounds->start;
     p->line_taken = false;
     p->break_kill = bounds->start;
 
@@ -1574,11 +1769,12 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     size_t count;
     amark_error_t err;
 
-    (void)run; /* read once a dialect's rules are called */
     p.doc = doc;
+    p.run = run;
     p.bytes = amark_document_content(doc);
     p.max_depth = config->max_nesting_depth;
     p.max_nodes = config->max_node_count;
+    p.line_start = 0;
     p.all_matched = false;
     p.line_taken = false;
     p.break_kill = 0;
