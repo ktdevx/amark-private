@@ -53,3 +53,6 @@ amark_dialect_inline_next_line
 amark_dialect_reply_add_block
 amark_dialect_reply_set_data
 amark_dialect_reply_set_inline
+amark_dialect_edit_set_kind
+amark_dialect_edit_set_data
+amark_dialect_edit_shrink
