@@ -560,8 +560,8 @@ static bool grid_marker(const amark_dialect_closing_t *closing,
     const char *c = closing->content;
     size_t at = first->content_start + 1;
     size_t end = first->end;
-    size_t grid;
-    size_t i;
+    size_t grid = 0;
+    size_t i = 0;
     amark_dialect_line_span_t span;
     amark_range_t whole;
     amark_range_t range;

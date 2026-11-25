@@ -75,6 +75,12 @@ target_link_libraries(amark_test_support PUBLIC amark_testing)
 # Settings shared by every test executable.
 function(_amark_test_target_settings target)
     amark_target_defaults("${target}")
+    if(MSVC)
+        # The tests build their expected strings with strcpy, strcat and
+        # sprintf, which MSVC deprecates (C4996) in favour of its _s
+        # functions; the tests stay portable C99.
+        target_compile_definitions("${target}" PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
     if(AMARK_TEST_LINK_LIBM)
         target_link_libraries("${target}" PRIVATE m)
     endif()
