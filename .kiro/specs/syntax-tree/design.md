@@ -308,7 +308,7 @@ while (node != AMARK_NODE_NONE) {
 | 7.13 | 再帰を使わない | TreeBuilder | どの操作もループを持たないか、1 重のループ |
 | 8.1 | 設定の項目 | Config | `amark_config_t` |
 | 8.2 | 規則を変える項目がない | Config | `amark_config_t` |
-| 8.3 | 既定の設定 | Config | `amark_config_init`、`AMARK_CONFIG_INIT` |
+| 8.3 | 既定の設定 | Config | `amark_config_init`、`AMARK_CONFIG_INIT(config)` |
 | 8.4 | 「内容の全体」 | Config | `AMARK_END_OF_CONTENT` |
 | 8.5 | UTF-8 の扱い | Config | `amark_utf8_mode_t` |
 | 8.6 | 資源の上限 | Config | `max_*`（0 は上限なし） |
@@ -457,15 +457,14 @@ typedef struct amark_config {
     size_t max_node_count;          /* 0：上限なし */
 } amark_config_t;
 
-/* 既定の設定の初期化子。利用者のコンパイルで、利用者のヘッダの大きさと版が入る。 */
-#define AMARK_CONFIG_INIT                                              \
-    { sizeof(amark_config_t), AMARK_CONFIG_ABI, NULL, 0,               \
-      AMARK_END_OF_CONTENT, { NULL, NULL, NULL }, NULL,                \
-      AMARK_UTF8_STRICT, 0, 0, 0 }
-
 AMARK_API amark_error_t amark_config_init(amark_config_t *config,
                                           size_t struct_size,
                                           unsigned abi);
+
+/* 既定の設定にする。大きさと版は、利用者のコンパイルで決まる。 */
+#define AMARK_CONFIG_INIT(config) \
+    amark_config_init((config), sizeof(amark_config_t), AMARK_CONFIG_ABI)
+
 AMARK_API amark_error_t amark_config_validate(const amark_config_t *config,
                                                size_t content_length);
 
@@ -486,12 +485,12 @@ amark_error_t amark_config_resolve(const amark_config_t *config,
                                     size_t content_length,
                                     amark_resolved_config_t *out);
 ```
-- 設定の版は、方言の定義（dialect-extension の `amark_dialect_t`）と同じく、`struct_size` と `abi` の 2 つで見分ける。初期化の形は libgit2 の `GIT_*_OPTIONS_INIT` と `git_*_options_init(opts, version)` にならう。2 つの値は、ライブラリではなく**利用者がコンパイルしたヘッダ**から入る。そのため、古いヘッダで作った設定を新しいライブラリに渡したとき（共有ライブラリの差し替え）に、食い違いを検査で見つけられる。`abi` は、詰め物に吸われて大きさが変わらない項目の追加や、配置を変えない意味の変更も見分ける。`struct_size` は、版から大きさを引かなくても、読み書きしてよいバイト数を示す。
-- 利用者は、次のどちらかで設定を作る。どちらも同じ値になる。
-  - `amark_config_t config = AMARK_CONFIG_INIT;`
-  - `amark_config_init(&config, sizeof(config), AMARK_CONFIG_ABI);`
-- `AMARK_CONFIG_INIT`：すべての項目を順に書く（`-Wmissing-field-initializers` の警告を出さないため）。C と C++ の両方で使える。項目を足すときは、このマクロも同時に直す。
-- `amark_config_init`：`struct_size` が `sizeof(amark_config_t)` に等しく、`abi` が `AMARK_CONFIG_ABI` に等しければ、`*config` を既定の値にして `AMARK_ERROR_NONE` を返す。既定の値は `AMARK_CONFIG_INIT` と同じである。`config` が `NULL` のとき、または 2 つの値のどちらかが合わないときは、`*config` に**何も書かずに** `AMARK_ERROR_INVALID_CONFIG` を返す。知らない大きさや版の構造体に書けば、利用者の確保した領域の外を壊しうるからである。
+- 設定の版は、方言の定義（dialect-extension の `amark_dialect_t`）と同じく、`struct_size` と `abi` の 2 つで見分ける。2 つの値は、ライブラリではなく**利用者がコンパイルしたヘッダ**から入る。そのため、古いヘッダで作った設定を新しいライブラリに渡したとき（共有ライブラリの差し替え）に、食い違いを見つけられる。`abi` は、詰め物に吸われて大きさが変わらない項目の追加や、配置を変えない意味の変更も見分ける。`struct_size` は、版から大きさを引かなくても、読み書きしてよいバイト数を示す。
+- 初期化の形は、zlib の `deflateInit`（`deflateInit_` に `ZLIB_VERSION` と `sizeof(z_stream)` を渡すマクロ）と libjpeg の `jpeg_create_compress` にならい、マクロが関数を包んで、利用者のコンパイルで決まる大きさと版を渡す。名前は steering の命名の決まり（関数は `amark_`、マクロは `AMARK_` で始める）に従い、本体の関数を `amark_config_init`、包むマクロを `AMARK_CONFIG_INIT` とする。
+- 利用者は、ふつう `AMARK_CONFIG_INIT(&config);` で設定を作る。マクロの使えない言語のバインディングは、`amark_config_init(&config, sizeof(config), AMARK_CONFIG_ABI)` にあたる値を渡して、関数を直接呼ぶ。
+- `AMARK_CONFIG_INIT(config)`：`amark_config_init((config), sizeof(amark_config_t), AMARK_CONFIG_ABI)` に展開する。`config` を 1 回だけ評価する。戻り値は関数の戻り値である。
+- `amark_config_init`：`struct_size` が `sizeof(amark_config_t)` に等しく、`abi` が `AMARK_CONFIG_ABI` に等しければ、`*config` を既定の値にして `AMARK_ERROR_NONE` を返す。既定の値は、`struct_size` と `abi` が渡された値、`end` が `AMARK_END_OF_CONTENT`、ほかはすべて 0 か `NULL` である。既定の値を決めるのは `src/config.c` のこの関数だけである。`config` が `NULL` のとき、または 2 つの値のどちらかが合わないときは、`*config` に**何も書かずに** `AMARK_ERROR_INVALID_CONFIG` を返す。知らない大きさや版の構造体に書けば、利用者の確保した領域の外を壊しうるからである。
+- 初期化子（`= { ... }` で使うマクロ）は持たない。`static` や `const` の設定は作れない。後で要るようになったら、`AMARK_CONFIG_INITIALIZER`（POSIX の `PTHREAD_MUTEX_INITIALIZER` にならう）を足し、既定の値を関数と 1 か所にまとめる。
 - `utf8_mode` を `int` にしているのは、定義されていない値が入っていても、読むことが未定義の動作にならないようにするためである。
 - `amark_config_resolve` と `amark_config_validate`：`config` が `NULL` のときは、既定の設定として扱う。次の規則を順に確かめ、最初に破れたところで `AMARK_ERROR_INVALID_CONFIG` を返す。すべて通れば `AMARK_ERROR_NONE` を返す。
   1. `struct_size` が `sizeof(amark_config_t)` に等しく、`abi` が `AMARK_CONFIG_ABI` に等しい（方言の定義の検査と同じ形）。どちらも 0 は正しい値にならないので、0 で埋めた（初期化していない）設定もここで誤りになる。
@@ -504,7 +503,7 @@ amark_error_t amark_config_resolve(const amark_config_t *config,
 **Implementation Notes**
 - Integration: `src/alloc.h` は 3 つの型の定義を消して `<amark/allocator.h>` を取り込む。`amark_allocator_default` などの関数は内部のままである。
 - Risks: 項目は末尾にだけ足し、そのたびに `AMARK_CONFIG_ABI` を上げる（方言の `AMARK_DIALECT_ABI` と同じ決まり）。古い版の設定も受け付けるときは、版ごとの大きさの表を内部に持ち、`amark_config_init` と規則 1 は「知っている版で、その版の大きさに等しい」組を受け付け、`amark_config_init` はその大きさまでだけ書き、古い版にない項目は既定の値として読む。方言の検査も同じ形で広げる。
-- 内部の関数（`amark_config_resolve` が `NULL` の設定を既定の設定に読み替えるときなど）は、`AMARK_CONFIG_INIT` を使う。
+- 内部の関数（`amark_config_resolve` が `NULL` の設定を既定の設定に読み替えるときなど）は、`AMARK_CONFIG_INIT(&c)` を使う。ライブラリの中では必ず成功する。
 
 #### PublicTree
 
@@ -1023,7 +1022,7 @@ struct amark_document {
 - `amark_error_t` の 7 つの値が、互いに異なり、0 から 6 である（10.1、10.3）。5 と 6 は、source-text が足す。
 - `amark_config_resolve` が、既定の設定を「方言なし、`[0, content_length)`、既定の確保関数、エラーにする、上限なし」に解決する。内容の長さが 0 でも、`SIZE_MAX` でも成功する（8.3、8.4、9.2）。
 - `config` が `NULL` のとき、既定の設定と同じ結果になる。
-- `amark_config_init` に `sizeof(amark_config_t)` と `AMARK_CONFIG_ABI` を渡すと `NONE` を返し、各項目の値が `AMARK_CONFIG_INIT` で作った設定と同じになる（詰め物のバイトは比べない）。大きさに 0、`sizeof(amark_config_t) - 1`、`+ 1`、`SIZE_MAX` を、版に 0、`AMARK_CONFIG_ABI + 1`、`UINT_MAX` を渡すと、また `config` に `NULL` を渡すと `INVALID_CONFIG` を返し、`*config` が変わらない（事前に決まったバイトで埋めておいて確かめる）。
+- `amark_config_init` に `sizeof(amark_config_t)` と `AMARK_CONFIG_ABI` を渡すと `NONE` を返し、各項目が既定の値になる。`AMARK_CONFIG_INIT(&c)` も同じ結果と `NONE` を返す。大きさに 0、`sizeof(amark_config_t) - 1`、`+ 1`、`SIZE_MAX` を、版に 0、`AMARK_CONFIG_ABI + 1`、`UINT_MAX` を渡すと、また `config` に `NULL` を渡すと `INVALID_CONFIG` を返し、`*config` が変わらない（事前に決まったバイトで埋めておいて確かめる）。
 - 規則 1 は、`struct_size` と `abi` のそれぞれを、上と同じ値で 1 つずつ破った設定で確かめる。
 - 規則 1 から 4 のそれぞれについて、破った設定が `INVALID_CONFIG` になり、`*out` が変わらない（9.3、9.4、9.5、9.7）。境界の値（`start == end`、`end == content_length`、`start == content_length` で `end` が `AMARK_END_OF_CONTENT`）は成功する（9.6）。
 - 上限の値が内容の長さより小さくても成功し、値がそのまま解決した設定に入る（8.6、9.8）。
@@ -1069,11 +1068,11 @@ struct amark_document {
 - 循環や範囲の外の添字を含む木で、検査が終わり、ASan の構成で範囲の外の読み出しが報告されない（6.11）。
 
 ### 公開 API のテスト：`tests/public/test_config.c` と `tests/public/header_cxx.cpp`
-- `AMARK_CONFIG_INIT` で作った設定と、`amark_config_init(&c, sizeof(c), AMARK_CONFIG_ABI)` の後の設定の、各項目が既定の値で、`amark_config_validate` が成功する（8.1、8.3、9.1、9.10）。
+- `AMARK_CONFIG_INIT(&c)` の後の設定の各項目が既定の値で、`amark_config_validate` が成功する（8.1、8.3、9.1、9.10）。
 - 初期化していない（0 で埋めた）設定が `INVALID_CONFIG` になる。
 - 確保関数の片方だけを指定した設定、範囲が逆の設定、`utf8_mode` が 2 の設定が `INVALID_CONFIG` になる。
 - `NULL` の文書で、`amark_document_destroy`、`amark_document_root`、`amark_document_diagnostic_count`、たどる関数が、決まった値を返して終わる（5.3）。
-- `header_cxx.cpp`：`<amark/amark.h>` を C++ として取り込み、`AMARK_CONFIG_INIT` での初期化、`amark_config_init` と検査を呼ぶ。種類の ID のマクロと属性の列挙の値を `switch` の `case` で使える（12.2、12.3）。
+- `header_cxx.cpp`：`<amark/amark.h>` を C++ として取り込み、`AMARK_CONFIG_INIT(&c)` での初期化と検査を呼ぶ。種類の ID のマクロと属性の列挙の値を `switch` の `case` で使える（12.2、12.3）。
 - 木を読む関数の正常な動作は、公開 API だけでは木を作れないので、単体テスト（`test_tree.c`）で確かめる。公開 API だけを通した確認は、解析の入口ができる block-parser 以降で行う。
 
 ### 並行性
@@ -1086,8 +1085,8 @@ struct amark_document {
 - `checks.license_headers`：新しいファイルに著作権表示がある。
 
 ## 実装の後で変えたこと
-- **設定の版の見分け方**（2026-11-25）：初めの設計では、先頭の `size_t struct_size` を `amark_config_init` が `sizeof(amark_config_t)` で書き込んでいた。この `sizeof` はライブラリのビルドのときの値なので、規則 1 は init を呼んだ設定では必ず通り、版の食い違いを見つけられなかった。そのうえ、古いヘッダで小さく確保した設定に、新しいライブラリの init が新しい大きさで書き込み、領域の外を壊しうる。方言の定義とそろえて `struct_size` の後ろに `unsigned abi`（`AMARK_CONFIG_ABI`）を足し、2 つの値を利用者のコンパイルで入れる形に改めた。初期化の形は libgit2 にならい、init を大きさと版を引数に取る `amark_error_t amark_config_init(amark_config_t *, size_t, unsigned)` に変え、初期化子 `AMARK_CONFIG_INIT` を足した。公開の関数の引数と `amark_config_t` の項目の変更なので、Revalidation Triggers にあたる。下流では block-parser の設計（`amark_parse` の事前条件）を合わせて直した。公開前なので、`AMARK_CONFIG_ABI` は 1 から始める。
-- この変更に合わせて、`include/amark/config.h`、`src/config.c`、`src/config_internal.h`、`tests/unit/test_config.c`、`tests/public/test_config.c`、`tests/public/header_cxx.cpp`、`README.md` の例、および `amark_config_init` を呼んでいるほかのテストとコードを直す。
+- **設定の版の見分け方**（2026-11-25）：初めの設計では、先頭の `size_t struct_size` を `amark_config_init` が `sizeof(amark_config_t)` で書き込んでいた。この `sizeof` はライブラリのビルドのときの値なので、規則 1 は init を呼んだ設定では必ず通り、版の食い違いを見つけられなかった。そのうえ、古いヘッダで小さく確保した設定に、新しいライブラリの init が新しい大きさで書き込み、領域の外を壊しうる。方言の定義とそろえて `struct_size` の後ろに `unsigned abi`（`AMARK_CONFIG_ABI`）を足し、2 つの値を利用者のコンパイルで入れる形に改めた。初期化の形は zlib と libjpeg にならい、init を大きさと版を引数に取る `amark_error_t amark_config_init(amark_config_t *, size_t, unsigned)` に変え、利用者のコンパイルで 2 つの値を渡すマクロ `AMARK_CONFIG_INIT(config)` を足した。名前は steering の命名の決まりに従う。初期化子のマクロ（libgit2 の `GIT_*_OPTIONS_INIT` の形）も検討したが、既定の値が 2 か所になるので採らなかった。公開の関数の引数と `amark_config_t` の項目の変更なので、Revalidation Triggers にあたる。下流では block-parser の設計（`amark_parse` の事前条件）を合わせて直した。公開前なので、`AMARK_CONFIG_ABI` は 1 から始める。
+- この変更に合わせて、`include/amark/config.h`、`src/config.c`、`src/config_internal.h`、`tests/unit/test_config.c`、`tests/public/test_config.c`、`tests/public/header_cxx.cpp`、`README.md` の例、および `amark_config_init` を呼んでいるほかのテストとコード（`AMARK_CONFIG_INIT(&c)` に置き換える）を直す。
 
 ## Performance & Scalability
 - ノードを足す操作は、行番号のための二分探索を 2 回行う。全体の時間は「ノードの数 × log（行の数）」である。
