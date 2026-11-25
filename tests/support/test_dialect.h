@@ -50,6 +50,16 @@
  *   LINE  "@line " at the start of a block opens a one-line leaf, which
  *         interrupts a paragraph. Its content after the marker is parsed
  *         as inlines.
+ *   GRID  the paragraph close rule: from the first line of a paragraph
+ *         whose content starts with '|' to the paragraph's end is a grid
+ *         (a container), and the lines before it stay a paragraph. Each
+ *         line that starts with '|' is a row (a container) of cells
+ *         (leaves): the bytes between two '|', and the bytes after the
+ *         last '|' when they are not blank. A line that does not start
+ *         with '|' continues the row before it: its last cell runs to the
+ *         end of that line. The inline content of a cell is its bytes
+ *         less the spaces and tabs at its ends (none when that is empty).
+ *         A paragraph with no such line stays as it is.
  *
  * Close rules: BOX and FENCE set their attributes to the number of their
  * lines, in decimal ASCII; LINE sets its inline content, from the first

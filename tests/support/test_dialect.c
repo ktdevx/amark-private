@@ -12,6 +12,7 @@
 
 #include "test_dialect.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -285,6 +286,197 @@ static amark_error_t line_close(const amark_dialect_closing_t *closing,
     return err == AMARK_ERROR_NOMEM ? err : AMARK_ERROR_NONE;
 }
 
+/* Counts a call of the paragraph close rule, if there is a state. */
+static void count_paragraph(void *state)
+{
+    if (state != NULL) {
+        ((amark_test_counts_t *)state)->paragraphs++;
+    }
+}
+
+/* Whether the line span starts a row of a grid: its content starts '|'. */
+static bool is_row_line(const amark_dialect_closing_t *closing,
+                       const amark_dialect_line_span_t *span)
+{
+    return span->content_start < span->end &&
+           closing->content[span->content_start] == '|';
+}
+
+/*
+ * The result of a request made by a rule of the grid: AMARK_ERROR_NOMEM is
+ * returned, any other failure is left to the reply (which rejects it).
+ */
+#define GRID_TRY(call)                                                     \
+    do {                                                                   \
+        amark_error_t grid_err_ = (call);                                  \
+        if (grid_err_ != AMARK_ERROR_NONE) {                               \
+            return grid_err_ == AMARK_ERROR_NOMEM ? grid_err_                \
+                                                  : AMARK_ERROR_NONE;      \
+        }                                                                  \
+    } while (0)
+
+/*
+ * Adds a cell over [start, end) under row, with the inline content
+ * [inline_start, inline_end) less the spaces and tabs at its two ends; an
+ * inline content left empty is not set.
+ */
+static amark_error_t add_cell(const amark_dialect_closing_t *closing,
+                              amark_dialect_reply_t *reply, size_t row,
+                              size_t start, size_t end, size_t inline_start,
+                              size_t inline_end)
+{
+    const char *c = closing->content;
+    size_t cell;
+    amark_range_t range;
+
+    range.start = start;
+    range.end = end;
+    GRID_TRY(amark_dialect_reply_add_block(reply, row, AMARK_TEST_KIND_CELL,
+                                           range, &cell));
+    while (inline_start < inline_end &&
+           (c[inline_start] == ' ' || c[inline_start] == '\t')) {
+        inline_start++;
+    }
+    while (inline_end > inline_start &&
+           (c[inline_end - 1] == ' ' || c[inline_end - 1] == '\t')) {
+        inline_end--;
+    }
+    if (inline_start == inline_end) {
+        return AMARK_ERROR_NONE;
+    }
+    range.start = inline_start;
+    range.end = inline_end;
+    GRID_TRY(amark_dialect_reply_set_inline(reply, cell, range));
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Adds the row whose first line is line (a row line) and whose last line
+ * is last (the lines after the first are its continuation lines), and its
+ * cells: the bytes between two '|' of the first line, and the bytes after
+ * its last '|' up to the end of the row when they are not blank or the row
+ * has continuation lines. The inline content of that last cell starts on
+ * the first line, or, when the first line has nothing left, at the content
+ * of the first continuation line.
+ */
+static amark_error_t add_row(const amark_dialect_closing_t *closing,
+                             amark_dialect_reply_t *reply, size_t grid,
+                             const amark_dialect_line_span_t *line,
+                             const amark_dialect_line_span_t *next,
+                             const amark_dialect_line_span_t *last)
+{
+    const char *c = closing->content;
+    size_t row;
+    size_t at;
+    size_t cell_start = line->content_start + 1;
+    amark_range_t range;
+
+    range.start = line->content_start;
+    range.end = last->end;
+    GRID_TRY(amark_dialect_reply_add_block(reply, grid, AMARK_TEST_KIND_ROW,
+                                           range, &row));
+    for (at = cell_start; at < line->end; at++) {
+        if (c[at] == '|') {
+            GRID_TRY(add_cell(closing, reply, row, cell_start, at,
+                              cell_start, at));
+            cell_start = at + 1;
+        }
+    }
+    at = cell_start;
+    while (at < line->end && (c[at] == ' ' || c[at] == '\t')) {
+        at++;
+    }
+    if (next != NULL) {
+        return add_cell(closing, reply, row, cell_start, last->end,
+                        at < line->end ? at : next->content_start,
+                        last->end);
+    }
+    if (at < line->end) {
+        return add_cell(closing, reply, row, cell_start, line->end,
+                        cell_start, line->end);
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * GRID: the paragraph close rule. From the first line of the paragraph
+ * whose content starts with '|' to its end, the paragraph is a grid; the
+ * lines before it stay a paragraph. Each line that starts with '|' starts a
+ * row; a line that does not continues the row before it (its last cell).
+ * A paragraph without such a line stays as it is.
+ */
+static amark_error_t grid_close(const amark_dialect_closing_t *closing,
+                                void *state, amark_dialect_reply_t *reply)
+{
+    amark_dialect_line_span_t first = {0, 0, 0};
+    amark_dialect_line_span_t span;
+    amark_range_t range;
+    size_t grid;
+    size_t g;
+    size_t i;
+
+    count_paragraph(state);
+    for (g = 0; g < closing->line_count; g++) {
+        if (!amark_dialect_closing_line(closing, g, &first)) {
+            return AMARK_ERROR_NONE;
+        }
+        if (is_row_line(closing, &first)) {
+            break;
+        }
+    }
+    if (g == closing->line_count) {
+        return AMARK_ERROR_NONE;
+    }
+    if (g > 0) {
+        /* The lines before the grid stay a paragraph. */
+        if (!amark_dialect_closing_line(closing, 0, &span)) {
+            return AMARK_ERROR_NONE;
+        }
+        range.start = span.content_start;
+        if (!amark_dialect_closing_line(closing, g - 1, &span)) {
+            return AMARK_ERROR_NONE;
+        }
+        range.end = span.end;
+        GRID_TRY(amark_dialect_reply_add_block(reply, AMARK_DIALECT_TOP,
+                                               AMARK_KIND_PARAGRAPH, range,
+                                               &i));
+    }
+    range.start = first.content_start;
+    range.end = closing->range.end;
+    GRID_TRY(amark_dialect_reply_add_block(reply, AMARK_DIALECT_TOP,
+                                           AMARK_TEST_KIND_GRID, range,
+                                           &grid));
+    i = g;
+    while (i < closing->line_count) {
+        amark_dialect_line_span_t line;
+        amark_dialect_line_span_t next = {0, 0, 0};
+        size_t j = i + 1;
+
+        if (!amark_dialect_closing_line(closing, i, &line)) {
+            return AMARK_ERROR_NONE;
+        }
+        while (j < closing->line_count &&
+               amark_dialect_closing_line(closing, j, &span) &&
+               !is_row_line(closing, &span)) {
+            if (j == i + 1) {
+                next = span;
+            }
+            j++;
+        }
+        if (j - 1 != i) {
+            (void)amark_dialect_closing_line(closing, j - 1, &span);
+        } else {
+            span = line;
+        }
+        GRID_TRY(add_row(closing, reply, grid, &line,
+                         j - 1 != i ? &next : NULL, &span));
+        i = j;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+#undef GRID_TRY
+
 static const amark_dialect_kind_t k_test_kinds[] = {
     {AMARK_TEST_KIND_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
      box_continue, box_close},
@@ -324,7 +516,7 @@ static const amark_dialect_extension_t k_test_extension = {
     sizeof k_test_kinds / sizeof k_test_kinds[0],   /* kind_count */
     k_test_starts,                                  /* block_starts */
     sizeof k_test_starts / sizeof k_test_starts[0],
-    NULL,                                           /* close_paragraph */
+    grid_close,                                     /* close_paragraph */
     NULL, 0,                                        /* inline_rules */
     NULL, 0,                                        /* delimiters */
     NULL,                                           /* postprocess */

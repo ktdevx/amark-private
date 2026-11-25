@@ -12,7 +12,9 @@
  * (6.3). They run on a document and a run state built with the internal
  * functions. The suites start, cont and close parse with dialects: start
  * rules, continue rules, and dialect leaves with the close rules (4.9,
- * 4.12, 6.1, 6.3, 6.4, 6.8, 6.9, 6.12).
+ * 4.12, 6.1, 6.3, 6.4, 6.8, 6.9, 6.12). The suite para parses with
+ * paragraph close rules: the grid of the test dialect, the order of the
+ * extensions and rejected replies (6.2, 6.6, 6.7, 6.8, 6.9, 6.11, 6.13).
  */
 
 #include "arena.h"
@@ -27,6 +29,7 @@
 #include "test_dialect.h"
 #include "test_dialect_defs.h"
 #include "tree_check.h"
+#include "tree_dump.h"
 #include "tree_internal.h"
 
 #include <amark/amark.h>
@@ -1703,6 +1706,12 @@ static const char *kind_name(amark_kind_t kind)
         return "fence";
     case AMARK_TEST_KIND_LINE:
         return "line";
+    case AMARK_TEST_KIND_GRID:
+        return "grid";
+    case AMARK_TEST_KIND_ROW:
+        return "row";
+    case AMARK_TEST_KIND_CELL:
+        return "cell";
     case K_SHUT_LEAF:
         return "leaf";
     case K_SHUT_BOX:
@@ -3344,9 +3353,462 @@ NAOS_SUITE(close,
     NAOS_ADD_TEST(failed_allocations_in_closing_end_the_parse_with_nomem)
 )
 
+/* ---------------------------------------------------------------------- */
+/* Paragraph close rules */
+
+/*
+ * The local extensions of the paragraph close rules: "pprobe" records what
+ * its rule sees and keeps the paragraph; "badpara" replies as the first
+ * byte of the paragraph selects: '!' a paragraph part that starts inside
+ * its line, '?' a status the contract does not define, '~'
+ * AMARK_ERROR_NOMEM. Anything else: nothing.
+ */
+
+static struct {
+    size_t calls;
+    amark_dialect_closing_t closing; /* the input of the last call */
+    amark_dialect_line_span_t first; /* line 0 of the last call */
+    size_t bad_calls;
+} g_para;
+
+static amark_error_t pprobe_close(const amark_dialect_closing_t *closing,
+                                  void *state, amark_dialect_reply_t *reply)
+{
+    (void)state;
+    (void)reply;
+    g_para.calls++;
+    g_para.closing = *closing;
+    NAOS_CHECK_TRUE(amark_dialect_closing_line(closing, 0, &g_para.first));
+    return AMARK_ERROR_NONE;
+}
+
+static amark_error_t badpara_close(const amark_dialect_closing_t *closing,
+                                   void *state, amark_dialect_reply_t *reply)
+{
+    size_t index;
+
+    (void)state;
+    g_para.bad_calls++;
+    switch (closing->content[closing->range.start]) {
+    case '!':
+        NAOS_CHECK_INT_EQ(
+            amark_dialect_reply_add_block(
+                reply, TOP, K_PARA,
+                rng(closing->range.start + 1, closing->range.end), &index),
+            AMARK_ERROR_INVALID_INPUT);
+        break;
+    case '?':
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    case '~':
+        return AMARK_ERROR_NOMEM;
+    default:
+        break;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+static const amark_dialect_extension_t k_pprobe_ext = {
+    "pprobe", NULL, 0, NULL, 0, pprobe_close, NULL, 0, NULL, 0, NULL, NULL,
+    NULL};
+static const amark_dialect_extension_t k_badpara_ext = {
+    "badpara", NULL, 0, NULL, 0, badpara_close, NULL, 0, NULL, 0, NULL, NULL,
+    NULL};
+
+/* The test dialect, with exts[0] before it (first) or after it. */
+static void para_dialect(amark_dialect_t *dialect,
+                         const amark_dialect_extension_t **exts,
+                         const amark_dialect_extension_t *other, bool first)
+{
+    exts[first ? 0 : 1] = other;
+    exts[first ? 1 : 0] = amark_test_dialect()->extensions[0];
+    dialect->struct_size = sizeof(*dialect);
+    dialect->abi = AMARK_DIALECT_ABI;
+    dialect->extensions = exts;
+    dialect->extension_count = 2;
+}
+
+NAOS_SETUP(para)
+{
+    amark_test_alloc_init(&g_state);
+    amark_config_init(&g_config);
+    g_config.allocator = amark_test_allocator(&g_state);
+    g_doc = NULL;
+    memset(&g_para, 0, sizeof(g_para));
+}
+
+NAOS_TEARDOWN(para)
+{
+    g_config.dialect = NULL;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+/* The block child number index of node. */
+static amark_node_id_t child_at(amark_node_id_t node, size_t index)
+{
+    amark_node_id_t child = amark_node_first_child(g_doc, node);
+
+    while (index > 0 && child != AMARK_NODE_NONE) {
+        child = amark_node_next_sibling(g_doc, child);
+        index--;
+    }
+    NAOS_REQUIRE_TRUE(child != AMARK_NODE_NONE);
+    return child;
+}
+
+/* The number of children of node. */
+static size_t child_count(amark_node_id_t node)
+{
+    amark_node_id_t child = amark_node_first_child(g_doc, node);
+    size_t count = 0;
+
+    while (child != AMARK_NODE_NONE) {
+        count++;
+        child = amark_node_next_sibling(g_doc, child);
+    }
+    return count;
+}
+
+NAOS_TEST(the_first_lines_stay_a_paragraph_and_the_rest_is_a_grid)
+{
+    amark_node_id_t para;
+    amark_node_id_t grid;
+    amark_node_id_t row;
+
+    /*
+     * "intro *x*" 0-8, "| a | b |" 10-18, "| c | `d` |" 20-30. The rows'
+     * '|' are at 10, 14, 18 and 20, 24, 30.
+     */
+    PARSE(amark_test_dialect(), "intro *x*\n| a | b |\n| c | `d` |\n", 0);
+    check_shape("doc[0,32](p[0,9] grid[10,31](row[10,19](cell[11,14] "
+                "cell[15,18]) row[20,31](cell[21,24] cell[25,30])))");
+    para = first_block();
+    check_node(para, K_PARA, 0, 9, 1, 1, NULL);
+    check_inline_child(para, 0, AMARK_KIND_TEXT, 0, 6);
+    check_inline_child(para, 1, AMARK_KIND_EMPHASIS, 6, 9);
+    NAOS_CHECK_UINT_EQ(child_count(para), 2);
+    grid = amark_node_next_sibling(g_doc, para);
+    check_node(grid, AMARK_TEST_KIND_GRID, 10, 31, 2, 3, NULL);
+    row = child_at(grid, 0);
+    check_node(row, AMARK_TEST_KIND_ROW, 10, 19, 2, 2, NULL);
+    check_node(child_at(row, 0), AMARK_TEST_KIND_CELL, 11, 14, 2, 2, NULL);
+    check_inline_child(child_at(row, 0), 0, AMARK_KIND_TEXT, 12, 13);
+    check_inline_child(child_at(row, 1), 0, AMARK_KIND_TEXT, 16, 17);
+    row = child_at(grid, 1);
+    check_node(row, AMARK_TEST_KIND_ROW, 20, 31, 3, 3, NULL);
+    check_inline_child(child_at(row, 0), 0, AMARK_KIND_TEXT, 22, 23);
+    check_inline_child(child_at(row, 1), 0, AMARK_KIND_CODE_SPAN, 26, 29);
+
+    /* A whole paragraph; inside a block quote and a list item. */
+    PARSE(amark_test_dialect(), "|a\n", 0);
+    check_shape("doc[0,3](grid[0,2](row[0,2](cell[1,2])))");
+    PARSE(amark_test_dialect(), "> x\n> |a|\n- |b\n", 0);
+    check_shape("doc[0,15](bq[0,9](p[2,3] grid[6,9](row[6,9](cell[7,8]))) "
+                "list[10,14](li[10,14](grid[12,14](row[12,14](cell[13,14])))))");
+}
+
+NAOS_TEST(emphasis_and_code_spans_in_cells_are_inline_nodes)
+{
+    amark_node_id_t row;
+    amark_node_id_t emph;
+
+    /* "| *e* | `c` |" 0-12: '|' at 0, 6 and 12. */
+    PARSE(amark_test_dialect(), "| *e* | `c` |\n", 0);
+    check_shape("doc[0,14](grid[0,13](row[0,13](cell[1,6] cell[7,12])))");
+    row = child_at(first_block(), 0);
+    emph = check_inline_child(child_at(row, 0), 0, AMARK_KIND_EMPHASIS, 2,
+                              5);
+    check_inline_child(emph, 0, AMARK_KIND_TEXT, 3, 4);
+    NAOS_CHECK_UINT_EQ(child_count(child_at(row, 0)), 1);
+    check_inline_child(child_at(row, 1), 0, AMARK_KIND_CODE_SPAN, 8, 11);
+    NAOS_CHECK_UINT_EQ(child_count(child_at(row, 1)), 1);
+    /* An empty cell has no inline content. */
+    PARSE(amark_test_dialect(), "|| x |\n", 0);
+    check_shape("doc[0,7](grid[0,6](row[0,6](cell[1,1] cell[2,5])))");
+    row = child_at(first_block(), 0);
+    NAOS_CHECK_UINT_EQ(child_count(child_at(row, 0)), 0);
+    check_inline_child(child_at(row, 1), 0, AMARK_KIND_TEXT, 3, 4);
+}
+
+NAOS_TEST(a_cell_over_lines_leaves_out_the_prefixes_of_its_lines)
+{
+    amark_node_id_t cell;
+    amark_node_id_t emph;
+    amark_node_id_t child;
+
+    /*
+     * "> |a|*b" 0-6, "> c*" 8-11: the second line continues the row. The
+     * last cell is "*b\n> c*" [5,12); its inlines leave out "> " (8-9).
+     */
+    PARSE(amark_test_dialect(), "> |a|*b\n> c*\n", 0);
+    check_shape("doc[0,13](bq[0,12](grid[2,12](row[2,12](cell[3,4] "
+                "cell[5,12]))))");
+    cell = child_at(child_at(child_at(first_block(), 0), 0), 1);
+    check_node(cell, AMARK_TEST_KIND_CELL, 5, 12, 1, 2, NULL);
+    emph = check_inline_child(cell, 0, AMARK_KIND_EMPHASIS, 5, 12);
+    NAOS_CHECK_UINT_EQ(child_count(cell), 1);
+    check_inline_child(emph, 0, AMARK_KIND_TEXT, 6, 7);
+    check_inline_child(emph, 1, AMARK_KIND_SOFT_BREAK, 7, 8);
+    check_inline_child(emph, 2, AMARK_KIND_TEXT, 10, 11);
+    NAOS_CHECK_UINT_EQ(child_count(emph), 3);
+    for (child = amark_node_first_child(g_doc, emph);
+         child != AMARK_NODE_NONE;
+         child = amark_node_next_sibling(g_doc, child)) {
+        amark_range_t range;
+
+        if (amark_node_kind(g_doc, child) != AMARK_KIND_TEXT) {
+            continue;
+        }
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, child, &range));
+        NAOS_CHECK_FALSE(range.start <= 8 && 8 < range.end);
+        NAOS_CHECK_FALSE(range.start <= 9 && 9 < range.end);
+    }
+}
+
+NAOS_TEST(definitions_at_the_start_are_taken_off_before_the_rules)
+{
+    static const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+
+    para_dialect(&dialect, exts, &k_pprobe_ext, true);
+    /* "[r]: /u" 0-6, "| a |" 8-12. */
+    PARSE(&dialect, "[r]: /u\n| a |\n", 0);
+    check_shape("doc[0,14](def[0,7] grid[8,13](row[8,13](cell[9,12])))");
+    NAOS_CHECK_UINT_EQ(g_para.calls, 1);
+    NAOS_CHECK_UINT_EQ(g_para.closing.kind, K_PARA);
+    NAOS_CHECK_UINT_EQ(g_para.closing.range.start, 8);
+    NAOS_CHECK_UINT_EQ(g_para.closing.range.end, 13);
+    NAOS_CHECK_UINT_EQ(g_para.closing.line_count, 1);
+    NAOS_CHECK_TRUE(g_para.closing.data == 0);
+    NAOS_CHECK_UINT_EQ(g_para.first.start, 8);
+    NAOS_CHECK_UINT_EQ(g_para.first.content_start, 8);
+    NAOS_CHECK_UINT_EQ(g_para.first.end, 13);
+    /* The definition is in the table: the reference resolves. */
+    PARSE(&dialect, "[r]: /u\n| [r] |\n", 0);
+    check_inline_child(
+        child_at(child_at(amark_node_next_sibling(g_doc, first_block()), 0),
+                 0),
+        0, AMARK_KIND_LINK, 10, 13);
+    /* Definitions only: no rule is called. */
+    memset(&g_para, 0, sizeof(g_para));
+    PARSE(&dialect, "[r]: /u\n[s]: /v\n", 0);
+    check_shape("doc[0,16](def[0,7] def[8,15])");
+    NAOS_CHECK_UINT_EQ(g_para.calls, 0);
+}
+
+NAOS_TEST(setext_heading_paragraphs_call_no_rule)
+{
+    static const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+
+    para_dialect(&dialect, exts, &k_pprobe_ext, true);
+    PARSE(&dialect, "| a |\n---\n", 0);
+    check_shape("doc[0,10](h[0,9])");
+    PARSE(&dialect, "| a |\n| b |\n===\n", 0);
+    check_shape("doc[0,16](h[0,15])");
+    PARSE(&dialect, "[r]: /u\n| a |\n---\n", 0);
+    check_shape("doc[0,18](def[0,7] h[8,17])");
+    NAOS_CHECK_UINT_EQ(g_para.calls, 0);
+    /* Nor do other CommonMark blocks. */
+    PARSE(&dialect, "# | a\n\n    | b\n\n```\n| c\n```\n\n<div>\n| d\n\n---\n",
+          0);
+    NAOS_CHECK_UINT_EQ(g_para.calls, 0);
+    /* Definitions take the paragraph: the underline is its next line. */
+    PARSE(&dialect, "[r]: /u\n===\n", 0);
+    check_shape("doc[0,12](def[0,7] p[8,11])");
+    NAOS_CHECK_UINT_EQ(g_para.calls, 1);
+    NAOS_CHECK_UINT_EQ(g_para.closing.range.start, 8);
+}
+
+/* Requires the tree of content to be the same with and without dialect. */
+static void check_same_dump(const amark_dialect_t *dialect,
+                            const char *content)
+{
+    char without[2048];
+    char with[2048];
+
+    parse_with(NULL, content, strlen(content), 0);
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, without, sizeof without),
+                         sizeof without);
+    parse_with(dialect, content, strlen(content), 0);
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, with, sizeof with),
+                         sizeof with);
+    NAOS_CHECK_STR_EQ(with, without);
+}
+
+NAOS_TEST(paragraphs_that_are_not_replaced_are_unchanged)
+{
+    static const char *const inputs[] = {
+        "a\n",
+        "a\nb |\n  c  \n",
+        "> a *b*\n> c\nlazy\n",
+        "- a\n  b\n\n  c\n",
+        "[r]: /u \"t\"\npara [r]\n",
+        "a\n***\nb\n# c\n",
+        "  a  \n\tb\\\nc  \nd\n",
+        "a | b\nc | d\n"};
+    static const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+    size_t i;
+
+    para_dialect(&dialect, exts, &k_pprobe_ext, false);
+    for (i = 0; i < sizeof inputs / sizeof inputs[0]; i++) {
+        check_same_dump(amark_test_dialect(), inputs[i]);
+        check_same_dump(amark_test_dialect_plain(), inputs[i]);
+        check_same_dump(&dialect, inputs[i]);
+    }
+    NAOS_CHECK_UINT_GT(g_para.calls, 0);
+}
+
+NAOS_TEST(the_rules_are_called_in_the_order_of_the_extensions)
+{
+    static const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+
+    /* The first keeps the paragraph, the second replaces it. */
+    para_dialect(&dialect, exts, &k_pprobe_ext, true);
+    PARSE(&dialect, "x\n| a |\n\ny\n", 0);
+    check_shape("doc[0,11](p[0,1] grid[2,7](row[2,7](cell[3,6])) p[9,10])");
+    NAOS_CHECK_UINT_EQ(g_para.calls, 2);
+    /* The first replaces: the second is not called for that paragraph. */
+    memset(&g_para, 0, sizeof(g_para));
+    para_dialect(&dialect, exts, &k_pprobe_ext, false);
+    PARSE(&dialect, "x\n| a |\n\ny\n", 0);
+    check_shape("doc[0,11](p[0,1] grid[2,7](row[2,7](cell[3,6])) p[9,10])");
+    NAOS_CHECK_UINT_EQ(g_para.calls, 1);
+    NAOS_CHECK_UINT_EQ(g_para.closing.range.start, 9);
+    /* Once per paragraph and extension. */
+    memset(&g_para, 0, sizeof(g_para));
+    PARSE(&dialect, "a\n\nb\n\n> c\n\n- d\n", 0);
+    NAOS_CHECK_UINT_EQ(g_para.calls, 4);
+}
+
+NAOS_TEST(a_rejected_reply_adds_a_diagnostic_and_the_next_rule_is_called)
+{
+    static const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+
+    para_dialect(&dialect, exts, &k_badpara_ext, true);
+    /* "!x" 0-1, "| a |" 3-7: the grid of the next extension is made. */
+    PARSE(&dialect, "!x\n| a |\n", 1);
+    check_shape("doc[0,9](p[0,2] grid[3,8](row[3,8](cell[4,7])))");
+    check_close_diagnostic(0, "badpara",
+                           "paragraph part does not cover whole lines", 0,
+                           1);
+    /* No extension replaces it: the paragraph as it was. */
+    PARSE(&dialect, "a\n\n!x\ny\n", 1);
+    check_shape("doc[0,8](p[0,1] p[3,7])");
+    check_close_diagnostic(0, "badpara",
+                           "paragraph part does not cover whole lines", 3,
+                           3);
+    /* A status the contract does not define; in a block quote. */
+    PARSE(&dialect, "> ?\n> |b\n", 1);
+    check_shape("doc[0,9](bq[0,8](p[2,3] grid[6,8](row[6,8](cell[7,8]))))");
+    check_close_diagnostic(0, "badpara", "unknown return value", 2, 1);
+    /* In the order found. */
+    PARSE(&dialect, "!a\n\n?b\n", 2);
+    check_close_diagnostic(0, "badpara",
+                           "paragraph part does not cover whole lines", 0,
+                           1);
+    check_close_diagnostic(1, "badpara", "unknown return value", 4, 3);
+    NAOS_CHECK_UINT_EQ(g_para.bad_calls, 6);
+}
+
+NAOS_TEST(nomem_from_a_paragraph_rule_ends_the_parse)
+{
+    static const char content[] = "a\n\n~b\n";
+    static const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+
+    para_dialect(&dialect, exts, &k_badpara_ext, true);
+    g_config.dialect = &dialect;
+    NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1, &g_config,
+                                  &g_doc),
+                      AMARK_ERROR_NOMEM);
+    NAOS_CHECK_NULL(g_doc);
+    NAOS_CHECK_UINT_EQ(g_para.bad_calls, 2);
+}
+
+NAOS_TEST(a_replacement_past_the_limits_ends_the_parse)
+{
+    static const char content[] = "| a |\n";
+
+    g_config.dialect = amark_test_dialect();
+    /*
+     * The root, the grid, the row, the cell and its text: the reply's
+     * three nodes do not fit in 3, its check fails before adding them.
+     */
+    g_config.max_node_count = 3;
+    NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1, &g_config,
+                                  &g_doc),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_NULL(g_doc);
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    g_config.max_node_count = 5;
+    PARSE(amark_test_dialect(), "| a |\n", 0);
+    g_config.max_node_count = 0;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    /* The cell is at depth 3. */
+    g_config.max_nesting_depth = 2;
+    NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1, &g_config,
+                                  &g_doc),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_NULL(g_doc);
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    g_config.max_nesting_depth = 4;
+    PARSE(amark_test_dialect(), "| a |\n", 0);
+    check_shape("doc[0,6](grid[0,5](row[0,5](cell[1,4])))");
+}
+
+NAOS_TEST(failed_allocations_in_a_replacement_end_the_parse_with_nomem)
+{
+    static const char content[] =
+        "p\n| *a* | b |\n| c\nd |\n\n> !x\n> |y|\n";
+    static const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+    size_t calls;
+    size_t i;
+
+    para_dialect(&dialect, exts, &k_badpara_ext, true);
+    parse_with(&dialect, content, sizeof(content) - 1, 1);
+    calls = g_state.malloc_calls;
+    for (i = 1; i <= calls; i++) {
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = i;
+        NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1,
+                                      &g_config, &g_doc),
+                          AMARK_ERROR_NOMEM);
+        NAOS_CHECK_NULL(g_doc);
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    }
+    g_state.fail_at = 0;
+}
+
+NAOS_SUITE(para,
+    NAOS_SET_SETUP(para),
+    NAOS_SET_TEARDOWN(para),
+    NAOS_ADD_TEST(the_first_lines_stay_a_paragraph_and_the_rest_is_a_grid),
+    NAOS_ADD_TEST(emphasis_and_code_spans_in_cells_are_inline_nodes),
+    NAOS_ADD_TEST(a_cell_over_lines_leaves_out_the_prefixes_of_its_lines),
+    NAOS_ADD_TEST(definitions_at_the_start_are_taken_off_before_the_rules),
+    NAOS_ADD_TEST(setext_heading_paragraphs_call_no_rule),
+    NAOS_ADD_TEST(paragraphs_that_are_not_replaced_are_unchanged),
+    NAOS_ADD_TEST(the_rules_are_called_in_the_order_of_the_extensions),
+    NAOS_ADD_TEST(a_rejected_reply_adds_a_diagnostic_and_the_next_rule_is_called),
+    NAOS_ADD_TEST(nomem_from_a_paragraph_rule_ends_the_parse),
+    NAOS_ADD_TEST(a_replacement_past_the_limits_ends_the_parse),
+    NAOS_ADD_TEST(failed_allocations_in_a_replacement_end_the_parse_with_nomem)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(reply),
     NAOS_ADD_SUITE(start),
     NAOS_ADD_SUITE(cont),
-    NAOS_ADD_SUITE(close)
+    NAOS_ADD_SUITE(close),
+    NAOS_ADD_SUITE(para)
 )

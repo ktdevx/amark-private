@@ -353,34 +353,6 @@ static amark_error_t extract_definitions(block_parser_t *p, size_t parent,
 }
 
 /*
- * Closes a paragraph: takes the link reference definitions off its start,
- * then adds a node for what is left, if anything, under the element at
- * parent, and its inline content.
- */
-static amark_error_t close_paragraph(block_parser_t *p, size_t parent,
-                                     open_block_t *block)
-{
-    amark_node_id_t node;
-    bool rest;
-    amark_error_t err;
-
-    if (block->emptied) {
-        return AMARK_ERROR_NONE;
-    }
-    err = extract_definitions(p, parent, block, &rest);
-    if (err != AMARK_ERROR_NONE || !rest) {
-        return err;
-    }
-    err = append_node(p, parent, AMARK_KIND_PARAGRAPH, AMARK_NODE_CLASS_AUTO,
-                      block->start, block->end, &node);
-    if (err != AMARK_ERROR_NONE) {
-        return err;
-    }
-    return amark_inline_content_add(p->doc, node, block->content_start,
-                                    block->content_end);
-}
-
-/*
  * Closes a heading: adds its node under the element at parent with its
  * level and style, and its inline content (of length 0 when it is empty).
  */
@@ -526,6 +498,91 @@ static amark_error_t close_dialect_block(block_parser_t *p, size_t parent,
         p->run, reply, stack_at(p, parent)->node, parent,
         is_container ? block->node : AMARK_NODE_NONE, p->max_depth,
         p->max_nodes);
+}
+
+/*
+ * Calls the paragraph close rules of the extensions of the dialect, in
+ * their order, for the paragraph block whose link reference definitions
+ * were taken off and of which some is left (6.2), each with an empty
+ * paragraph reply. The first reply that has blocks and passes the checks
+ * is applied under the element at parent, and *replaced is set; a reply
+ * without blocks keeps the paragraph, and a rejected one adds its
+ * diagnostic (6.11): the next extension is called. Each rule is called
+ * once for the paragraph.
+ */
+static amark_error_t replace_paragraph(block_parser_t *p, size_t parent,
+                                       const open_block_t *block,
+                                       bool *replaced)
+{
+    const amark_dialect_t *dialect = p->run->dialect;
+    amark_range_t range;
+    size_t i;
+
+    *replaced = false;
+    range.start = block->start;
+    range.end = block->end;
+    for (i = 0; i < dialect->extension_count; i++) {
+        amark_dialect_block_close_fn fn =
+            dialect->extensions[i]->close_paragraph;
+        amark_dialect_reply_t *reply = NULL;
+        bool valid = false;
+        amark_error_t err;
+
+        if (fn == NULL) {
+            continue;
+        }
+        err = call_close_rule(p, i, fn, AMARK_DIALECT_REPLY_PARAGRAPH,
+                              AMARK_KIND_PARAGRAPH, range, 0, &reply,
+                              &valid);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+        if (valid) {
+            *replaced = true;
+            return amark_dialect_reply_apply(
+                p->run, reply, stack_at(p, parent)->node, parent,
+                AMARK_NODE_NONE, p->max_depth, p->max_nodes);
+        }
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * Closes a paragraph: takes the link reference definitions off its start,
+ * then, if anything is left, lets the paragraph close rules of the dialect
+ * replace it, if there is a dialect; if none does, adds a node for it under
+ * the element at parent, and its inline content. A paragraph underlined as
+ * a setext heading became a heading before it closed (6.13).
+ */
+static amark_error_t close_paragraph(block_parser_t *p, size_t parent,
+                                     open_block_t *block)
+{
+    amark_node_id_t node;
+    bool rest;
+    amark_error_t err;
+
+    if (block->emptied) {
+        return AMARK_ERROR_NONE;
+    }
+    err = extract_definitions(p, parent, block, &rest);
+    if (err != AMARK_ERROR_NONE || !rest) {
+        return err;
+    }
+    if (p->run != NULL) {
+        bool replaced;
+
+        err = replace_paragraph(p, parent, block, &replaced);
+        if (err != AMARK_ERROR_NONE || replaced) {
+            return err;
+        }
+    }
+    err = append_node(p, parent, AMARK_KIND_PARAGRAPH, AMARK_NODE_CLASS_AUTO,
+                      block->start, block->end, &node);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    return amark_inline_content_add(p->doc, node, block->content_start,
+                                    block->content_end);
 }
 
 /*
