@@ -7,16 +7,24 @@
 
 #include <string.h>
 
+#include <amark/dialect.h>
+
 #include "unicode.h"
 
 /* The kinds of CommonMark, copied into every amark_delimiters_t. */
 static const amark_delimiter_kind_t commonmark_kinds[] = {
-    {'*', false, AMARK_KIND_EMPHASIS, AMARK_KIND_STRONG},
-    {'_', true, AMARK_KIND_EMPHASIS, AMARK_KIND_STRONG}
+    {'*', false, AMARK_KIND_EMPHASIS, AMARK_KIND_STRONG,
+     AMARK_DELIMITER_MATCH_EMPHASIS, 0},
+    {'_', true, AMARK_KIND_EMPHASIS, AMARK_KIND_STRONG,
+     AMARK_DELIMITER_MATCH_EMPHASIS, 0}
 };
 
 #define COMMONMARK_KIND_COUNT \
     (sizeof(commonmark_kinds) / sizeof(commonmark_kinds[0]))
+
+/* The table of kinds holds the kinds of CommonMark and of one dialect. */
+typedef char amark_delimiter_kind_max_check
+    [AMARK_DELIMITER_KIND_MAX == 2 + AMARK_DIALECT_DELIMITER_MAX ? 1 : -1];
 
 /*
  * An element is named by its index plus 1, a uint32_t, so the array holds at
@@ -40,6 +48,17 @@ void amark_delimiters_init(amark_delimiters_t *delims,
     delims->kind_count = COMMONMARK_KIND_COUNT;
     amark_array_init(&delims->stack, scratch, sizeof(amark_delimiter_t));
     delims->top = 0;
+}
+
+bool amark_delimiters_add_kind(amark_delimiters_t *delims,
+                               const amark_delimiter_kind_t *kind)
+{
+    if (delims->kind_count >= AMARK_DELIMITER_KIND_MAX) {
+        return false;
+    }
+    delims->kinds[delims->kind_count] = *kind;
+    delims->kind_count++;
+    return true;
 }
 
 void amark_delimiters_reset(amark_delimiters_t *delims)
@@ -157,15 +176,89 @@ static bool fails_rule_of_3(const amark_delimiter_t *opener,
 }
 
 /*
- * The class of a closer in the table of lower bounds: its kind, whether it
- * can open, and its original length modulo 3.
+ * Whether the run of elem may match by the rule of its kind: always for
+ * EMPHASIS; for EQUAL, when its length is one of the kind's lengths.
  */
-#define BOUND_CLASSES 6
-
-static size_t bound_class(const amark_delimiter_t *closer)
+static bool is_usable(const amark_delimiters_t *delims,
+                      const amark_delimiter_t *elem)
 {
-    return closer->kind * BOUND_CLASSES + (closer->can_open ? 3u : 0u) +
-           closer->length % 3;
+    const amark_delimiter_kind_t *kind = &delims->kinds[elem->kind];
+
+    if (kind->match != AMARK_DELIMITER_MATCH_EQUAL) {
+        return true;
+    }
+    return elem->length >= 1 &&
+           elem->length <= AMARK_DIALECT_DELIMITER_LENGTH_MAX &&
+           (kind->lengths & AMARK_DIALECT_LENGTH(elem->length)) != 0;
+}
+
+/*
+ * Whether opener (of the closer's kind, and able to open) and closer may
+ * match: for EQUAL, when their lengths are equal; for EMPHASIS, unless the
+ * rule of 3 forbids it.
+ */
+static bool may_match(const amark_delimiters_t *delims,
+                      const amark_delimiter_t *opener,
+                      const amark_delimiter_t *closer)
+{
+    if (delims->kinds[closer->kind].match == AMARK_DELIMITER_MATCH_EQUAL) {
+        return opener->length == closer->length;
+    }
+    return !fails_rule_of_3(opener, closer);
+}
+
+/*
+ * The class of a usable closer in the table of lower bounds: its kind,
+ * whether it can open, and for EMPHASIS its original length modulo 3 (6 of
+ * the 8 classes), for EQUAL its length, 1 to 4 (all 8).
+ */
+#define BOUND_CLASSES 8
+
+static size_t bound_class(const amark_delimiters_t *delims,
+                          const amark_delimiter_t *closer)
+{
+    size_t base = closer->kind * BOUND_CLASSES;
+
+    if (delims->kinds[closer->kind].match == AMARK_DELIMITER_MATCH_EQUAL) {
+        return base + (closer->can_open ? 4u : 0u) + (closer->length - 1);
+    }
+    return base + (closer->can_open ? 3u : 0u) + closer->length % 3;
+}
+
+/*
+ * Matches opener and closer of an EQUAL kind: wraps the items from the
+ * opener's to the closer's in one item of the kind's single, ranging from
+ * the opener's start to the closer's end, removes the two runs' items, and
+ * takes the two runs and the delimiters between off the stack. Stores in
+ * *next the element to look at as the closer next.
+ */
+static amark_error_t match_equal(amark_delimiters_t *delims,
+                                 amark_draft_t *draft, uint32_t opener_id,
+                                 uint32_t closer_id, uint32_t *next)
+{
+    amark_delimiter_t *opener = element_at(delims, opener_id);
+    amark_delimiter_t *closer = element_at(delims, closer_id);
+    amark_draft_id_t wrapped;
+    amark_error_t err;
+
+    err = amark_draft_wrap(draft, opener->item, closer->item,
+                           delims->kinds[closer->kind].single,
+                           amark_draft_get(draft, opener->item)->start,
+                           amark_draft_get(draft, closer->item)->end,
+                           &wrapped);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    amark_draft_remove(draft, opener->item);
+    amark_draft_remove(draft, closer->item);
+
+    /* The delimiters between are off the stack. */
+    opener->next = closer_id;
+    closer->prev = opener_id;
+    *next = closer->next;
+    take_off(delims, opener_id);
+    take_off(delims, closer_id);
+    return AMARK_ERROR_NONE;
 }
 
 /*
@@ -245,7 +338,7 @@ amark_error_t amark_delimiters_process(amark_delimiters_t *delims,
 
     while (closer_id != 0) {
         amark_delimiter_t *closer = element_at(delims, closer_id);
-        size_t cls = bound_class(closer);
+        size_t cls;
         uint32_t opener_id = 0;
         uint32_t id;
 
@@ -253,19 +346,36 @@ amark_error_t amark_delimiters_process(amark_delimiters_t *delims,
             closer_id = closer->next;
             continue;
         }
+        if (!is_usable(delims, closer)) {
+            /* An EQUAL run of a length the kind does not use matches
+               nothing; as an opener it matches no usable closer either. */
+            uint32_t next = closer->next;
+
+            if (!closer->can_open) {
+                take_off(delims, closer_id);
+            }
+            closer_id = next;
+            continue;
+        }
+        cls = bound_class(delims, closer);
         for (id = closer->prev; id != 0 && id >= lower[cls];
              id = element_at(delims, id)->prev) {
             const amark_delimiter_t *opener = element_at(delims, id);
 
             if (opener->can_open && opener->kind == closer->kind &&
-                !fails_rule_of_3(opener, closer)) {
+                may_match(delims, opener, closer)) {
                 opener_id = id;
                 break;
             }
         }
         if (opener_id != 0) {
-            amark_error_t err = match(delims, draft, opener_id, closer_id,
-                                      &closer_id);
+            amark_error_t err =
+                delims->kinds[closer->kind].match ==
+                        AMARK_DELIMITER_MATCH_EQUAL
+                    ? match_equal(delims, draft, opener_id, closer_id,
+                                  &closer_id)
+                    : match(delims, draft, opener_id, closer_id,
+                            &closer_id);
 
             if (err != AMARK_ERROR_NONE) {
                 return err;
