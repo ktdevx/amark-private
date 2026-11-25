@@ -36,8 +36,9 @@ NAOS_TEST(init_writes_defaults)
     amark_config_t config;
 
     memset(&config, 0xA5, sizeof(config));
-    amark_config_init(&config);
+    NAOS_REQUIRE_INT_EQ(AMARK_CONFIG_INIT(&config), AMARK_ERROR_NONE);
     NAOS_CHECK_UINT_EQ(config.struct_size, sizeof(amark_config_t));
+    NAOS_CHECK_UINT_EQ(config.abi, AMARK_CONFIG_ABI);
     NAOS_CHECK_NULL(config.dialect);
     NAOS_CHECK_UINT_EQ(config.start, 0);
     NAOS_CHECK_UINT_EQ(config.end, AMARK_END_OF_CONTENT);
@@ -51,17 +52,43 @@ NAOS_TEST(init_writes_defaults)
     NAOS_CHECK_UINT_EQ(config.max_node_count, 0);
 }
 
-NAOS_TEST(init_null_does_nothing)
+NAOS_TEST(init_null_is_refused)
 {
-    amark_config_init(NULL);
-    NAOS_CHECK_TRUE(1);
+    NAOS_CHECK_INT_EQ(AMARK_CONFIG_INIT(NULL), AMARK_ERROR_INVALID_CONFIG);
+}
+
+/* A program built with the header of another version is refused. */
+NAOS_TEST(init_with_another_layout_is_refused)
+{
+    amark_config_t config;
+    amark_config_t before;
+
+    memset(&config, 0xA5, sizeof(config));
+    memcpy(&before, &config, sizeof(config));
+    NAOS_CHECK_INT_EQ(amark_config_init(&config, sizeof(config) - 1,
+                                        AMARK_CONFIG_ABI),
+                      AMARK_ERROR_INVALID_CONFIG);
+    NAOS_CHECK_INT_EQ(amark_config_init(&config, sizeof(config),
+                                        AMARK_CONFIG_ABI + 1),
+                      AMARK_ERROR_INVALID_CONFIG);
+    NAOS_CHECK_INT_EQ(memcmp(&before, &config, sizeof(config)), 0);
+}
+
+NAOS_TEST(wrong_abi_is_invalid)
+{
+    amark_config_t config;
+
+    AMARK_CONFIG_INIT(&config);
+    config.abi = AMARK_CONFIG_ABI + 1;
+    NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10),
+                      AMARK_ERROR_INVALID_CONFIG);
 }
 
 NAOS_TEST(defaults_are_valid)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 0), AMARK_ERROR_NONE);
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10), AMARK_ERROR_NONE);
     NAOS_CHECK_INT_EQ(amark_config_validate(NULL, 10), AMARK_ERROR_NONE);
@@ -71,7 +98,7 @@ NAOS_TEST(replace_mode_is_valid)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.utf8_mode = AMARK_UTF8_REPLACE;
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10), AMARK_ERROR_NONE);
 }
@@ -89,17 +116,17 @@ NAOS_TEST(one_allocator_function_is_invalid)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator.malloc_fn = unused_malloc;
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10),
                       AMARK_ERROR_INVALID_CONFIG);
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator.free_fn = unused_free;
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10),
                       AMARK_ERROR_INVALID_CONFIG);
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator.malloc_fn = unused_malloc;
     config.allocator.free_fn = unused_free;
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10), AMARK_ERROR_NONE);
@@ -109,7 +136,7 @@ NAOS_TEST(reversed_range_is_invalid)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.start = 5;
     config.end = 4;
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10),
@@ -123,7 +150,7 @@ NAOS_TEST(undefined_utf8_mode_is_invalid)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.utf8_mode = 2;
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10),
                       AMARK_ERROR_INVALID_CONFIG);
@@ -195,7 +222,9 @@ NAOS_TEST(null_document_traversal_ends)
 
 NAOS_SUITE(config,
     NAOS_ADD_TEST(init_writes_defaults),
-    NAOS_ADD_TEST(init_null_does_nothing),
+    NAOS_ADD_TEST(init_null_is_refused),
+    NAOS_ADD_TEST(init_with_another_layout_is_refused),
+    NAOS_ADD_TEST(wrong_abi_is_invalid),
     NAOS_ADD_TEST(defaults_are_valid),
     NAOS_ADD_TEST(replace_mode_is_valid),
     NAOS_ADD_TEST(zero_filled_is_invalid),

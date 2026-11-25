@@ -25,7 +25,7 @@ extern "C" {
  * content as CommonMark 0.31.2 and stores the document in *out.
  *
  * content may be NULL when length is 0. config is NULL (the defaults of
- * amark_config_init) or a configuration set up with amark_config_init. The
+ * AMARK_CONFIG_INIT) or a configuration set up with AMARK_CONFIG_INIT. The
  * document refers to content without copying it: do not change or free
  * content until the document is destroyed with amark_document_destroy.
  * Ranges are byte offsets from the start of content, and lines count from 1

@@ -87,7 +87,7 @@ static amark_error_t parse_buffer(size_t start, size_t end, size_t max_depth,
     amark_resolved_config_t resolved;
     amark_error_t err;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.start = start;
     config.end = end;
     config.allocator = g_allocator;
@@ -1713,7 +1713,7 @@ NAOS_TEST(definitions_and_setext_through_amark_parse)
     static const char k_input[] = "[Foo]: /u\nBar\n---\n[foo]: /v";
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     NAOS_REQUIRE_INT_EQ(amark_parse(k_input,
                                     sizeof(k_input) - 1, &config, &g_doc),
@@ -1772,7 +1772,7 @@ static amark_error_t parse_public(const char *bytes, size_t length,
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.max_nesting_depth = max_depth;
     config.max_node_count = max_nodes;
@@ -4464,7 +4464,7 @@ static void parse_replace_ok(const char *bytes, size_t length)
     amark_config_t config;
     amark_tree_check_result_t check;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.utf8_mode = AMARK_UTF8_REPLACE;
     NAOS_REQUIRE_INT_EQ(amark_parse(bytes, length, &config, &g_doc),

@@ -169,15 +169,21 @@ compiles as C++. All names start with `amark_` (functions and types) or
 ### Configuration
 
 A parse is configured with an `amark_config_t`. Always fill it in with
-`amark_config_init()` first, then change only the fields you need;
+`AMARK_CONFIG_INIT()` first, then change only the fields you need;
 `amark_config_validate()` checks it against the length of the content and
 returns `AMARK_ERROR_NONE` or `AMARK_ERROR_INVALID_CONFIG`. A configuration
 that was not initialized (for example, one filled with zeros) is invalid.
+`AMARK_CONFIG_INIT()` passes the size and the version of `amark_config_t` in
+the header your program is compiled with to `amark_config_init()`, which
+fails without writing anything when they are not the ones of the library, so
+a program built with the header of another version is caught. Call
+`amark_config_init()` directly only where the macro cannot be used, for
+example from another language.
 
 ```c
 amark_config_t config;
 
-amark_config_init(&config);
+AMARK_CONFIG_INIT(&config);
 config.utf8_mode = AMARK_UTF8_REPLACE; /* replace invalid UTF-8 */
 if (amark_config_validate(&config, content_length) != AMARK_ERROR_NONE) {
     /* the configuration is invalid */

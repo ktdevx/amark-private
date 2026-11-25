@@ -1344,7 +1344,7 @@ NAOS_TEST(inline_next_line_reads_continuation_lines_after_the_prefix)
     amark_inline_content_t ic;
     amark_range_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, sizeof(k_quote) - 1,
                                              &resolved),
@@ -1642,7 +1642,7 @@ static const amark_dialect_t k_bad_dialect = {
 NAOS_SETUP(start)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
     memset(&g_probe, 0, sizeof(g_probe));
@@ -2241,7 +2241,7 @@ static const amark_dialect_t k_cont_dialect = {
 NAOS_SETUP(cont)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
     g_big = NULL;
@@ -3033,7 +3033,7 @@ static const amark_dialect_t k_shut_dialect = {
 NAOS_SETUP(close)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
     memset(&g_shut, 0, sizeof(g_shut));
@@ -3555,7 +3555,7 @@ static void para_dialect(amark_dialect_t *dialect,
 NAOS_SETUP(para)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
     memset(&g_para, 0, sizeof(g_para));

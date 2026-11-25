@@ -1998,7 +1998,7 @@ static const char *g_content; /* the content parsed into g_doc */
 NAOS_SETUP(parse)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
     g_content = NULL;

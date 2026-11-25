@@ -80,7 +80,7 @@ static void parse_bytes(const char *bytes, size_t length)
     NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
     memcpy(g_buffer, bytes, length);
     g_length = length;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.utf8_mode = AMARK_UTF8_REPLACE;
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, g_length, &resolved),

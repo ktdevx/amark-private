@@ -48,7 +48,7 @@ static size_t g_count;
 NAOS_SETUP(counting)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
     g_count = 0;

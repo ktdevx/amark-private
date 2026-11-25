@@ -165,7 +165,7 @@ static amark_error_t parse_input(size_t max_depth, size_t max_nodes)
     amark_config_t config;
 
     reset_doc();
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.max_nesting_depth = max_depth;
     config.max_node_count = max_nodes;

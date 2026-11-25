@@ -147,6 +147,15 @@
   - 完了の状態：すべての構成で `ctest` が全部通り、リポジトリの検査に失敗がない
   - _Requirements: 10.4, 12.5, 12.6, 12.8, 12.9_
 
+- [x] 7. 実装の後の設計の変更：設定の版の見分け方
+- [x] 7.1 設定の版を、利用者のコンパイルで決まる `struct_size` と `abi` で見分ける
+  - `amark_config_t` の `struct_size` の後ろに `unsigned abi` を足し、`AMARK_CONFIG_ABI` を定める
+  - `amark_config_init` を、大きさと版を引数に取り、合わなければ何も書かずに `INVALID_CONFIG` を返す関数にする。それを包んで利用者のヘッダの大きさと版を渡すマクロ `AMARK_CONFIG_INIT(config)` を足す
+  - 検査の規則 1 で、`struct_size` と `abi` の両方を確かめる
+  - 公開ヘッダの注釈、README の例、`amark_config_init` を呼んでいたテストを `AMARK_CONFIG_INIT` に合わせる。init が知らない大きさと版を拒んで何も書かないこと、規則 1 が版の誤りを拒むことのテストを足す
+  - 完了の状態：静的（警告のエラー化とサニタイザを有効にした構成）と動的の両方の構成で、`ctest` が全部通る
+  - _Requirements: 8.1, 8.3, 9.1, 9.2_
+
 ## Implementation Notes
 - 公開 API のテストの実行ファイルの名前は、同じ名前の単体テストとぶつからないように `test_public_<module>` にする（例：`amark_add_public_test(test_public_config SOURCES public/test_config.c)`）。
 - この作業環境の clang には `libclang_rt.asan` がなくサニタイザの構成をリンクできないので、サニタイザの構成は GCC（`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++`）で確かめる。

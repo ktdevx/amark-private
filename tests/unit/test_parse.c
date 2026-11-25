@@ -53,7 +53,7 @@ static amark_document_t *const k_sentinel = (amark_document_t *)&g_state;
 NAOS_SETUP(counting)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     amark_arena_init(&g_scratch, &g_config.allocator);
     g_doc = NULL;
