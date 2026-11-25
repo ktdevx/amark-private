@@ -32,11 +32,12 @@ typedef struct amark_resolved_config {
 /*
  * Checks config against content_length and, if it is valid, stores the
  * resolved configuration in *out and returns AMARK_ERROR_NONE. A NULL config
- * is treated as the defaults of amark_config_init. The rules are checked in
+ * is treated as the defaults of AMARK_CONFIG_INIT. The rules are checked in
  * this order, and the first one broken returns AMARK_ERROR_INVALID_CONFIG
  * with *out unchanged:
  *
- *   1. struct_size equals sizeof(amark_config_t).
+ *   1. struct_size equals sizeof(amark_config_t) and abi equals
+ *      AMARK_CONFIG_ABI.
  *   2. allocator.malloc_fn and allocator.free_fn are both NULL or both set.
  *   3. With end AMARK_END_OF_CONTENT read as content_length,
  *      start <= end and end <= content_length.

@@ -294,8 +294,9 @@ NAOS_TEST(config_functions)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    NAOS_CHECK_INT_EQ(AMARK_ERROR_NONE, AMARK_CONFIG_INIT(&config));
     NAOS_CHECK_UINT_EQ(sizeof(amark_config_t), config.struct_size);
+    NAOS_CHECK_UINT_EQ(AMARK_CONFIG_ABI, config.abi);
     NAOS_CHECK_INT_EQ(AMARK_ERROR_NONE, amark_config_validate(&config, 10));
 
     config.utf8_mode = AMARK_UTF8_REPLACE;
@@ -329,7 +330,7 @@ NAOS_TEST(dialect_types)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.dialect = &dialect;
     NAOS_CHECK_PTR_EQ(&dialect, config.dialect);
     NAOS_CHECK_UINT_EQ(AMARK_DIALECT_ABI, dialect.abi);

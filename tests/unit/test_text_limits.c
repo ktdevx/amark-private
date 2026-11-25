@@ -154,7 +154,7 @@ static void parse_input(void)
 
     amark_document_destroy(g_doc);
     g_doc = NULL;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.max_nesting_depth = 0;
     config.max_node_count = 0;

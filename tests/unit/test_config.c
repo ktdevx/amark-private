@@ -115,8 +115,9 @@ NAOS_TEST(init_writes_the_defaults)
     amark_config_t config;
 
     memset(&config, 0x5A, sizeof(config));
-    amark_config_init(&config);
+    NAOS_REQUIRE_INT_EQ(AMARK_CONFIG_INIT(&config), AMARK_ERROR_NONE);
     NAOS_CHECK_UINT_EQ(config.struct_size, sizeof(amark_config_t));
+    NAOS_CHECK_UINT_EQ(config.abi, AMARK_CONFIG_ABI);
     NAOS_CHECK_NULL(config.dialect);
     NAOS_CHECK_UINT_EQ(config.start, 0);
     NAOS_CHECK_UINT_EQ(config.end, AMARK_END_OF_CONTENT);
@@ -130,9 +131,72 @@ NAOS_TEST(init_writes_the_defaults)
     NAOS_CHECK_UINT_EQ(config.max_node_count, 0);
 }
 
-NAOS_TEST(init_null_does_nothing)
+NAOS_TEST(init_by_function_matches_the_macro)
 {
-    amark_config_init(NULL);
+    amark_config_t by_macro;
+    amark_config_t by_function;
+
+    memset(&by_macro, 0x5A, sizeof(by_macro));
+    memset(&by_function, 0xA5, sizeof(by_function));
+    NAOS_REQUIRE_INT_EQ(AMARK_CONFIG_INIT(&by_macro), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_config_init(&by_function, sizeof(by_function),
+                                          AMARK_CONFIG_ABI),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(by_function.struct_size, by_macro.struct_size);
+    NAOS_CHECK_UINT_EQ(by_function.abi, by_macro.abi);
+    NAOS_CHECK_TRUE(by_function.dialect == by_macro.dialect);
+    NAOS_CHECK_UINT_EQ(by_function.start, by_macro.start);
+    NAOS_CHECK_UINT_EQ(by_function.end, by_macro.end);
+    NAOS_CHECK_TRUE(by_function.allocator.malloc_fn ==
+                    by_macro.allocator.malloc_fn);
+    NAOS_CHECK_TRUE(by_function.allocator.free_fn ==
+                    by_macro.allocator.free_fn);
+    NAOS_CHECK_TRUE(by_function.allocator.ctx == by_macro.allocator.ctx);
+    NAOS_CHECK_TRUE(by_function.filename == by_macro.filename);
+    NAOS_CHECK_INT_EQ(by_function.utf8_mode, by_macro.utf8_mode);
+    NAOS_CHECK_UINT_EQ(by_function.max_input_size, by_macro.max_input_size);
+    NAOS_CHECK_UINT_EQ(by_function.max_nesting_depth,
+                       by_macro.max_nesting_depth);
+    NAOS_CHECK_UINT_EQ(by_function.max_node_count, by_macro.max_node_count);
+}
+
+/* An unknown size or version writes nothing: the struct may be smaller. */
+static bool init_is_refused(size_t struct_size, unsigned abi)
+{
+    amark_config_t config;
+    amark_config_t before;
+
+    memset(&config, 0x5A, sizeof(config));
+    memcpy(&before, &config, sizeof(config));
+    return amark_config_init(&config, struct_size, abi) ==
+               AMARK_ERROR_INVALID_CONFIG &&
+           memcmp(&before, &config, sizeof(config)) == 0;
+}
+
+NAOS_TEST(init_refuses_an_unknown_size)
+{
+    NAOS_CHECK_TRUE(init_is_refused(0, AMARK_CONFIG_ABI));
+    NAOS_CHECK_TRUE(init_is_refused(sizeof(amark_config_t) - 1,
+                                    AMARK_CONFIG_ABI));
+    NAOS_CHECK_TRUE(init_is_refused(sizeof(amark_config_t) + 1,
+                                    AMARK_CONFIG_ABI));
+    NAOS_CHECK_TRUE(init_is_refused(SIZE_MAX, AMARK_CONFIG_ABI));
+}
+
+NAOS_TEST(init_refuses_an_unknown_abi)
+{
+    NAOS_CHECK_TRUE(init_is_refused(sizeof(amark_config_t), 0));
+    NAOS_CHECK_TRUE(init_is_refused(sizeof(amark_config_t),
+                                    AMARK_CONFIG_ABI + 1));
+    NAOS_CHECK_TRUE(init_is_refused(sizeof(amark_config_t), UINT_MAX));
+}
+
+NAOS_TEST(init_null_is_refused)
+{
+    NAOS_CHECK_INT_EQ(AMARK_CONFIG_INIT(NULL), AMARK_ERROR_INVALID_CONFIG);
+    NAOS_CHECK_INT_EQ(amark_config_init(NULL, sizeof(amark_config_t),
+                                        AMARK_CONFIG_ABI),
+                      AMARK_ERROR_INVALID_CONFIG);
     NAOS_CHECK_INT_EQ(amark_config_validate(NULL, 0), AMARK_ERROR_NONE);
 }
 
@@ -148,7 +212,7 @@ NAOS_TEST(default_resolves_for_empty_content)
     amark_config_t config;
     amark_resolved_config_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     poison(&out);
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, 0, &out),
                         AMARK_ERROR_NONE);
@@ -160,7 +224,7 @@ NAOS_TEST(default_resolves_for_some_content)
     amark_config_t config;
     amark_resolved_config_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     poison(&out);
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, 12, &out),
                         AMARK_ERROR_NONE);
@@ -172,7 +236,7 @@ NAOS_TEST(default_resolves_for_the_largest_length)
     amark_config_t config;
     amark_resolved_config_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     poison(&out);
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, SIZE_MAX, &out),
                         AMARK_ERROR_NONE);
@@ -183,7 +247,7 @@ NAOS_TEST(default_validates_for_any_length)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 0), AMARK_ERROR_NONE);
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, 1), AMARK_ERROR_NONE);
     NAOS_CHECK_INT_EQ(amark_config_validate(&config, SIZE_MAX - 1),
@@ -210,13 +274,13 @@ NAOS_TEST(null_config_resolves_as_the_defaults)
     }
 }
 
-/* ---- rule 1: struct_size ---- */
+/* ---- rule 1: struct_size and abi ---- */
 
 NAOS_TEST(rule1_wrong_struct_size_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.struct_size = 0;
     NAOS_CHECK_TRUE(rejected(&config, 10));
     config.struct_size = sizeof(amark_config_t) - 1;
@@ -225,6 +289,21 @@ NAOS_TEST(rule1_wrong_struct_size_is_rejected)
     NAOS_CHECK_TRUE(rejected(&config, 10));
     config.struct_size = SIZE_MAX;
     NAOS_CHECK_TRUE(rejected(&config, 10));
+}
+
+NAOS_TEST(rule1_wrong_abi_is_rejected)
+{
+    amark_config_t config;
+
+    AMARK_CONFIG_INIT(&config);
+    config.abi = 0;
+    NAOS_CHECK_TRUE(rejected(&config, 10));
+    config.abi = AMARK_CONFIG_ABI + 1;
+    NAOS_CHECK_TRUE(rejected(&config, 10));
+    config.abi = UINT_MAX;
+    NAOS_CHECK_TRUE(rejected(&config, 10));
+    config.abi = AMARK_CONFIG_ABI;
+    NAOS_CHECK_INT_EQ(amark_config_validate(&config, 10), AMARK_ERROR_NONE);
 }
 
 NAOS_TEST(zeroed_config_is_rejected)
@@ -241,7 +320,7 @@ NAOS_TEST(rule2_only_malloc_fn_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator.malloc_fn = g_allocator.malloc_fn;
     config.allocator.ctx = &g_state;
     NAOS_CHECK_TRUE(rejected(&config, 10));
@@ -251,7 +330,7 @@ NAOS_TEST(rule2_only_free_fn_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator.free_fn = g_allocator.free_fn;
     config.allocator.ctx = &g_state;
     NAOS_CHECK_TRUE(rejected(&config, 10));
@@ -263,7 +342,7 @@ NAOS_TEST(rule3_start_after_end_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.start = 5;
     config.end = 4;
     NAOS_CHECK_TRUE(rejected(&config, 10));
@@ -276,7 +355,7 @@ NAOS_TEST(rule3_end_after_length_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.end = 11;
     NAOS_CHECK_TRUE(rejected(&config, 10));
     config.start = 0;
@@ -290,7 +369,7 @@ NAOS_TEST(rule3_start_after_length_to_the_end_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.start = 11;
     NAOS_CHECK_TRUE(rejected(&config, 10));
     config.start = 1;
@@ -302,7 +381,7 @@ NAOS_TEST(rule3_boundaries_are_valid)
     amark_config_t config;
     amark_resolved_config_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
 
     /* An empty range in the middle. */
     config.start = 4;
@@ -356,7 +435,7 @@ NAOS_TEST(rule4_undefined_utf8_mode_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.utf8_mode = 2;
     NAOS_CHECK_TRUE(rejected(&config, 10));
     config.utf8_mode = -1;
@@ -372,7 +451,7 @@ NAOS_TEST(rule4_both_utf8_modes_are_valid)
     amark_config_t config;
     amark_resolved_config_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.utf8_mode = AMARK_UTF8_REPLACE;
     poison(&out);
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, 10, &out),
@@ -391,7 +470,7 @@ NAOS_TEST(every_rule_broken_is_rejected)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.struct_size = 1;
     config.allocator.malloc_fn = g_allocator.malloc_fn;
     config.start = 9;
@@ -407,7 +486,7 @@ NAOS_TEST(limits_pass_through_and_are_not_compared)
     amark_config_t config;
     amark_resolved_config_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.max_input_size = 1;
     config.max_nesting_depth = 2;
     config.max_node_count = 3;
@@ -438,7 +517,7 @@ NAOS_TEST(allocator_filename_and_dialect_pass_through)
     amark_test_def_t def;
 
     amark_test_def_init(&def);
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.filename = filename;
     config.dialect = &def.dialect;
@@ -459,7 +538,7 @@ NAOS_TEST(ctx_without_functions_is_ignored)
     amark_config_t config;
     amark_resolved_config_t out;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator.ctx = &g_state;
     poison(&out);
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, 3, &out),
@@ -475,7 +554,7 @@ NAOS_TEST(validate_changes_nothing_and_repeats)
     amark_config_t before;
     int i;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.start = 2;
     config.end = 5;
@@ -559,7 +638,7 @@ NAOS_TEST(invalid_dialect_definitions_are_config_errors)
 
         amark_test_def_init(&def);
         b->apply(&def, b->arg);
-        amark_config_init(&config);
+        AMARK_CONFIG_INIT(&config);
         config.allocator = g_allocator;
         config.dialect = &def.dialect;
         /* The breaker's name is the message of a failed check. */
@@ -583,7 +662,7 @@ NAOS_TEST(valid_dialect_resolves_and_parses)
     char got[DUMP_SIZE];
 
     amark_test_def_init(&def);
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     parse_dump(&config, want);
 
@@ -625,7 +704,7 @@ NAOS_TEST(zero_extension_dialects_resolve_to_no_dialect)
     dialects[0] = &empty;
     dialects[1] = &def.dialect;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     parse_dump(&config, want);
     for (i = 0; i < 2; i++) {
@@ -644,7 +723,7 @@ NAOS_TEST(zero_extension_dialects_resolve_to_no_dialect)
     }
 
     /* The defaults with a 0-extension dialect are the default resolution. */
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.dialect = &empty;
     poison(&out);
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, CONTENT_LENGTH, &out),
@@ -660,7 +739,7 @@ NAOS_TEST(zero_extension_dialect_is_still_checked)
     memset(&empty, 0, sizeof(empty));
     empty.struct_size = sizeof(amark_dialect_t);
     empty.abi = AMARK_DIALECT_ABI + 1;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.dialect = &empty;
     NAOS_CHECK_TRUE(rejected(&config, CONTENT_LENGTH));
@@ -679,7 +758,7 @@ NAOS_TEST(valid_dialect_does_not_hide_other_rules)
     amark_config_t config;
 
     amark_test_def_init(&def);
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.dialect = &def.dialect;
     config.start = CONTENT_LENGTH + 1;
     NAOS_CHECK_TRUE(rejected(&config, CONTENT_LENGTH));
@@ -695,7 +774,7 @@ NAOS_TEST(dialect_check_changes_nothing_and_repeats)
     int i;
 
     amark_test_def_init(&def);
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.dialect = &def.dialect;
     memcpy(&before, &def, sizeof(def));
@@ -722,7 +801,10 @@ NAOS_SUITE(config,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
     NAOS_ADD_TEST(init_writes_the_defaults),
-    NAOS_ADD_TEST(init_null_does_nothing),
+    NAOS_ADD_TEST(init_by_function_matches_the_macro),
+    NAOS_ADD_TEST(init_refuses_an_unknown_size),
+    NAOS_ADD_TEST(init_refuses_an_unknown_abi),
+    NAOS_ADD_TEST(init_null_is_refused),
     NAOS_ADD_TEST(end_of_content_is_size_max),
     NAOS_ADD_TEST(default_resolves_for_empty_content),
     NAOS_ADD_TEST(default_resolves_for_some_content),
@@ -730,6 +812,7 @@ NAOS_SUITE(config,
     NAOS_ADD_TEST(default_validates_for_any_length),
     NAOS_ADD_TEST(null_config_resolves_as_the_defaults),
     NAOS_ADD_TEST(rule1_wrong_struct_size_is_rejected),
+    NAOS_ADD_TEST(rule1_wrong_abi_is_rejected),
     NAOS_ADD_TEST(zeroed_config_is_rejected),
     NAOS_ADD_TEST(rule2_only_malloc_fn_is_rejected),
     NAOS_ADD_TEST(rule2_only_free_fn_is_rejected),

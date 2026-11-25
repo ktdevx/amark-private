@@ -107,7 +107,7 @@ NAOS_TEST(config_check_accepts_the_definition)
     amark_config_t config;
     amark_document_t *doc = NULL;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.dialect = &test_dialect;
     NAOS_CHECK_INT_EQ(AMARK_ERROR_NONE,
                       amark_config_validate(&config, sizeof(content) - 1));
@@ -127,7 +127,7 @@ NAOS_TEST(config_check_rejects_a_copy_with_another_abi)
 
     memcpy(&copy, &test_dialect, sizeof(copy));
     copy.abi = AMARK_DIALECT_ABI + 1;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.dialect = &copy;
     NAOS_CHECK_INT_EQ(AMARK_ERROR_INVALID_CONFIG,
                       amark_config_validate(&config, sizeof(content) - 1));
@@ -214,7 +214,7 @@ static void parse_with(const amark_dialect_t *dialect)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.dialect = dialect;
     NAOS_REQUIRE_INT_EQ(amark_parse(k_dialect_content,
                                     sizeof(k_dialect_content) - 1, &config,

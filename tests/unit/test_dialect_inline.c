@@ -59,7 +59,7 @@ static char g_plain_dump[DUMP_SIZE];
 NAOS_SETUP(parse)
 {
     amark_test_alloc_init(&g_state);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = amark_test_allocator(&g_state);
     g_doc = NULL;
 }

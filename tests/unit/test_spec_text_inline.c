@@ -94,7 +94,7 @@ static void check_examples(const spec_example_t *examples, size_t count)
         char got[DUMP_SIZE + 64];
         char want[DUMP_SIZE + 64];
 
-        amark_config_init(&config);
+        AMARK_CONFIG_INIT(&config);
         config.allocator = g_allocator;
         (void)snprintf(got, sizeof(got), "%d: error %d", ex->number,
                        (int)amark_parse(ex->input, strlen(ex->input),

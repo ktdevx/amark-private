@@ -473,7 +473,7 @@ NAOS_TEST(failing_allocator_is_nomem)
 {
     amark_config_t config;
 
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator.malloc_fn = failing_malloc;
     config.allocator.free_fn = unused_free;
     g_doc = SENTINEL;

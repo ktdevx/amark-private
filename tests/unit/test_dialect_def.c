@@ -1040,7 +1040,7 @@ NAOS_SETUP(parse_run)
     init_dialect(2);
     set_state_fns(0, state_new_1);
     set_state_fns(1, state_new_2);
-    amark_config_init(&g_config);
+    AMARK_CONFIG_INIT(&g_config);
     g_config.allocator = g_allocator;
     g_config.dialect = &g_dialect;
 }

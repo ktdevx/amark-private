@@ -132,7 +132,7 @@ static amark_error_t parse_with(const char *bytes, size_t length,
     NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
     memcpy(g_buffer, bytes, length);
     g_length = length;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.utf8_mode = AMARK_UTF8_REPLACE;
     config.start = options->start;
@@ -1180,7 +1180,7 @@ static amark_error_t parse_public(const char *bytes, size_t length,
     NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
     memcpy(g_buffer, bytes, length);
     g_length = length;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.utf8_mode = utf8_mode;
     return amark_parse((const char *)g_buffer, g_length, &config, &g_doc);
@@ -1332,7 +1332,7 @@ static void parse_dialect(const char *bytes, size_t length,
     NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
     memcpy(g_buffer, bytes, length);
     g_length = length;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.dialect = dialect;
     NAOS_REQUIRE_INT_EQ(amark_parse((const char *)g_buffer, g_length, &config,
@@ -1542,7 +1542,7 @@ static void parse_both(const char *bytes, size_t length)
     NAOS_REQUIRE_UINT_LE(length, BUFFER_SIZE);
     memcpy(g_buffer, bytes, length);
     g_length = length;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, g_length, &resolved),
                         AMARK_ERROR_NONE);

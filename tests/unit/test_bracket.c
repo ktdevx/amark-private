@@ -115,7 +115,7 @@ static void parse_with_mode(const char *bytes, size_t length,
 
     amark_document_destroy(g_doc);
     g_doc = NULL;
-    amark_config_init(&config);
+    AMARK_CONFIG_INIT(&config);
     config.allocator = g_allocator;
     config.utf8_mode = (int)utf8_mode;
     NAOS_REQUIRE_INT_EQ(amark_parse(bytes, length, &config, &g_doc),

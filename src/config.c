@@ -10,12 +10,17 @@
 
 #include <stdbool.h>
 
-void amark_config_init(amark_config_t *config)
+amark_error_t amark_config_init(amark_config_t *config, size_t struct_size,
+                                unsigned abi)
 {
-    if (config == NULL) {
-        return;
+    /* Write nothing into a struct of a size or version this library does
+     * not know: it may be smaller than amark_config_t. */
+    if (config == NULL || struct_size != sizeof(amark_config_t) ||
+        abi != AMARK_CONFIG_ABI) {
+        return AMARK_ERROR_INVALID_CONFIG;
     }
-    config->struct_size = sizeof(amark_config_t);
+    config->struct_size = struct_size;
+    config->abi = abi;
     config->dialect = NULL;
     config->start = 0;
     config->end = AMARK_END_OF_CONTENT;
@@ -27,6 +32,7 @@ void amark_config_init(amark_config_t *config)
     config->max_input_size = 0;
     config->max_nesting_depth = 0;
     config->max_node_count = 0;
+    return AMARK_ERROR_NONE;
 }
 
 amark_error_t amark_config_resolve(const amark_config_t *config,
@@ -39,12 +45,14 @@ amark_error_t amark_config_resolve(const amark_config_t *config,
     size_t end;
 
     if (config == NULL) {
-        amark_config_init(&defaults);
+        (void)AMARK_CONFIG_INIT(&defaults);
         config = &defaults;
     }
 
-    /* Rule 1: the caller's struct is the size this library knows. */
-    if (config->struct_size != sizeof(amark_config_t)) {
+    /* Rule 1: the caller's struct is the size and version this library
+     * knows. */
+    if (config->struct_size != sizeof(amark_config_t) ||
+        config->abi != AMARK_CONFIG_ABI) {
         return AMARK_ERROR_INVALID_CONFIG;
     }
 
