@@ -18,7 +18,14 @@
  * Dialects without effect: a parse with a dialect of 0 extensions, with a
  * dialect whose rules all say no, or with the test dialect on input that has
  * none of its syntax, gives the same tree as a parse without a dialect
- * (Requirements 13.3 and 15.6).
+ * (Requirements 13.3 and 15.6). An input with a node of every CommonMark kind
+ * gives no diagnostic, and as many allocations with the dialect of 0
+ * extensions as without a dialect.
+ *
+ * Repeated parses: the same content parsed twice with the test dialect gives
+ * the same tree, attributes and diagnostics, the per-document state is not
+ * carried from one parse to the next, and no parse writes to the content
+ * (Requirements 11.6, 12.7, 12.10, 13.8, 13.9 and 15.9).
  *
  * Pathological inputs: dialect blocks nested 100,000 deep, blank lines after
  * them and long runs of an EQUAL delimiter parse in linear time without
@@ -38,6 +45,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -102,21 +110,43 @@ static const char k_nested[] = "- *one* [two](/url)\n"
 #define DUMP_SIZE 512
 
 /*
- * Parses content without a dialect, requires success and a tree that passes
- * the check, and returns the number of calls made to the allocator.
+ * Parses content with dialect (NULL: none) into a fresh g_doc, requires
+ * success, a tree that passes the check and no diagnostic, and returns the
+ * number of calls made to the allocator.
  */
-static size_t count_parse(const char *content, size_t length)
+static size_t count_parse_with(const amark_dialect_t *dialect,
+                               const char *content, size_t length)
 {
     amark_tree_check_result_t check;
 
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
     amark_test_alloc_init(&g_state);
-    NAOS_REQUIRE_NULL(g_config.dialect);
+    g_config.dialect = dialect;
     NAOS_REQUIRE_INT_EQ(amark_parse(content, length, &g_config, &g_doc),
                         AMARK_ERROR_NONE);
+    g_config.dialect = NULL;
     NAOS_REQUIRE_NOT_NULL(g_doc);
     check = amark_tree_check(g_doc);
     NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), 0);
     return g_state.malloc_calls;
+}
+
+/*
+ * Parses content without a dialect, as count_parse_with does, and returns
+ * the number of calls made to the allocator. Before that, parses it with
+ * the dialect of 0 extensions and requires the same number of calls
+ * (Requirements 13.2 and 15.7): such a dialect allocates nothing either.
+ */
+static size_t count_parse(const char *content, size_t length)
+{
+    size_t with_empty =
+        count_parse_with(amark_test_dialect_empty(), content, length);
+    size_t without = count_parse_with(NULL, content, length);
+
+    NAOS_CHECK_UINT_EQ(with_empty, without);
+    return without;
 }
 
 /* Requires the tree of g_doc to be written as want. */
@@ -200,6 +230,70 @@ static const char k_markers[] =
     "[ref]: /dest\n"
     "\n"
     "* * *\n";
+
+/*
+ * Input with a node of every CommonMark kind (check_every_core_kind
+ * guards it) and none of the test dialect's syntax.
+ */
+static const char k_commonmark[] =
+    "> quote\n"
+    "\n"
+    "- item\n"
+    "\n"
+    "1. ordered\n"
+    "\n"
+    "***\n"
+    "# atx\n"
+    "setext\n"
+    "======\n"
+    "\n"
+    "    indented\n"
+    "\n"
+    "```\n"
+    "fenced\n"
+    "```\n"
+    "<div>\n"
+    "html\n"
+    "</div>\n"
+    "\n"
+    "[ref]: /dest \"title\"\n"
+    "\n"
+    "*em* **strong** `code` [link](/u) ![image](/i) <http://a.b>\n"
+    "<b>raw</b> \\* &amp; [ref] hard  \n"
+    "break\n";
+
+/* Requires g_doc to hold a node of every CommonMark kind. */
+static void check_every_core_kind(void)
+{
+    static const amark_kind_t kinds[] = {
+        AMARK_KIND_DOCUMENT,     AMARK_KIND_BLOCK_QUOTE,
+        AMARK_KIND_LIST,         AMARK_KIND_LIST_ITEM,
+        AMARK_KIND_THEMATIC_BREAK, AMARK_KIND_HEADING,
+        AMARK_KIND_CODE_BLOCK,   AMARK_KIND_HTML_BLOCK,
+        AMARK_KIND_PARAGRAPH,    AMARK_KIND_LINK_REFERENCE_DEFINITION,
+        AMARK_KIND_TEXT,         AMARK_KIND_CODE_SPAN,
+        AMARK_KIND_EMPHASIS,     AMARK_KIND_STRONG,
+        AMARK_KIND_LINK,         AMARK_KIND_IMAGE,
+        AMARK_KIND_AUTOLINK,     AMARK_KIND_RAW_HTML,
+        AMARK_KIND_HARD_BREAK,   AMARK_KIND_SOFT_BREAK,
+        AMARK_KIND_BACKSLASH_ESCAPE, AMARK_KIND_CHARACTER_REFERENCE};
+    size_t count = amark_document_node_count(g_doc);
+    size_t i;
+    size_t id;
+    size_t n;
+
+    for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        n = 0;
+        for (id = 1; id <= count; id++) {
+            if (amark_node_kind(g_doc, (amark_node_id_t)id) == kinds[i]) {
+                n++;
+            }
+        }
+        NAOS_TRACE_PUSH("kind %lu", (unsigned long)kinds[i]);
+        NAOS_CHECK_UINT_GT(n, 0);
+        NAOS_TRACE_POP();
+    }
+}
 
 /*
  * Parses content with dialect (NULL: none) into a fresh g_doc, requires
@@ -289,8 +383,38 @@ NAOS_TEST(the_test_dialect_registers_every_kind)
     NAOS_CHECK_TRUE(ext->state_free != NULL);
 }
 
+/*
+ * Every CommonMark kind is in k_commonmark, and a parse of it without a
+ * dialect and with the dialect of 0 extensions makes as many calls to the
+ * allocator (Requirements 13.2 and 15.7).
+ */
+NAOS_TEST(the_commonmark_input_has_every_kind_and_the_same_allocations)
+{
+    char dump[WIDE_DUMP_SIZE];
+
+    (void)count_parse(S(k_commonmark));
+    check_every_core_kind();
+    /* Guards the input: one paragraph holds every inline kind. */
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, dump, sizeof dump),
+                         sizeof dump);
+    NAOS_CHECK_STR_EQ(dump,
+        "(doc (bq (p (text \"quote\"))) (ul - tight (li (p (text \"item\"))))"
+        " (ol 1 . tight (li (p (text \"ordered\")))) (hr) (h 1 atx"
+        " (text \"atx\")) (h 1 setext (text \"setext\")) (code indented)"
+        " (code fenced ` 3) (html) (def) (p (em (text \"em\")) (text \" \")"
+        " (strong (text \"strong\")) (text \" \") (code \"`code`\")"
+        " (text \" \") (link inline dest=\"/u\" (text \"link\"))"
+        " (text \" \") (image inline dest=\"/i\" (text \"image\"))"
+        " (text \" \") (autolink uri \"<http://a.b>\") (sbr)"
+        " (html \"<b>\") (text \"raw\") (html \"</b>\") (text \" \")"
+        " (esc \"\\\\*\") (text \" \") (ref \"&amp;\") (text \" \")"
+        " (link shortcut def=\"ref\" (text \"ref\")) (text \" hard\")"
+        " (br) (text \"break\")))");
+}
+
 NAOS_TEST(a_dialect_of_no_extensions_gives_the_same_tree)
 {
+    check_same_tree(amark_test_dialect_empty(), S(k_commonmark));
     check_same_tree(amark_test_dialect_empty(), S(""));
     check_same_tree(amark_test_dialect_empty(), S(k_paragraph));
     check_same_tree(amark_test_dialect_empty(), S(k_nested));
@@ -299,6 +423,7 @@ NAOS_TEST(a_dialect_of_no_extensions_gives_the_same_tree)
 
 NAOS_TEST(a_dialect_whose_rules_say_no_gives_the_same_tree)
 {
+    check_same_tree(amark_test_dialect_plain(), S(k_commonmark));
     check_same_tree(amark_test_dialect_plain(), S(""));
     check_same_tree(amark_test_dialect_plain(), S(k_paragraph));
     check_same_tree(amark_test_dialect_plain(), S(k_nested));
@@ -307,6 +432,7 @@ NAOS_TEST(a_dialect_whose_rules_say_no_gives_the_same_tree)
 
 NAOS_TEST(the_test_dialect_gives_the_same_tree_without_its_syntax)
 {
+    check_same_tree(amark_test_dialect(), S(k_commonmark));
     check_same_tree(amark_test_dialect(), S(""));
     check_same_tree(amark_test_dialect(), S(k_paragraph));
     check_same_tree(amark_test_dialect(), S(k_nested));
@@ -317,6 +443,7 @@ NAOS_SUITE(dialects_without_effect,
     NAOS_SET_TEARDOWN(counting),
     NAOS_ADD_TEST(the_test_dialects_pass_the_configuration_check),
     NAOS_ADD_TEST(the_test_dialect_registers_every_kind),
+    NAOS_ADD_TEST(the_commonmark_input_has_every_kind_and_the_same_allocations),
     NAOS_ADD_TEST(a_dialect_of_no_extensions_gives_the_same_tree),
     NAOS_ADD_TEST(a_dialect_whose_rules_say_no_gives_the_same_tree),
     NAOS_ADD_TEST(the_test_dialect_gives_the_same_tree_without_its_syntax)
@@ -593,6 +720,346 @@ NAOS_SUITE(failed_allocations,
     NAOS_SET_SETUP(counted_states),
     NAOS_SET_TEARDOWN(counting),
     NAOS_ADD_TEST(every_failed_allocation_releases_everything)
+)
+
+/* ---------------------------------------------------------------------- */
+/* Repeated parses and the content */
+
+/*
+ * A parse with a dialect is a function of the content, the configuration
+ * and the dialect: parsing the same content twice with the test dialect
+ * gives the same tree, the same attributes and the same diagnostics, in the
+ * same order (Requirements 11.6, 12.10, 13.8 and 15.9). The state of one
+ * parse is not that of another: the TASK attributes, numbered from 1 by the
+ * per-document state, are the same in the second parse, and each parse
+ * makes and releases a state of its own (Requirements 12.7 and 12.8). The
+ * parse reads the content and never writes to it (Requirement 13.9).
+ */
+
+/* Room for the description of the tree of k_every_hook. */
+#define DESCRIPTION_SIZE ((size_t)65536)
+
+static char g_description[2][DESCRIPTION_SIZE];
+
+/* A document kept while another is parsed; teardown destroys it. */
+static amark_document_t *g_kept;
+
+NAOS_TEARDOWN(repeated)
+{
+    amark_document_destroy(g_kept);
+    g_kept = NULL;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+static char g_full_dump[2][DESCRIPTION_SIZE];
+
+/*
+ * The content is parsed from g_content, whose bytes past the content are
+ * set to CANARY, and compared with g_reference after each parse.
+ */
+#define CANARY 0x5A
+#define CANARY_SIZE ((size_t)64)
+
+static char g_content[EVERY_HOOK_SIZE + CANARY_SIZE];
+static char g_reference[EVERY_HOOK_SIZE + CANARY_SIZE];
+static size_t g_content_length;
+
+/* Writes content to g_content and to g_reference, then the canary. */
+static void content_set(const char *content, size_t length)
+{
+    NAOS_REQUIRE_UINT_LE(length, EVERY_HOOK_SIZE);
+    memset(g_content, CANARY, sizeof g_content);
+    memcpy(g_content, content, length);
+    memcpy(g_reference, g_content, sizeof g_reference);
+    g_content_length = length;
+}
+
+/* Requires g_content, the content and the canary, to be as written. */
+static void check_content_unchanged(void)
+{
+    NAOS_CHECK_TRUE(memcmp(g_content, g_reference, sizeof g_content) == 0);
+}
+
+/* Appends to the description in out (of size bytes, used *used). */
+static void describe_bytes(char *out, size_t size, size_t *used,
+                           const char *bytes, size_t length)
+{
+    NAOS_REQUIRE_UINT_LT(length, size - *used);
+    memcpy(out + *used, bytes, length);
+    *used += length;
+    out[*used] = '\0';
+}
+
+static void describe_number(char *out, size_t size, size_t *used,
+                            const char *label, unsigned long value)
+{
+    char buffer[48];
+    int length = snprintf(buffer, sizeof buffer, " %s%lu", label, value);
+
+    NAOS_REQUIRE_TRUE(length > 0 && (size_t)length < sizeof buffer);
+    describe_bytes(out, size, used, buffer, (size_t)length);
+}
+
+/*
+ * Writes g_doc to out as text: for each node in the order of its ID, its
+ * kind, parent, first child, next sibling, range, lines and dialect
+ * attribute bytes (in hexadecimal); then each diagnostic in order: its
+ * offset, line, severity, message and file name. Two documents with the
+ * same description are the same.
+ */
+static void describe_document(char *out, size_t size)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t count = amark_document_node_count(g_doc);
+    size_t diagnostics = amark_document_diagnostic_count(g_doc);
+    size_t used = 0;
+    size_t id;
+    size_t i;
+    amark_node_id_t node;
+    amark_range_t range;
+    const unsigned char *data;
+    size_t data_size;
+    amark_diagnostic_t diagnostic;
+    char pair[2];
+
+    out[0] = '\0';
+    describe_number(out, size, &used, "nodes ", (unsigned long)count);
+    for (id = 1; id <= count; id++) {
+        node = (amark_node_id_t)id;
+        describe_bytes(out, size, &used, S("\n"));
+        describe_number(out, size, &used, "kind ",
+                        (unsigned long)amark_node_kind(g_doc, node));
+        describe_number(out, size, &used, "parent ",
+                        (unsigned long)amark_node_parent(g_doc, node));
+        describe_number(out, size, &used, "child ",
+                        (unsigned long)amark_node_first_child(g_doc, node));
+        describe_number(out, size, &used, "next ",
+                        (unsigned long)amark_node_next_sibling(g_doc, node));
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+        describe_number(out, size, &used, "start ",
+                        (unsigned long)range.start);
+        describe_number(out, size, &used, "end ", (unsigned long)range.end);
+        describe_number(out, size, &used, "lines ",
+                        (unsigned long)amark_node_start_line(g_doc, node));
+        describe_number(out, size, &used, "to ",
+                        (unsigned long)amark_node_end_line(g_doc, node));
+        data = (const unsigned char *)amark_node_dialect_data(g_doc, node,
+                                                              &data_size);
+        describe_number(out, size, &used, "data ", (unsigned long)data_size);
+        describe_bytes(out, size, &used, S(" "));
+        for (i = 0; i < data_size; i++) {
+            pair[0] = hex[data[i] >> 4];
+            pair[1] = hex[data[i] & 0x0F];
+            describe_bytes(out, size, &used, pair, 2);
+        }
+    }
+    describe_bytes(out, size, &used, S("\n"));
+    describe_number(out, size, &used, "diagnostics ",
+                    (unsigned long)diagnostics);
+    for (i = 0; i < diagnostics; i++) {
+        NAOS_REQUIRE_TRUE(amark_document_diagnostic(g_doc, i, &diagnostic));
+        describe_bytes(out, size, &used, S("\n"));
+        describe_number(out, size, &used, "offset ",
+                        (unsigned long)diagnostic.offset);
+        describe_number(out, size, &used, "line ",
+                        (unsigned long)diagnostic.line);
+        describe_number(out, size, &used, "severity ",
+                        (unsigned long)diagnostic.severity);
+        NAOS_REQUIRE_NOT_NULL(diagnostic.message);
+        describe_bytes(out, size, &used, S(" "));
+        describe_bytes(out, size, &used, diagnostic.message,
+                       strlen(diagnostic.message));
+        describe_bytes(out, size, &used, S(" file "));
+        if (diagnostic.filename != NULL) {
+            describe_bytes(out, size, &used, diagnostic.filename,
+                           strlen(diagnostic.filename));
+        }
+    }
+}
+
+/* The largest number of TASKs check_task_numbers reads. */
+#define MAX_TASKS 64
+
+/*
+ * Requires the TASKs of g_doc to be numbered 1 to their number, each once,
+ * and returns their number: numbers that go on from an earlier parse would
+ * show a state carried over.
+ */
+static size_t check_task_numbers(void)
+{
+    bool seen[MAX_TASKS + 1];
+    size_t count = amark_document_node_count(g_doc);
+    size_t tasks = count_kind(AMARK_TEST_KIND_TASK);
+    size_t id;
+    size_t i;
+    size_t size;
+    size_t number;
+    const char *data;
+
+    NAOS_REQUIRE_UINT_LE(tasks, MAX_TASKS);
+    memset(seen, 0, sizeof seen);
+    for (id = 1; id <= count; id++) {
+        if (amark_node_kind(g_doc, (amark_node_id_t)id) !=
+            AMARK_TEST_KIND_TASK) {
+            continue;
+        }
+        data = (const char *)amark_node_dialect_data(
+            g_doc, (amark_node_id_t)id, &size);
+        NAOS_REQUIRE_NOT_NULL(data);
+        NAOS_REQUIRE_UINT_GT(size, 0);
+        number = 0;
+        for (i = 0; i < size; i++) {
+            NAOS_REQUIRE_TRUE(data[i] >= '0' && data[i] <= '9');
+            number = number * 10 + (size_t)(data[i] - '0');
+        }
+        NAOS_TRACE_PUSH("TASK %lu numbered %lu", (unsigned long)id,
+                        (unsigned long)number);
+        NAOS_CHECK_UINT_GE(number, 1);
+        NAOS_CHECK_UINT_LE(number, tasks);
+        if (number >= 1 && number <= tasks) {
+            NAOS_CHECK_FALSE(seen[number]);
+            seen[number] = true;
+        }
+        NAOS_TRACE_POP();
+    }
+    return tasks;
+}
+
+/*
+ * Parses g_content with the counted dialect into a fresh g_doc, requires
+ * success, a tree that passes the check, one state made and released, and
+ * the content unchanged; writes the description and the dump of the tree
+ * to the slot-th buffers.
+ */
+static void parse_described(size_t slot)
+{
+    amark_tree_check_result_t check;
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    g_config.dialect = &g_counted_dialect;
+    g_states_made = 0;
+    g_states_failed = 0;
+    g_states_freed = 0;
+    memset(&g_last_counts, 0, sizeof g_last_counts);
+    NAOS_REQUIRE_INT_EQ(amark_parse(g_content, g_content_length, &g_config,
+                                    &g_doc),
+                        AMARK_ERROR_NONE);
+    g_config.dialect = NULL;
+    NAOS_REQUIRE_NOT_NULL(g_doc);
+    check = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(g_states_made, 1);
+    NAOS_CHECK_UINT_EQ(g_states_freed, 1);
+    check_content_unchanged();
+    describe_document(g_description[slot], DESCRIPTION_SIZE);
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, g_full_dump[slot],
+                                              DESCRIPTION_SIZE),
+                         DESCRIPTION_SIZE);
+}
+
+NAOS_TEST(two_parses_with_the_test_dialect_give_the_same_document)
+{
+    amark_test_counts_t first;
+    size_t tasks;
+
+    content_set(S(k_every_hook));
+    parse_described(0);
+    check_every_kind();
+    /* The rejected lines, 8 times: there are diagnostics to compare. */
+    NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc),
+                       8 * REJECTED_LINE_DIAGNOSTICS);
+    tasks = check_task_numbers();
+    NAOS_CHECK_UINT_GT(tasks, 1);
+    NAOS_CHECK_UINT_EQ(g_last_counts.tasks, tasks);
+    first = g_last_counts;
+
+    parse_described(1);
+    NAOS_CHECK_STR_EQ(g_description[1], g_description[0]);
+    NAOS_CHECK_STR_EQ(g_full_dump[1], g_full_dump[0]);
+    /* A fresh state: the numbers start again from 1. */
+    NAOS_CHECK_UINT_EQ(check_task_numbers(), tasks);
+    NAOS_CHECK_UINT_EQ(g_last_counts.tasks, tasks);
+    /* The rules were called as often, in each parse (Requirement 12.10). */
+    NAOS_CHECK_UINT_EQ(g_last_counts.block_starts, first.block_starts);
+    NAOS_CHECK_UINT_EQ(g_last_counts.block_continues, first.block_continues);
+    NAOS_CHECK_UINT_EQ(g_last_counts.block_closes, first.block_closes);
+    NAOS_CHECK_UINT_EQ(g_last_counts.paragraphs, first.paragraphs);
+    NAOS_CHECK_UINT_EQ(g_last_counts.inlines, first.inlines);
+    NAOS_CHECK_UINT_EQ(g_last_counts.postprocesses, first.postprocesses);
+}
+
+/*
+ * A document kept while another parse runs with the same dialect is not
+ * changed by it: the two do not share a state or anything else.
+ */
+NAOS_TEST(a_parse_does_not_change_the_document_of_another)
+{
+    static const char other[] = "- [x] a\n- [ ] b\n- [x] c\n";
+    content_set(S(k_every_hook));
+    parse_described(0);
+    g_kept = g_doc;
+    g_doc = NULL;
+    g_config.dialect = &g_counted_dialect;
+    NAOS_REQUIRE_INT_EQ(amark_parse(S(other), &g_config, &g_doc),
+                        AMARK_ERROR_NONE);
+    g_config.dialect = NULL;
+    /* The other document numbers its own TASKs from 1. */
+    NAOS_CHECK_UINT_EQ(check_task_numbers(), 3);
+    amark_document_destroy(g_doc);
+    g_doc = g_kept;
+    g_kept = NULL;
+    describe_document(g_description[1], DESCRIPTION_SIZE);
+    NAOS_CHECK_STR_EQ(g_description[1], g_description[0]);
+    check_content_unchanged();
+}
+
+/*
+ * The content is unchanged, its bytes and the bytes after it, by a parse
+ * with each dialect, of input with every hook of the test dialect, its
+ * rejected results and their diagnostics, and of input of every CommonMark
+ * kind (Requirement 13.9).
+ */
+NAOS_TEST(a_parse_with_a_dialect_does_not_change_the_content)
+{
+    const amark_dialect_t *dialects[4];
+    size_t d;
+
+    dialects[0] = NULL;
+    dialects[1] = amark_test_dialect();
+    dialects[2] = amark_test_dialect_plain();
+    dialects[3] = amark_test_dialect_empty();
+    write_every_hook();
+    for (d = 0; d < sizeof dialects / sizeof dialects[0]; d++) {
+        NAOS_TRACE_PUSH("dialect %lu", (unsigned long)d);
+        g_config.dialect = dialects[d];
+        content_set(g_every_hook, sizeof g_every_hook);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_CHECK_INT_EQ(amark_parse(g_content, g_content_length, &g_config,
+                                      &g_doc),
+                          AMARK_ERROR_NONE);
+        check_content_unchanged();
+        content_set(S(k_commonmark));
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        NAOS_CHECK_INT_EQ(amark_parse(g_content, g_content_length, &g_config,
+                                      &g_doc),
+                          AMARK_ERROR_NONE);
+        check_content_unchanged();
+        NAOS_TRACE_POP();
+    }
+    g_config.dialect = NULL;
+}
+
+NAOS_SUITE(repeated_parses,
+    NAOS_SET_SETUP(counted_states),
+    NAOS_SET_TEARDOWN(repeated),
+    NAOS_ADD_TEST(two_parses_with_the_test_dialect_give_the_same_document),
+    NAOS_ADD_TEST(a_parse_does_not_change_the_document_of_another),
+    NAOS_ADD_TEST(a_parse_with_a_dialect_does_not_change_the_content)
 )
 
 /* ---------------------------------------------------------------------- */
@@ -1248,6 +1715,7 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(allocation_baseline),
     NAOS_ADD_SUITE(dialects_without_effect),
     NAOS_ADD_SUITE(failed_allocations),
+    NAOS_ADD_SUITE(repeated_parses),
     NAOS_ADD_SUITE(resource_limits),
     NAOS_ADD_SUITE(pathological_inputs)
 )
