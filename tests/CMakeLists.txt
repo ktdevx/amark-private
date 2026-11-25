@@ -168,6 +168,7 @@ amark_add_unit_test(test_spec_text_links SOURCES unit/test_spec_text_links.c)
 amark_add_unit_test(test_text_limits SOURCES unit/test_text_limits.c)
 amark_add_unit_test(test_dialect_limits SOURCES unit/test_dialect_limits.c)
 amark_add_unit_test(test_dialect_def SOURCES unit/test_dialect_def.c)
+amark_add_unit_test(test_dialect_block SOURCES unit/test_dialect_block.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
