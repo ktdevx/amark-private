@@ -19,6 +19,11 @@
  * dialect whose rules all say no, or with the test dialect on input that has
  * none of its syntax, gives the same tree as a parse without a dialect
  * (Requirements 13.3 and 15.6).
+ *
+ * Pathological inputs: dialect blocks nested 100,000 deep, blank lines after
+ * them and long runs of an EQUAL delimiter parse in linear time without
+ * recursion, and the rules are called no more often than the design bounds
+ * (Requirements 13.4, 13.5, 13.6 and 15.10).
  */
 
 #include "document.h"
@@ -33,7 +38,9 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /*
  * Fixture. NAOS_REQUIRE_* leaves a test with longjmp, so the document a test
@@ -346,6 +353,8 @@ static amark_dialect_state_free_fn g_inner_state_free;
 static size_t g_states_made;   /* state_new returned AMARK_ERROR_NONE */
 static size_t g_states_failed; /* state_new returned another value */
 static size_t g_states_freed;  /* calls to state_free */
+static amark_test_counts_t g_last_counts; /* the counts of the last state
+                                             released */
 
 static amark_error_t counted_state_new(const amark_allocator_t *allocator,
                                        void **state)
@@ -364,6 +373,9 @@ static void counted_state_free(const amark_allocator_t *allocator,
                                void *state)
 {
     g_states_freed++;
+    if (state != NULL) {
+        g_last_counts = *(const amark_test_counts_t *)state;
+    }
     g_inner_state_free(allocator, state);
 }
 
@@ -388,6 +400,7 @@ NAOS_SETUP(counted_states)
     g_states_made = 0;
     g_states_failed = 0;
     g_states_freed = 0;
+    memset(&g_last_counts, 0, sizeof g_last_counts);
 }
 
 /*
@@ -817,9 +830,424 @@ NAOS_SUITE(resource_limits,
     NAOS_ADD_TEST(a_dialect_inline_past_the_depth_limit_ends_the_parse)
 )
 
+/* ---------------------------------------------------------------------- */
+/* Pathological inputs and the number of rule calls */
+
+/*
+ * Inputs that would exhaust the stack of a recursive parser or take time
+ * quadratic in their length in a careless one, parsed with the test dialect
+ * (the counted copy of the failed allocations above, whose state_free keeps
+ * the per-document counts in g_last_counts): boxes nested 100,000 deep,
+ * notes nested 100,000 deep followed by 100,000 blank lines (from the second
+ * blank line of a run, the blank line cutoff matches none of the notes), and
+ * long runs of '~' that the lower bounds of the delimiter stack must keep
+ * linear for an EQUAL kind (Requirements 13.5, 13.6 and 15.10). Every
+ * document goes through amark_tree_check and amark_document_destroy; none
+ * of them is recursive either. The default limits are 0 (none), so the
+ * whole depth is parsed; the boxes are also parsed with max_nesting_depth at
+ * the depth of their tree and one below it.
+ *
+ * The number of rule calls (Requirement 13.4, design "Performance &
+ * Scalability"): the block start rules are called at most once per rule at
+ * each position tried on a line, and a line has as many as the containers
+ * opened on it plus 1; the continue rules once per pair of an open dialect
+ * block and a line that is not blank; the close rules once per closed
+ * dialect block of a kind that has one; the paragraph close rule once per
+ * paragraph; the inline rule once per trigger character visited; and the
+ * postprocessing rule once per document.
+ *
+ * Linear time, as test_inline_limits measures it: each input is a pattern
+ * of size n, parsed at a small n and at an n about 32 times as large. The
+ * processor time of the large parse must stay within TIME_FACTOR times the
+ * length ratio times that of the small one, plus TIME_SLACK; a parse whose
+ * time grows as the square of n reaches 32 times more. The small input is
+ * parsed again and again for a twentieth of a second at least and the large
+ * one twice, keeping the faster.
+ */
+#define DEEP 100000
+#define START_RULES 4 /* the block start rules of the test dialect */
+
+#define TIME_FACTOR 10
+#define TIME_SLACK 50000 /* microseconds */
+
+/* The input, allocated with malloc (outside the counting allocator). */
+static char *g_input;
+static size_t g_length;
+static size_t g_capacity;
+
+static void input_free(void)
+{
+    free(g_input);
+    g_input = NULL;
+    g_length = 0;
+    g_capacity = 0;
+}
+
+/* Replaces the input with an empty one of capacity bytes. */
+static void input_begin(size_t capacity)
+{
+    input_free();
+    g_input = (char *)malloc(capacity > 0 ? capacity : 1);
+    NAOS_REQUIRE_NOT_NULL(g_input);
+    g_capacity = capacity;
+}
+
+/* Appends the length bytes at bytes, count times. */
+static void input_repeat(const char *bytes, size_t length, size_t count)
+{
+    size_t i;
+
+    NAOS_REQUIRE_TRUE(count == 0 ||
+                      length <= (g_capacity - g_length) / count);
+    for (i = 0; i < count; i++) {
+        memcpy(g_input + g_length, bytes, length);
+        g_length += length;
+    }
+}
+
+#define REPEAT(s, count) input_repeat((s), sizeof(s) - 1, (count))
+
+NAOS_TEARDOWN(measured)
+{
+    input_free();
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+/*
+ * Parses the input with the counted dialect and the two limits into a
+ * fresh g_doc. One state is made and released, whatever the result, and
+ * its counts are left in g_last_counts.
+ */
+static amark_error_t parse_measured(size_t max_depth, size_t max_nodes)
+{
+    amark_error_t err;
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    g_config.dialect = &g_counted_dialect;
+    g_config.max_nesting_depth = max_depth;
+    g_config.max_node_count = max_nodes;
+    g_states_made = 0;
+    g_states_failed = 0;
+    g_states_freed = 0;
+    memset(&g_last_counts, 0, sizeof g_last_counts);
+    err = amark_parse(g_input, g_length, &g_config, &g_doc);
+    NAOS_CHECK_UINT_EQ(g_states_made, 1);
+    NAOS_CHECK_UINT_EQ(g_states_freed, 1);
+    return err;
+}
+
+/*
+ * Requires the parse of the input without limits to succeed with a tree
+ * that passes the check and whose deepest node is at depth; every node made
+ * is in the tree.
+ */
+static void parse_deep(size_t depth)
+{
+    amark_tree_check_result_t check;
+    size_t deepest;
+    size_t reached;
+
+    NAOS_REQUIRE_INT_EQ(parse_measured(0, 0), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(g_doc);
+    check = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(check.node, AMARK_NODE_NONE);
+    measure_tree(&deepest, &reached);
+    NAOS_CHECK_UINT_EQ(deepest, depth);
+    NAOS_CHECK_UINT_EQ(reached, amark_document_node_count(g_doc));
+    NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), 0);
+}
+
+/*
+ * The design's bounds on the rule calls of one parse, from the input and
+ * its tree.
+ */
+typedef struct call_bounds {
+    size_t lines;      /* lines of the input */
+    size_t opened;     /* containers opened, CommonMark's and the dialect's */
+    size_t pairs;      /* pairs of an open dialect block and a line that is
+                          not blank, the block's first line left out */
+    size_t closed;     /* closed dialect blocks of kinds with a close rule */
+    size_t paragraphs; /* paragraphs closed */
+    size_t triggers;   /* trigger characters of the inline rule ('$') */
+} call_bounds_t;
+
+/* Requires the counts of the last parse to be within bounds. */
+static void check_calls(const call_bounds_t *bounds)
+{
+    NAOS_CHECK_UINT_LE(g_last_counts.block_starts,
+                       START_RULES * (bounds->lines + bounds->opened));
+    NAOS_CHECK_UINT_LE(g_last_counts.block_continues, bounds->pairs);
+    NAOS_CHECK_UINT_LE(g_last_counts.block_closes, bounds->closed);
+    NAOS_CHECK_UINT_LE(g_last_counts.paragraphs, bounds->paragraphs);
+    NAOS_CHECK_UINT_LE(g_last_counts.inlines, bounds->triggers);
+    NAOS_CHECK_UINT_EQ(g_last_counts.postprocesses, 1);
+}
+
+/* "@> " depth times and text, twice: the second line goes on in each box. */
+static void build_boxes(size_t depth)
+{
+    input_begin(2 * (3 * depth + 2));
+    REPEAT("@> ", depth);
+    REPEAT("a\n", 1);
+    REPEAT("@> ", depth);
+    REPEAT("b\n", 1);
+}
+
+NAOS_TEST(boxes_nested_100000_deep)
+{
+    call_bounds_t bounds = {2, DEEP, DEEP, DEEP, 1, 0};
+
+    /* The root, DEEP boxes, the paragraph and its text. */
+    build_boxes(DEEP);
+    parse_deep(DEEP + 2);
+    NAOS_CHECK_UINT_EQ(count_kind(AMARK_TEST_KIND_BOX), DEEP);
+    NAOS_CHECK_UINT_EQ(count_kind(AMARK_KIND_PARAGRAPH), 1);
+    check_calls(&bounds);
+    /* The rules were called: the counts are no bounds of 0 calls. */
+    NAOS_CHECK_UINT_GE(g_last_counts.block_starts, DEEP);
+    NAOS_CHECK_UINT_EQ(g_last_counts.block_continues, DEEP);
+    NAOS_CHECK_UINT_EQ(g_last_counts.block_closes, DEEP);
+    NAOS_CHECK_UINT_EQ(g_last_counts.paragraphs, 1);
+
+    /* The depth limit at the depth of the tree, and one below it. */
+    NAOS_CHECK_INT_EQ(parse_measured(DEEP + 2, 0), AMARK_ERROR_NONE);
+    NAOS_CHECK_NOT_NULL(g_doc);
+    NAOS_CHECK_INT_EQ(parse_measured(DEEP + 1, 0),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    NAOS_CHECK_NULL(g_doc);
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+}
+
+/*
+ * "@note: " depth times and text, blanks blank lines, then 2 spaces depth
+ * times and text: the last line goes on in each note.
+ */
+static void build_notes(size_t depth, size_t blanks)
+{
+    input_begin(7 * depth + 2 + blanks + 2 * depth + 2);
+    REPEAT("@note: ", depth);
+    REPEAT("a\n", 1);
+    REPEAT("\n", blanks);
+    REPEAT("  ", depth);
+    REPEAT("b\n", 1);
+}
+
+NAOS_TEST(notes_nested_100000_deep_then_100000_blank_lines)
+{
+    call_bounds_t bounds = {DEEP + 2, DEEP, DEEP, 0, 2, 0};
+
+    /* The root, DEEP notes, and in the last two paragraphs and texts. */
+    build_notes(DEEP, DEEP);
+    parse_deep(DEEP + 2);
+    NAOS_CHECK_UINT_EQ(count_kind(AMARK_TEST_KIND_NOTE), DEEP);
+    NAOS_CHECK_UINT_EQ(count_kind(AMARK_KIND_PARAGRAPH), 2);
+    check_calls(&bounds);
+    /* A blank line calls no continue rule; the last line calls each. */
+    NAOS_CHECK_UINT_EQ(g_last_counts.block_continues, DEEP);
+    NAOS_CHECK_UINT_EQ(g_last_counts.paragraphs, 2);
+    NAOS_CHECK_UINT_GE(g_last_counts.block_starts, DEEP);
+}
+
+/*
+ * A paragraph of the input: requires the parse to succeed with a tree whose
+ * deepest node is at depth and that holds strikes STRIKE nodes, and the
+ * rule calls of one paragraph of one line with triggers '$'.
+ */
+static void check_tilde_paragraph(size_t depth, size_t strikes,
+                                  size_t triggers)
+{
+    call_bounds_t bounds = {1, 0, 0, 0, 1, 0};
+
+    bounds.triggers = triggers;
+    parse_deep(depth);
+    NAOS_CHECK_UINT_EQ(count_kind(AMARK_KIND_PARAGRAPH), 1);
+    NAOS_CHECK_UINT_EQ(count_kind(AMARK_TEST_KIND_STRIKE), strikes);
+    NAOS_CHECK_UINT_EQ(count_kind(AMARK_TEST_KIND_VAR), 0);
+    check_calls(&bounds);
+    NAOS_CHECK_UINT_EQ(g_last_counts.inlines, triggers);
+    NAOS_CHECK_UINT_EQ(g_last_counts.paragraphs, 1);
+}
+
+/* The patterns of '~', each with n repeats of its units. */
+static void build_tilde_run(size_t n)
+{
+    /*
+     * One run of n, which can open and close: a length the kind does not
+     * use. The "a" before it keeps it from opening a fenced code block.
+     */
+    input_begin(n + 3);
+    REPEAT("a", 1);
+    REPEAT("~", n);
+    REPEAT("a\n", 1);
+}
+
+static void build_tilde_lengths(size_t n)
+{
+    /* n openers of length 1, then n closers of length 2. */
+    input_begin(7 * n + 1);
+    REPEAT("~a ", n);
+    REPEAT("a~~ ", n);
+    REPEAT("\n", 1);
+}
+
+static void build_tilde_unused(size_t n)
+{
+    /* n openers of length 3, which the kind does not use, then n closers
+       of length 1; the "a " first keeps the first from opening a fenced
+       code block. */
+    input_begin(8 * n + 3);
+    REPEAT("a ", 1);
+    REPEAT("~~~a ", n);
+    REPEAT("a~ ", n);
+    REPEAT("\n", 1);
+}
+
+static void build_tilde_mixed(size_t n)
+{
+    /*
+     * n pairs of openers of lengths 1 and 3, then n pairs of closers of
+     * lengths 2 and 1: each closer of length 2 finds no opener, each of
+     * length 1 the nearest opener of length 1 past one of length 3.
+     */
+    input_begin(15 * n + 1);
+    REPEAT("~a ~~~a ", n);
+    REPEAT("a~~ a~ ", n);
+    REPEAT("\n", 1);
+}
+
+static void build_tilde_triggers(size_t n)
+{
+    /* n triggers of the inline rule that start no VAR, and n openers. */
+    input_begin(6 * n + 1);
+    REPEAT("$a ~a ", n);
+    REPEAT("\n", 1);
+}
+
+NAOS_TEST(long_runs_of_tildes)
+{
+    /* The root, the paragraph and its text. */
+    build_tilde_run(10 * DEEP);
+    check_tilde_paragraph(2, 0, 0);
+    build_tilde_lengths(DEEP);
+    check_tilde_paragraph(2, 0, 0);
+    build_tilde_unused(DEEP);
+    check_tilde_paragraph(2, 0, 0);
+    /* DEEP strikes, each in the one after it, and their texts. */
+    build_tilde_mixed(DEEP);
+    check_tilde_paragraph(DEEP + 2, DEEP, 0);
+    build_tilde_triggers(DEEP);
+    check_tilde_paragraph(2, 0, DEEP);
+}
+
+/* A pattern of size n and its sizes for the timing. */
+typedef struct timed_case {
+    const char *name;
+    void (*build)(size_t n);
+    size_t small;
+    size_t large;
+} timed_case_t;
+
+static void build_boxes_square(size_t n)
+{
+    build_boxes(n);
+}
+
+static void build_notes_square(size_t n)
+{
+    /* n notes and n blank lines: n times n without the cutoff. */
+    build_notes(n, n);
+}
+
+static const timed_case_t k_timed_cases[] = {
+    {"boxes", build_boxes_square, DEEP / 32, DEEP},
+    {"notes and blank lines", build_notes_square, 1000, 32000},
+    {"a run of tildes", build_tilde_run, DEEP / 32, DEEP},
+    {"tildes of lengths that differ", build_tilde_lengths, DEEP / 32, DEEP},
+    {"tildes of an unused length", build_tilde_unused, DEEP / 32, DEEP},
+    {"tildes of mixed lengths", build_tilde_mixed, DEEP / 32, DEEP},
+    {"triggers and tildes", build_tilde_triggers, DEEP / 32, DEEP},
+};
+
+/*
+ * Parses the input and destroys the document, again and again until the
+ * clock has advanced by at least min_ticks (once at least). Returns the
+ * processor time of one parse, in microseconds, or 0 where it cannot be
+ * read.
+ */
+static unsigned long timed_parses(clock_t min_ticks)
+{
+    size_t count = 0;
+    clock_t start;
+    clock_t end;
+
+    start = clock();
+    do {
+        NAOS_REQUIRE_INT_EQ(parse_measured(0, 0), AMARK_ERROR_NONE);
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        count++;
+        end = clock();
+    } while (start != (clock_t)-1 && end != (clock_t)-1 && end >= start &&
+             end - start < min_ticks);
+    if (start == (clock_t)-1 || end == (clock_t)-1 || end < start) {
+        return 0;
+    }
+    return (unsigned long)((double)(end - start) * 1e6 / CLOCKS_PER_SEC /
+                           (double)count);
+}
+
+NAOS_TEST(pathological_inputs_take_linear_time)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof k_timed_cases / sizeof k_timed_cases[0]; i++) {
+        const timed_case_t *c = &k_timed_cases[i];
+        size_t small_length;
+        size_t ratio;
+        unsigned long small_time;
+        unsigned long large_time;
+        unsigned long again;
+
+        NAOS_TRACE_PUSH("%s", c->name);
+        c->build(c->small);
+        small_length = g_length;
+        small_time = timed_parses(CLOCKS_PER_SEC / 20);
+        c->build(c->large);
+        ratio = (g_length + small_length / 2) / small_length;
+        NAOS_REQUIRE_UINT_GE(ratio, 16);
+        large_time = timed_parses(0);
+        again = timed_parses(0);
+        if (again < large_time) {
+            large_time = again;
+        }
+        NAOS_TRACE_PUSH("lengths %lu and %lu, times %lu us and %lu us",
+                        (unsigned long)small_length,
+                        (unsigned long)g_length, small_time, large_time);
+        NAOS_CHECK_UINT_LE(large_time,
+                           TIME_FACTOR * ratio * small_time + TIME_SLACK);
+        NAOS_TRACE_POP();
+        NAOS_TRACE_POP();
+    }
+}
+
+NAOS_SUITE(pathological_inputs,
+    NAOS_SET_SETUP(counted_states),
+    NAOS_SET_TEARDOWN(measured),
+    NAOS_ADD_TEST(boxes_nested_100000_deep),
+    NAOS_ADD_TEST(notes_nested_100000_deep_then_100000_blank_lines),
+    NAOS_ADD_TEST(long_runs_of_tildes),
+    NAOS_ADD_TEST(pathological_inputs_take_linear_time)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(allocation_baseline),
     NAOS_ADD_SUITE(dialects_without_effect),
     NAOS_ADD_SUITE(failed_allocations),
-    NAOS_ADD_SUITE(resource_limits)
+    NAOS_ADD_SUITE(resource_limits),
+    NAOS_ADD_SUITE(pathological_inputs)
 )
