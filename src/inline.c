@@ -27,7 +27,11 @@
 /* The number of entries of a table indexed by a byte. */
 #define BYTE_TABLE_SIZE 256
 
-/* The marks of the special table: CommonMark, and a dialect's trigger. */
+/*
+ * The marks of the special table: a byte the scan of CommonMark reads (its
+ * structures and the characters of every delimiter kind, a dialect's
+ * included), and a dialect's trigger.
+ */
 #define SPECIAL_COMMONMARK 1u
 #define SPECIAL_DIALECT 2u
 
@@ -53,6 +57,9 @@ typedef struct inline_parser {
     size_t max_depth; /* 0: no limit */
     size_t max_nodes; /* 0: no limit */
     unsigned char special[BYTE_TABLE_SIZE]; /* not 0: a special byte; the
+                                               SPECIAL_COMMONMARK bit: a
+                                               structure or a delimiter
+                                               character; the
                                                SPECIAL_DIALECT bit: the
                                                trigger of an inline rule */
     amark_dialect_run_t *run; /* NULL: no dialect */
@@ -68,6 +75,37 @@ typedef struct inline_parser {
     bool has_break_start;
     size_t break_start;
 } inline_parser_t;
+
+/*
+ * Adds the delimiter kinds of dialect, in the order of its extensions and of
+ * their delimiters, after the two of CommonMark: each matches runs of the
+ * same length in its lengths and makes its kind, and opens and closes as
+ * `*` does (8.2). The validated dialect has at most
+ * AMARK_DIALECT_DELIMITER_MAX of them, so the table has room for all.
+ */
+static void add_dialect_delimiters(inline_parser_t *parser,
+                                   const amark_dialect_t *dialect)
+{
+    size_t e;
+
+    for (e = 0; e < dialect->extension_count; e++) {
+        const amark_dialect_extension_t *ext = dialect->extensions[e];
+        size_t d;
+
+        for (d = 0; d < ext->delimiter_count; d++) {
+            const amark_dialect_delimiter_t *delim = &ext->delimiters[d];
+            amark_delimiter_kind_t kind;
+
+            kind.ch = delim->ch;
+            kind.intraword_limited = false;
+            kind.single = delim->kind;
+            kind.pair = delim->kind;
+            kind.match = (unsigned char)AMARK_DELIMITER_MATCH_EQUAL;
+            kind.lengths = (unsigned char)delim->lengths;
+            (void)amark_delimiters_add_kind(&parser->delimiters, &kind);
+        }
+    }
+}
 
 static void parser_init(inline_parser_t *parser, amark_document_t *doc,
                         const amark_resolved_config_t *config,
@@ -89,6 +127,9 @@ static void parser_init(inline_parser_t *parser, amark_document_t *doc,
     }
     amark_draft_init(&parser->draft, scratch);
     amark_delimiters_init(&parser->delimiters, scratch);
+    if (run != NULL) {
+        add_dialect_delimiters(parser, run->dialect);
+    }
     for (i = 0; i < BYTE_TABLE_SIZE; i++) {
         if (amark_delimiters_kind_of(&parser->delimiters, (unsigned char)i) !=
             parser->delimiters.kind_count) {
@@ -290,13 +331,27 @@ static amark_error_t scan_less_than(inline_parser_t *parser)
 }
 
 /*
+ * Whether a run of length characters of kind may match: always for
+ * EMPHASIS, and for EQUAL only when length is one of the kind's lengths.
+ */
+static bool length_matches(const amark_delimiter_kind_t *kind, size_t length)
+{
+    if (kind->match != (unsigned char)AMARK_DELIMITER_MATCH_EQUAL) {
+        return true;
+    }
+    return length <= AMARK_DIALECT_DELIMITER_LENGTH_MAX &&
+           (kind->lengths & AMARK_DIALECT_LENGTH(length)) != 0;
+}
+
+/*
  * A delimiter character of kind (`*`, `_`, or one a dialect adds): the
  * whole run of that character in the line is a text item. Whether it can
  * open or close is decided from the characters right before and right
  * after the run, the ends of a line's content reading as U+000A; a run that
  * can do either is pushed onto the delimiter stack with its length, to be
- * matched when the content ends. The position moves forward by the length
- * of the run.
+ * matched when the content ends, unless its kind is EQUAL and its length is
+ * none of the kind's lengths: such a run matches nothing, so it stays text
+ * (8.5). The position moves forward by the length of the run.
  */
 static amark_error_t scan_delimiter_run(inline_parser_t *parser, size_t kind)
 {
@@ -320,7 +375,8 @@ static amark_error_t scan_delimiter_run(inline_parser_t *parser, size_t kind)
                              &can_open, &can_close);
     amark_cursor_seek(cursor, end);
     err = append_to_cursor(parser, AMARK_KIND_TEXT, start, &id);
-    if (err != AMARK_ERROR_NONE || (!can_open && !can_close)) {
+    if (err != AMARK_ERROR_NONE || (!can_open && !can_close) ||
+        !length_matches(&parser->delimiters.kinds[kind], end - start)) {
         return err;
     }
     return amark_delimiters_push(&parser->delimiters, id, kind, can_open,

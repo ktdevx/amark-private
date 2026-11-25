@@ -849,6 +849,12 @@ static const amark_dialect_inline_rule_t k_test_inlines[] = {
     {'$', AMARK_TEST_KIND_VAR, var_inline},
 };
 
+/* The delimiter kinds. */
+static const amark_dialect_delimiter_t k_test_delimiters[] = {
+    {'~', AMARK_DIALECT_LENGTH(1) | AMARK_DIALECT_LENGTH(2),
+     AMARK_TEST_KIND_STRIKE},
+};
+
 static const amark_dialect_kind_t k_test_kinds[] = {
     {AMARK_TEST_KIND_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
      box_continue, box_close},
@@ -891,7 +897,8 @@ static const amark_dialect_extension_t k_test_extension = {
     grid_close,                                     /* close_paragraph */
     k_test_inlines,                                 /* inline_rules */
     sizeof k_test_inlines / sizeof k_test_inlines[0],
-    NULL, 0,                                        /* delimiters */
+    k_test_delimiters,                              /* delimiters */
+    sizeof k_test_delimiters / sizeof k_test_delimiters[0],
     NULL,                                           /* postprocess */
     test_state_new,                                 /* state_new */
     test_state_free                                 /* state_free */

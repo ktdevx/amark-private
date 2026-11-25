@@ -64,6 +64,9 @@
  *         or more bytes other than '$', a space, a tab and a line ending,
  *         is a VAR over the whole "$name$". Its attributes are the length
  *         of the name in decimal ASCII ("$ab$": "2").
+ *   STRIKE the delimiter kind of '~': runs of 1 and 2 match runs of the
+ *         same length, as amark_dialect_delimiter_t defines ("~a~" and
+ *         "~~a~~"; "~a~~" and "~~~a~~~" are text).
  *
  * Close rules: BOX and FENCE set their attributes to the number of their
  * lines, in decimal ASCII; LINE sets its inline content, from the first

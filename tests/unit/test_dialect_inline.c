@@ -13,10 +13,13 @@
  * (ORIGIN, EMPTY, PARENT, PREFIX, STATUS), which is not in the tree, adds
  * one diagnostic and leaves the bytes as a parse without the dialect has
  * them (10.4, 15.3, 15.4); a rule that returns AMARK_ERROR_NOMEM ends the
- * parse (10.10). The suite order parses with dialects of this file: the
- * order of the extensions and of their rules, and a rejected rule followed
- * by the next one. The suite count runs the parsers with a run state built
- * here, to read the test dialect's count of the calls of its inline rule:
+ * parse (10.10). The suite strike parses with the STRIKE delimiter kind
+ * of the test dialect: runs of a registered length match runs of the same
+ * length, other runs are text, and the runs open, close and nest with
+ * emphasis and links as runs of emphasis do (8.2 to 8.5, 15.11). The suite
+ * order parses with dialects of this file: the order of the extensions and
+ * of their rules, and a rejected rule followed by the next one. The suite
+ * count runs the parsers with a run state built here, to read the test dialect's count of the calls of its inline rule:
  * at most one per trigger position (7.11).
  */
 
@@ -43,6 +46,7 @@
 #include <string.h>
 
 #define K_VAR AMARK_TEST_KIND_VAR
+#define K_STRIKE AMARK_TEST_KIND_STRIKE
 #define DUMP_SIZE 2048
 
 static amark_test_alloc_t g_state;
@@ -460,6 +464,162 @@ NAOS_SUITE(var,
 )
 
 /* ---------------------------------------------------------------------- */
+/* STRIKE: the delimiter kind '~' of lengths 1 and 2 */
+
+/*
+ * Checks STRIKE number index of g_doc: over [start, end), with children,
+ * whose parent is of parent_kind and which has no attributes.
+ */
+static void check_strike(size_t index, size_t start, size_t end,
+                         amark_kind_t parent_kind)
+{
+    amark_node_id_t node = find_kind(K_STRIKE, index);
+    amark_range_t range;
+    size_t size = 99;
+
+    NAOS_CHECK_FALSE(amark_node_is_block(g_doc, node));
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+    NAOS_CHECK_UINT_EQ(range.start, start);
+    NAOS_CHECK_UINT_EQ(range.end, end);
+    NAOS_CHECK_UINT_NE(amark_node_first_child(g_doc, node), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, amark_node_parent(g_doc, node)),
+                       parent_kind);
+    NAOS_CHECK_NULL(amark_node_dialect_data(g_doc, node, &size));
+    NAOS_CHECK_UINT_EQ(size, 0);
+}
+
+NAOS_TEST(strike_runs_of_a_registered_length_match)
+{
+    PARSE(amark_test_dialect(), "~a~\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (? (text \"a\"))))");
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 1);
+    check_strike(0, 0, 3, AMARK_KIND_PARAGRAPH);
+    PARSE(amark_test_dialect(), "~~a~~\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (? (text \"a\"))))");
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 1);
+    check_strike(0, 0, 5, AMARK_KIND_PARAGRAPH);
+    PARSE(amark_test_dialect(), "x ~a b~ y ~~c~~\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (text \"x \") (? (text \"a b\")) "
+                              "(text \" y \") (? (text \"c\"))))");
+    check_strike(0, 2, 7, AMARK_KIND_PARAGRAPH);
+    check_strike(1, 10, 15, AMARK_KIND_PARAGRAPH);
+}
+
+NAOS_TEST(strike_opens_and_closes_as_a_star_does)
+{
+    /* Inside a word, as '*' and unlike '_'. */
+    PARSE(amark_test_dialect(), "a~b~c\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump,
+                      "(doc (p (text \"a\") (? (text \"b\")) (text \"c\")))");
+    check_strike(0, 1, 4, AMARK_KIND_PARAGRAPH);
+    /* Not left-flanking, not right-flanking. */
+    SAME_AS_WITHOUT("~ a~ ~a ~ a ~ b\n", 0);
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 0);
+}
+
+NAOS_TEST(strike_runs_of_other_lengths_are_text)
+{
+    SAME_AS_WITHOUT("~a~~\n", 0);
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 0);
+    SAME_AS_WITHOUT("~~~a~~~\n", 0);
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 0);
+    SAME_AS_WITHOUT("~~a~ b~ ~~~~c~~~~\n", 0);
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 0);
+    /* A run of length 3 in between is text and does not stop a match. */
+    PARSE(amark_test_dialect(), "~a~~~b~\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (? (text \"a~~~b\"))))");
+    check_strike(0, 0, 7, AMARK_KIND_PARAGRAPH);
+}
+
+NAOS_TEST(strike_nests_with_emphasis_and_links)
+{
+    PARSE(amark_test_dialect(), "*~a~*\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (em (? (text \"a\")))))");
+    check_strike(0, 1, 4, AMARK_KIND_EMPHASIS);
+    PARSE(amark_test_dialect(), "~*a*~\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (? (em (text \"a\")))))");
+    check_strike(0, 0, 5, AMARK_KIND_PARAGRAPH);
+    PARSE(amark_test_dialect(), "[~a~](u)\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump,
+                      "(doc (p (link inline dest=\"u\" (? (text \"a\")))))");
+    check_strike(0, 1, 4, AMARK_KIND_LINK);
+    PARSE(amark_test_dialect(), "~~a ~$b$~ **c**~~\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (? (text \"a \") (? (?)) (text \" \") "
+                              "(strong (text \"c\")))))");
+    check_strike(0, 0, 17, AMARK_KIND_PARAGRAPH);
+    check_strike(1, 4, 9, K_STRIKE);
+    check_var(0, 5, 8, K_STRIKE, "1");
+}
+
+NAOS_TEST(strike_overlapping_emphasis_follows_the_rules_of_emphasis)
+{
+    /*
+     * As "*a _b* c_": the closer that comes first wins, and the runs
+     * between its pair are text.
+     */
+    PARSE(NULL, "*a _b* c_\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump,
+                      "(doc (p (em (text \"a _b\")) (text \" c_\")))");
+    SAME_AS_WITHOUT("*a ~b* c~\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump,
+                      "(doc (p (em (text \"a ~b\")) (text \" c~\")))");
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 0);
+    PARSE(NULL, "_a *b_ c*\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump,
+                      "(doc (p (em (text \"a *b\")) (text \" c*\")))");
+    PARSE(amark_test_dialect(), "~a *b~ c*\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump,
+                      "(doc (p (? (text \"a *b\")) (text \" c*\")))");
+    check_strike(0, 0, 6, AMARK_KIND_PARAGRAPH);
+    /* A link closes first, and the strike run inside it is text. */
+    PARSE(amark_test_dialect(), "~a [b~](u)\n", 0);
+    NAOS_CHECK_STR_EQ(g_dump, "(doc (p (text \"~a \") "
+                              "(link inline dest=\"u\" (text \"b~\"))))");
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 0);
+}
+
+NAOS_TEST(strike_is_not_made_inside_code_spans_or_at_escapes)
+{
+    SAME_AS_WITHOUT("`~a~` \\~a~ <http://x/~a~>\n", 0);
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 0);
+}
+
+NAOS_TEST(strike_failed_allocations_end_the_parse_without_leaks)
+{
+    static const char content[] = "~a~ *~~b~~* [~c~](u) ~d~~ ~~~e~~~\n";
+    size_t calls;
+    size_t i;
+
+    PARSE(amark_test_dialect(), content, 0);
+    NAOS_CHECK_UINT_EQ(count_kind(K_STRIKE), 3);
+    calls = g_state.malloc_calls;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    for (i = 1; i <= calls; i++) {
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = i;
+        NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1,
+                                      &g_config, &g_doc),
+                          AMARK_ERROR_NOMEM);
+        NAOS_CHECK_NULL(g_doc);
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    }
+    g_state.fail_at = 0;
+}
+
+NAOS_SUITE(strike,
+    NAOS_SET_SETUP(parse),
+    NAOS_SET_TEARDOWN(parse),
+    NAOS_ADD_TEST(strike_runs_of_a_registered_length_match),
+    NAOS_ADD_TEST(strike_opens_and_closes_as_a_star_does),
+    NAOS_ADD_TEST(strike_runs_of_other_lengths_are_text),
+    NAOS_ADD_TEST(strike_nests_with_emphasis_and_links),
+    NAOS_ADD_TEST(strike_overlapping_emphasis_follows_the_rules_of_emphasis),
+    NAOS_ADD_TEST(strike_is_not_made_inside_code_spans_or_at_escapes),
+    NAOS_ADD_TEST(strike_failed_allocations_end_the_parse_without_leaks)
+)
+
+/* ---------------------------------------------------------------------- */
 /* The order of the rules */
 
 #define K_A (AMARK_KIND_DIALECT_MIN + 200)
@@ -748,6 +908,7 @@ NAOS_SUITE(count,
 
 NAOS_MAIN(
     NAOS_ADD_SUITE(var),
+    NAOS_ADD_SUITE(strike),
     NAOS_ADD_SUITE(order),
     NAOS_ADD_SUITE(count)
 )
