@@ -17,7 +17,8 @@
  * filled in. The parser reads this instead of amark_config_t.
  */
 typedef struct amark_resolved_config {
-    const amark_dialect_t *dialect; /* NULL: CommonMark only */
+    const amark_dialect_t *dialect; /* NULL: CommonMark only; never a
+                                       dialect of no extension */
     size_t start;
     size_t end;                  /* never AMARK_END_OF_CONTENT */
     amark_allocator_t allocator; /* both functions set */
@@ -40,10 +41,13 @@ typedef struct amark_resolved_config {
  *   3. With end AMARK_END_OF_CONTENT read as content_length,
  *      start <= end and end <= content_length.
  *   4. utf8_mode is AMARK_UTF8_STRICT or AMARK_UTF8_REPLACE.
+ *   5. dialect is NULL or passes amark_dialect_validate (dialect_internal.h).
  *
- * On success, end is the resolved end and an allocator with both functions
- * NULL becomes the default allocator (its ctx is ignored). Allocates
- * nothing and does not change *config. out must not be NULL.
+ * On success, end is the resolved end, an allocator with both functions
+ * NULL becomes the default allocator (its ctx is ignored), and a dialect
+ * with extension_count 0 becomes NULL (no dialect). Calls no rule of the
+ * dialect, allocates nothing and changes neither *config nor the dialect.
+ * out must not be NULL.
  */
 amark_error_t amark_config_resolve(const amark_config_t *config,
                                    size_t content_length,

@@ -56,9 +56,11 @@ unset(_amark_libm_probe)
 
 # amark_test_support: the counting, failing test allocator ("test_alloc.h"),
 # the dumps of a tree as one line ("tree_dump.h") and of the values of its
-# nodes ("text_dump.h"). A test-only static library, never installed.
+# nodes ("text_dump.h"), and valid and invalid dialect definitions
+# ("test_dialect_defs.h"). A test-only static library, never installed.
 add_library(amark_test_support STATIC
     support/test_alloc.c
+    support/test_dialect_defs.c
     support/text_dump.c
     support/tree_dump.c
 )

@@ -64,10 +64,19 @@ AMARK_API void amark_config_init(amark_config_t *config);
  * content_length bytes, and AMARK_ERROR_INVALID_CONFIG otherwise: when
  * struct_size is not sizeof(amark_config_t), when only one of the two
  * allocator functions is set, when start > end or end > content_length
- * (after AMARK_END_OF_CONTENT is read as content_length), or when utf8_mode
- * is not an amark_utf8_mode_t value. The resource limits are not compared
- * with the content. A NULL config is treated as the defaults. Allocates
- * nothing and does not change *config.
+ * (after AMARK_END_OF_CONTENT is read as content_length), when utf8_mode
+ * is not an amark_utf8_mode_t value, or when dialect is not NULL and its
+ * definition is invalid (see <amark/dialect.h>; for example a struct_size
+ * or abi this library does not know, a NULL array with a count other than
+ * 0, an extension without a name, a kind id outside the dialect space or
+ * registered twice, a rule or delimiter kind naming a kind its extension
+ * did not register or of the wrong class, an invalid delimiter character or
+ * length set, too many delimiter kinds, or only one of the two state
+ * functions). A dialect with no extension is valid and parses as no
+ * dialect. amark_parse makes the same check before it parses and returns
+ * the same error. The resource limits are not compared with the content. A
+ * NULL config is treated as the defaults. Calls no rule of the dialect,
+ * allocates nothing, and changes neither *config nor the dialect.
  */
 AMARK_API amark_error_t amark_config_validate(const amark_config_t *config,
                                               size_t content_length);
