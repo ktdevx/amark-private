@@ -3,10 +3,18 @@
  * SPDX-License-Identifier: MIT
  */
 
-/* Unit tests of the parse configuration (src/config_internal.h) and the error type. */
+/*
+ * Unit tests of the parse configuration (src/config_internal.h) and the error
+ * type, and of the dialect definition check as rule 5 of the resolution
+ * (dialect-extension Requirements 3.1, 3.10, 3.11, 3.12, 15.5).
+ */
 
 #include "config_internal.h"
 #include "test_alloc.h"
+#include "test_dialect_defs.h"
+#include "tree_dump.h"
+
+#include <amark/parse.h>
 
 #include <naos/naos.h>
 
@@ -21,9 +29,6 @@
 static amark_test_alloc_t g_state;
 static amark_allocator_t g_allocator;
 
-/* Only its address is used, as an opaque dialect pointer. */
-static const int g_dialect_object = 1;
-
 NAOS_SETUP(counting)
 {
     amark_test_alloc_init(&g_state);
@@ -35,11 +40,6 @@ NAOS_TEARDOWN(counting)
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
     NAOS_CHECK_UINT_EQ(g_state.free_calls, 0);
     NAOS_CHECK_UINT_EQ(g_state.live, 0);
-}
-
-static const amark_dialect_t *test_dialect(void)
-{
-    return (const amark_dialect_t *)(const void *)&g_dialect_object;
 }
 
 /* Fills *out with a byte pattern that no resolution produces. */
@@ -435,11 +435,13 @@ NAOS_TEST(allocator_filename_and_dialect_pass_through)
     amark_config_t config;
     amark_resolved_config_t out;
     const char *filename = "doc.md";
+    amark_test_def_t def;
 
+    amark_test_def_init(&def);
     amark_config_init(&config);
     config.allocator = g_allocator;
     config.filename = filename;
-    config.dialect = test_dialect();
+    config.dialect = &def.dialect;
     poison(&out);
     NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, 6, &out),
                         AMARK_ERROR_NONE);
@@ -447,7 +449,7 @@ NAOS_TEST(allocator_filename_and_dialect_pass_through)
     NAOS_CHECK_TRUE(out.allocator.free_fn == g_allocator.free_fn);
     NAOS_CHECK_PTR_EQ(out.allocator.ctx, &g_state);
     NAOS_CHECK_PTR_EQ(out.filename, filename);
-    NAOS_CHECK_TRUE(out.dialect == test_dialect());
+    NAOS_CHECK_TRUE(out.dialect == &def.dialect);
     NAOS_CHECK_UINT_EQ(out.start, 0);
     NAOS_CHECK_UINT_EQ(out.end, 6);
 }
@@ -486,6 +488,232 @@ NAOS_TEST(validate_changes_nothing_and_repeats)
     NAOS_CHECK_INT_EQ(memcmp(&before, &config, sizeof(config)), 0);
 }
 
+/* ---- rule 5: the dialect definition (dialect-extension 3.1, 3.10 to 3.12,
+   15.5) ---- */
+
+/*
+ * Fixture of the dialect tests: the counting allocator. A parse may
+ * allocate here, so teardown checks only that nothing is left.
+ */
+NAOS_SETUP(dialect)
+{
+    amark_test_alloc_init(&g_state);
+    g_allocator = amark_test_allocator(&g_state);
+}
+
+NAOS_TEARDOWN(dialect)
+{
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+/* The content parsed with each dialect. */
+static const char g_content[] = "# Title\n\n> *quote*\n\n- item\n";
+#define CONTENT_LENGTH (sizeof(g_content) - 1)
+#define DUMP_SIZE 512
+
+/* Any non-NULL value: the parse entry must overwrite it. */
+static char g_not_a_document;
+#define NOT_A_DOCUMENT ((amark_document_t *)(void *)&g_not_a_document)
+
+/*
+ * Returns 1 if the parse entry returns AMARK_ERROR_INVALID_CONFIG for
+ * config, sets *out to NULL and allocates nothing.
+ */
+static int parse_rejected(const amark_config_t *config)
+{
+    amark_document_t *doc = NOT_A_DOCUMENT;
+    size_t calls = g_state.malloc_calls;
+    amark_error_t err;
+
+    err = amark_parse(g_content, CONTENT_LENGTH, config, &doc);
+    return err == AMARK_ERROR_INVALID_CONFIG && doc == NULL &&
+           g_state.malloc_calls == calls;
+}
+
+/*
+ * Parses g_content with config into buffer (a tree dump), requiring
+ * success, and destroys the document.
+ */
+static void parse_dump(const amark_config_t *config, char *buffer)
+{
+    amark_document_t *doc = NOT_A_DOCUMENT;
+
+    NAOS_REQUIRE_INT_EQ(amark_parse(g_content, CONTENT_LENGTH, config, &doc),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(doc);
+    NAOS_CHECK_UINT_LT(amark_test_dump_tree(doc, buffer, DUMP_SIZE),
+                       DUMP_SIZE);
+    amark_document_destroy(doc);
+}
+
+NAOS_TEST(invalid_dialect_definitions_are_config_errors)
+{
+    size_t i;
+
+    NAOS_REQUIRE_UINT_GT(amark_test_def_breaker_count, 0);
+    for (i = 0; i < amark_test_def_breaker_count; i++) {
+        const amark_test_def_breaker_t *b = &amark_test_def_breakers[i];
+        amark_test_def_t def;
+        amark_config_t config;
+
+        amark_test_def_init(&def);
+        b->apply(&def, b->arg);
+        amark_config_init(&config);
+        config.allocator = g_allocator;
+        config.dialect = &def.dialect;
+        /* The breaker's name is the message of a failed check. */
+        (void)naos_check(rejected(&config, CONTENT_LENGTH), b->name,
+                         __FILE__, __LINE__);
+        (void)naos_check(parse_rejected(&config), b->name, __FILE__,
+                         __LINE__);
+        /* The default allocator: the same error. */
+        config.allocator = amark_allocator_default();
+        (void)naos_check(parse_rejected(&config), b->name, __FILE__,
+                         __LINE__);
+    }
+}
+
+NAOS_TEST(valid_dialect_resolves_and_parses)
+{
+    amark_test_def_t def;
+    amark_config_t config;
+    amark_resolved_config_t out;
+    char want[DUMP_SIZE];
+    char got[DUMP_SIZE];
+
+    amark_test_def_init(&def);
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    parse_dump(&config, want);
+
+    config.dialect = &def.dialect;
+    poison(&out);
+    NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, CONTENT_LENGTH, &out),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_TRUE(out.dialect == &def.dialect);
+    NAOS_CHECK_INT_EQ(amark_config_validate(&config, CONTENT_LENGTH),
+                      AMARK_ERROR_NONE);
+    parse_dump(&config, got);
+    NAOS_CHECK_STR_EQ(got, want);
+
+    /* The three extensions of the most delimiter kinds. */
+    amark_test_def_set_delimiter_total(&def, AMARK_DIALECT_DELIMITER_MAX);
+    def.ext3.delimiter_count = 0;
+    def.dialect.extension_count = 3;
+    NAOS_CHECK_INT_EQ(amark_config_validate(&config, CONTENT_LENGTH),
+                      AMARK_ERROR_NONE);
+}
+
+NAOS_TEST(zero_extension_dialects_resolve_to_no_dialect)
+{
+    amark_test_def_t def;
+    amark_dialect_t empty;
+    const amark_dialect_t *dialects[2];
+    amark_config_t config;
+    amark_resolved_config_t out;
+    char want[DUMP_SIZE];
+    char got[DUMP_SIZE];
+    size_t i;
+
+    /* With no array, and with an array but a count of 0. */
+    memset(&empty, 0, sizeof(empty));
+    empty.struct_size = sizeof(amark_dialect_t);
+    empty.abi = AMARK_DIALECT_ABI;
+    amark_test_def_init(&def);
+    def.dialect.extension_count = 0;
+    dialects[0] = &empty;
+    dialects[1] = &def.dialect;
+
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    parse_dump(&config, want);
+    for (i = 0; i < 2; i++) {
+        config.dialect = dialects[i];
+        poison(&out);
+        NAOS_REQUIRE_INT_EQ(
+            amark_config_resolve(&config, CONTENT_LENGTH, &out),
+            AMARK_ERROR_NONE);
+        NAOS_CHECK_NULL(out.dialect);
+        NAOS_CHECK_TRUE(out.allocator.malloc_fn == g_allocator.malloc_fn);
+        NAOS_CHECK_UINT_EQ(out.end, CONTENT_LENGTH);
+        NAOS_CHECK_INT_EQ(amark_config_validate(&config, CONTENT_LENGTH),
+                          AMARK_ERROR_NONE);
+        parse_dump(&config, got);
+        NAOS_CHECK_STR_EQ(got, want);
+    }
+
+    /* The defaults with a 0-extension dialect are the default resolution. */
+    amark_config_init(&config);
+    config.dialect = &empty;
+    poison(&out);
+    NAOS_REQUIRE_INT_EQ(amark_config_resolve(&config, CONTENT_LENGTH, &out),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_TRUE(is_default_resolution(&out, CONTENT_LENGTH));
+}
+
+NAOS_TEST(zero_extension_dialect_is_still_checked)
+{
+    amark_dialect_t empty;
+    amark_config_t config;
+
+    memset(&empty, 0, sizeof(empty));
+    empty.struct_size = sizeof(amark_dialect_t);
+    empty.abi = AMARK_DIALECT_ABI + 1;
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    config.dialect = &empty;
+    NAOS_CHECK_TRUE(rejected(&config, CONTENT_LENGTH));
+    NAOS_CHECK_TRUE(parse_rejected(&config));
+
+    empty.abi = AMARK_DIALECT_ABI;
+    empty.struct_size = 0;
+    NAOS_CHECK_TRUE(rejected(&config, CONTENT_LENGTH));
+    NAOS_CHECK_TRUE(parse_rejected(&config));
+}
+
+/* Rule 5 comes after rules 1 to 4: a valid dialect does not hide them. */
+NAOS_TEST(valid_dialect_does_not_hide_other_rules)
+{
+    amark_test_def_t def;
+    amark_config_t config;
+
+    amark_test_def_init(&def);
+    amark_config_init(&config);
+    config.dialect = &def.dialect;
+    config.start = CONTENT_LENGTH + 1;
+    NAOS_CHECK_TRUE(rejected(&config, CONTENT_LENGTH));
+    NAOS_CHECK_TRUE(parse_rejected(&config));
+}
+
+/* The check reads the definition only: no rule is called, nothing changes. */
+NAOS_TEST(dialect_check_changes_nothing_and_repeats)
+{
+    amark_test_def_t def;
+    amark_test_def_t before;
+    amark_config_t config;
+    int i;
+
+    amark_test_def_init(&def);
+    amark_config_init(&config);
+    config.allocator = g_allocator;
+    config.dialect = &def.dialect;
+    memcpy(&before, &def, sizeof(def));
+    for (i = 0; i < 3; i++) {
+        NAOS_CHECK_INT_EQ(amark_config_validate(&config, CONTENT_LENGTH),
+                          AMARK_ERROR_NONE);
+    }
+    NAOS_CHECK_INT_EQ(memcmp(&before, &def, sizeof(def)), 0);
+    def.ext1.name = "";
+    memcpy(&before, &def, sizeof(def));
+    for (i = 0; i < 3; i++) {
+        NAOS_CHECK_INT_EQ(amark_config_validate(&config, CONTENT_LENGTH),
+                          AMARK_ERROR_INVALID_CONFIG);
+    }
+    NAOS_CHECK_INT_EQ(memcmp(&before, &def, sizeof(def)), 0);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
+}
+
 NAOS_SUITE(error,
     NAOS_ADD_TEST(error_values_are_distinct_and_fixed)
 )
@@ -518,7 +746,19 @@ NAOS_SUITE(config,
     NAOS_ADD_TEST(validate_changes_nothing_and_repeats)
 )
 
+NAOS_SUITE(dialect,
+    NAOS_SET_SETUP(dialect),
+    NAOS_SET_TEARDOWN(dialect),
+    NAOS_ADD_TEST(invalid_dialect_definitions_are_config_errors),
+    NAOS_ADD_TEST(valid_dialect_resolves_and_parses),
+    NAOS_ADD_TEST(zero_extension_dialects_resolve_to_no_dialect),
+    NAOS_ADD_TEST(zero_extension_dialect_is_still_checked),
+    NAOS_ADD_TEST(valid_dialect_does_not_hide_other_rules),
+    NAOS_ADD_TEST(dialect_check_changes_nothing_and_repeats)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(error),
-    NAOS_ADD_SUITE(config)
+    NAOS_ADD_SUITE(config),
+    NAOS_ADD_SUITE(dialect)
 )

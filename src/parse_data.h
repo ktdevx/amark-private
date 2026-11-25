@@ -44,9 +44,12 @@ typedef struct amark_definition_entry {
     size_t label_end;
 } amark_definition_entry_t;
 
-/* A range to parse as inlines, and the paragraph or heading it belongs to. */
+/*
+ * A range to parse as inlines, and the block it belongs to: a paragraph, a
+ * heading, or a dialect leaf whose close rule set it.
+ */
 typedef struct amark_inline_content {
-    amark_node_id_t node; /* a paragraph or a heading */
+    amark_node_id_t node; /* a paragraph, a heading or a dialect leaf */
     size_t start;         /* the range [start, end) to parse as inlines */
     size_t end;
 } amark_inline_content_t;

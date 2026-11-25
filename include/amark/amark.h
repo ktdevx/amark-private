@@ -10,6 +10,7 @@
 
 #include <amark/allocator.h> /* amark_allocator_t */
 #include <amark/config.h>    /* amark_config_t */
+#include <amark/dialect.h>   /* amark_dialect_t and its parts */
 #include <amark/error.h>     /* amark_error_t */
 #include <amark/export.h>    /* AMARK_API (generated) */
 #include <amark/parse.h>     /* amark_parse */

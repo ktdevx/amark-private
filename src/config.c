@@ -6,6 +6,7 @@
 #include "config_internal.h"
 
 #include "alloc.h"
+#include "dialect_internal.h"
 
 #include <stdbool.h>
 
@@ -69,7 +70,16 @@ amark_error_t amark_config_resolve(const amark_config_t *config,
         return AMARK_ERROR_INVALID_CONFIG;
     }
 
+    /* Rule 5: a valid dialect definition. */
+    if (config->dialect != NULL && !amark_dialect_validate(config->dialect)) {
+        return AMARK_ERROR_INVALID_CONFIG;
+    }
+
+    /* A dialect of no extension is no dialect. */
     out->dialect = config->dialect;
+    if (out->dialect != NULL && out->dialect->extension_count == 0) {
+        out->dialect = NULL;
+    }
     out->start = config->start;
     out->end = end;
     out->allocator = has_malloc ? config->allocator

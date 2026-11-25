@@ -8,8 +8,9 @@
  * amark_version_string links (C linkage) and returns the header's version,
  * the allocator types can be filled in from C++, the tree types and
  * constants have the values the design fixes, the configuration functions
- * and amark_parse link, and the kind IDs and the attribute values are
- * constant expressions that can be used as case labels.
+ * and amark_parse link, the kind IDs and the attribute values are
+ * constant expressions that can be used as case labels, and a dialect
+ * (<amark/dialect.h>) can be defined as const data from C++.
  */
 
 #include <amark/amark.h>
@@ -89,6 +90,42 @@ static_assert(AMARK_AUTOLINK_TYPE_NONE == 0 && AMARK_AUTOLINK_URI == 1 &&
               "amark_autolink_type_t");
 static_assert(AMARK_SEVERITY_WARNING == 1 && AMARK_SEVERITY_ERROR == 2,
               "amark_severity_t");
+
+// The dialect constants are constant expressions with the design's values.
+static_assert(AMARK_DIALECT_ABI == 1u, "AMARK_DIALECT_ABI");
+static_assert(AMARK_DIALECT_DELIMITER_MAX == 6, "AMARK_DIALECT_DELIMITER_MAX");
+static_assert(AMARK_DIALECT_DELIMITER_LENGTH_MAX == 4,
+              "AMARK_DIALECT_DELIMITER_LENGTH_MAX");
+static_assert(AMARK_DIALECT_BLANK_COLUMNS_MAX == 8,
+              "AMARK_DIALECT_BLANK_COLUMNS_MAX");
+static_assert(AMARK_DIALECT_LENGTH(1) == 1u && AMARK_DIALECT_LENGTH(4) == 8u,
+              "AMARK_DIALECT_LENGTH");
+static_assert(AMARK_DIALECT_TOP == static_cast<size_t>(-1),
+              "AMARK_DIALECT_TOP");
+static_assert(AMARK_DIALECT_CONTAINER == 1 && AMARK_DIALECT_LEAF == 2 &&
+                  AMARK_DIALECT_INLINE == 3,
+              "amark_dialect_class_t");
+static_assert(AMARK_DIALECT_BLANK_CLOSES == 0 &&
+                  AMARK_DIALECT_BLANK_CONTINUES == 1,
+              "amark_dialect_blank_t");
+
+// A dialect written as const data in C++ (aggregate initialization, as
+// C++11 has no designated initializers): one extension, one kind, no rules.
+const amark_dialect_kind_t dialect_kinds[] = {
+    {AMARK_KIND_DIALECT_MIN, AMARK_DIALECT_CONTAINER,
+     AMARK_DIALECT_BLANK_CONTINUES, NULL, NULL,
+     AMARK_DIALECT_BLANK_COLUMNS_MAX},
+};
+
+const amark_dialect_extension_t dialect_extension = {
+    "cxx", dialect_kinds, 1, NULL, 0, NULL, NULL, 0, NULL, 0, NULL, NULL,
+    NULL};
+
+const amark_dialect_extension_t *const dialect_extensions[] = {
+    &dialect_extension};
+
+const amark_dialect_t dialect = {sizeof(amark_dialect_t), AMARK_DIALECT_ABI,
+                                 dialect_extensions, 1};
 
 // The kind ID macros as case labels: each class of kinds maps to a
 // different number, so a wrong or duplicated value fails to compile or
@@ -288,6 +325,20 @@ NAOS_TEST(parse_function)
     NAOS_CHECK_NULL(doc);
 }
 
+NAOS_TEST(dialect_types)
+{
+    amark_config_t config;
+
+    amark_config_init(&config);
+    config.dialect = &dialect;
+    NAOS_CHECK_PTR_EQ(&dialect, config.dialect);
+    NAOS_CHECK_UINT_EQ(AMARK_DIALECT_ABI, dialect.abi);
+    NAOS_REQUIRE_UINT_EQ(1, dialect.extension_count);
+    NAOS_CHECK_STR_EQ("cxx", dialect.extensions[0]->name);
+    NAOS_CHECK_UINT_EQ(AMARK_KIND_DIALECT_MIN,
+                       dialect.extensions[0]->kinds[0].id);
+}
+
 NAOS_TEST(kind_ids_as_case_labels)
 {
     NAOS_CHECK_INT_EQ(0, kind_class(AMARK_KIND_NONE));
@@ -328,6 +379,7 @@ NAOS_SUITE(header_cxx,
     NAOS_ADD_TEST(tree_types),
     NAOS_ADD_TEST(config_functions),
     NAOS_ADD_TEST(parse_function),
+    NAOS_ADD_TEST(dialect_types),
     NAOS_ADD_TEST(kind_ids_as_case_labels),
     NAOS_ADD_TEST(attribute_values_as_case_labels)
 )

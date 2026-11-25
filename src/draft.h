@@ -57,10 +57,18 @@ typedef struct amark_draft_item {
     size_t start;
     size_t end;
     uint32_t attr;        /* links and images: the index in links plus 1.
-                             Autolinks: the type plus 1. Otherwise 0 */
+                             Autolinks: the type plus 1. Dialect kinds:
+                             the index in blobs plus 1, or 0 without
+                             data. Otherwise 0 */
     amark_node_id_t node; /* the node written for the item; only the emit
                              step writes it */
 } amark_draft_item_t;
+
+/* The attribute bytes of a dialect item: a copy in the scratch arena. */
+typedef struct amark_draft_blob {
+    const void *data;
+    size_t size; /* at least 1 */
+} amark_draft_blob_t;
 
 /*
  * The members are visible in src/ but other modules use the functions only.
@@ -68,6 +76,9 @@ typedef struct amark_draft_item {
 typedef struct amark_draft {
     amark_array_t items; /* amark_draft_item_t; 0 is unused, 1 is the root */
     amark_array_t links; /* amark_draft_link_t */
+    amark_array_t blobs; /* amark_draft_blob_t; empty, and with no place,
+                            until a dialect item is given data */
+    amark_arena_t *scratch; /* where the bytes of the blobs are copied */
 } amark_draft_t;
 
 /*
@@ -139,6 +150,19 @@ amark_error_t amark_draft_set_link(amark_draft_t *draft,
                                    amark_draft_id_t id,
                                    const amark_draft_link_t *attr);
 
+/*
+ * Gives the item id (of a dialect kind) a copy of the size bytes at data,
+ * made in the scratch arena, so the caller may change or release data
+ * afterwards. data may be NULL only when size is 0; a size of 0 makes the
+ * item have no data, allocates nothing and never fails. On failure
+ * (AMARK_ERROR_NOMEM, or AMARK_ERROR_LIMIT_EXCEEDED when the number of
+ * blobs cannot be represented), the item is unchanged; a copy already made
+ * stays in the arena, referred to by nothing.
+ */
+amark_error_t amark_draft_set_dialect_data(amark_draft_t *draft,
+                                           amark_draft_id_t id,
+                                           const void *data, size_t size);
+
 /* Gives the item id (an autolink) the type type. Never fails. */
 void amark_draft_set_autolink(amark_draft_t *draft,
                               amark_draft_id_t id,
@@ -163,8 +187,10 @@ const amark_draft_item_t *amark_draft_get(const amark_draft_t *draft,
  * the first equal to the start of the second, become one text node, whose
  * node every such item names. A link or an image with a link attribute gets
  * it with amark_tree_set_link, an autolink with a type gets it with
- * amark_tree_set_autolink. A kind below AMARK_KIND_DIALECT_MIN is added with
- * AMARK_NODE_CLASS_AUTO, a dialect kind with AMARK_NODE_CLASS_INLINE.
+ * amark_tree_set_autolink, and a dialect item with data gets a copy of it
+ * in doc with amark_tree_set_dialect_data. A kind below
+ * AMARK_KIND_DIALECT_MIN is added with AMARK_NODE_CLASS_AUTO, a dialect kind
+ * with AMARK_NODE_CLASS_INLINE.
  *
  * parent_depth is the depth of parent (the root of doc is at depth 0); the
  * children of the draft's root are at parent_depth + 1. Before each node is

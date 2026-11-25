@@ -46,7 +46,7 @@ spec.txt から例を取り出すスクリプトで、テストのデータを�
 
 ## Existing Spec Touchpoints
 - **Extends**: なし
-- **Adjacent**: dialect-extension（方言のテストは dialect-extension が持つ）
+- **Adjacent**: dialect-extension（方言のテストは dialect-extension が持つ。ただし、スレッドを使う並行性のテストは、この spec が、dialect-extension のテスト用の方言（`tests/support/test_dialect.h`）を指定した解析を含めて行う）
 
 ## Constraints
 - HTML 出力はテスト専用で、インストールされるライブラリに含めない。

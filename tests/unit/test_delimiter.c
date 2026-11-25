@@ -22,6 +22,13 @@
  * the bottom left untouched, deep nesting, the input of cmark issue 389,
  * and an allocator failure in the middle.
  *
+ * Then the kinds added for a dialect with the rule of equal lengths
+ * (dialect-extension 8.3, 8.4, 8.10): adding kinds up to the maximum, runs
+ * of the same length matched as one item, runs of different lengths or of
+ * lengths the kind does not use left as text, nesting with emphasis and
+ * with each other, and the lower bounds that keep many unmatched closers
+ * from walking over the same openers again.
+ *
  * The inputs of the examples of section 6.4 are taken from the CommonMark
  * Spec, version 0.31.2, by John MacFarlane,
  * https://spec.commonmark.org/0.31.2/ (spec.txt), which is licensed under
@@ -411,9 +418,11 @@ NAOS_TEST(classify_uses_only_the_limit_of_the_kind)
 {
     /* A kind added with the limit behaves as `_`, without it as `*`. */
     amark_delimiter_kind_t limited = {'~', true, AMARK_KIND_DIALECT_MIN,
-                                      AMARK_KIND_DIALECT_MIN + 1};
+                                      AMARK_KIND_DIALECT_MIN + 1,
+                                      AMARK_DELIMITER_MATCH_EMPHASIS, 0};
     amark_delimiter_kind_t free_kind = {'~', false, AMARK_KIND_DIALECT_MIN,
-                                        AMARK_KIND_DIALECT_MIN + 1};
+                                        AMARK_KIND_DIALECT_MIN + 1,
+                                        AMARK_DELIMITER_MATCH_EMPHASIS, 0};
     bool can_open = true;
     bool can_close = true;
 
@@ -544,17 +553,63 @@ static void arrange(const char *src)
     }
 }
 
-/* Returns the number of delimiters on each side of an item of kind. */
-static size_t delimiters_of(amark_kind_t kind)
+/*
+ * Returns the number of delimiters on each side of item: 2 for a strong, 1
+ * for an emphasis, and for an item of a kind added with the rule of equal
+ * lengths, the length of the run of its first character.
+ */
+static size_t delimiters_of(const amark_draft_item_t *item)
 {
-    return kind == AMARK_KIND_STRONG ? 2 : 1;
+    size_t n = 0;
+
+    if (item->kind == AMARK_KIND_STRONG) {
+        return 2;
+    }
+    if (item->kind == AMARK_KIND_EMPHASIS) {
+        return 1;
+    }
+    while (item->start + n < item->end &&
+           g_src[item->start + n] == g_src[item->start]) {
+        n++;
+    }
+    return n;
+}
+
+/*
+ * Writes the opening (or, if closing, the closing) tag of item: <em>,
+ * <strong>, or <dN> for the kind AMARK_KIND_DIALECT_MIN + N.
+ */
+static void put_tag(const amark_draft_item_t *item, bool closing)
+{
+    char tag[16];
+
+    if (item->kind == AMARK_KIND_STRONG) {
+        put(closing ? "</strong>" : "<strong>");
+    } else if (item->kind == AMARK_KIND_EMPHASIS) {
+        put(closing ? "</em>" : "<em>");
+    } else {
+        NAOS_REQUIRE_UINT_GE(item->kind, AMARK_KIND_DIALECT_MIN);
+        NAOS_REQUIRE_UINT_LT(item->kind, AMARK_KIND_DIALECT_MIN + 10);
+        tag[0] = '<';
+        tag[1] = '/';
+        tag[2] = 'd';
+        tag[3] = (char)('0' + (item->kind - AMARK_KIND_DIALECT_MIN));
+        tag[4] = '>';
+        tag[5] = '\0';
+        if (closing) {
+            put(tag);
+        } else {
+            tag[1] = '<';
+            put(tag + 1);
+        }
+    }
 }
 
 /* Writes the closing tag of the emphasis item and checks its end. */
 static void close_item(const amark_draft_item_t *item, size_t *expected)
 {
-    NAOS_CHECK_UINT_EQ(*expected + delimiters_of(item->kind), item->end);
-    put(item->kind == AMARK_KIND_STRONG ? "</strong>" : "</em>");
+    NAOS_CHECK_UINT_EQ(*expected + delimiters_of(item), item->end);
+    put_tag(item, true);
     *expected = item->end;
 }
 
@@ -601,12 +656,9 @@ static size_t render(void)
             }
             expected = item->end;
         } else {
-            NAOS_REQUIRE_TRUE(item->kind == AMARK_KIND_EMPHASIS ||
-                              item->kind == AMARK_KIND_STRONG);
-            put(item->kind == AMARK_KIND_STRONG ? "<strong>"
-                                                        : "<em>");
+            put_tag(item, false);
             NAOS_CHECK_INT_EQ(g_src[item->start], g_src[item->end - 1]);
-            expected = item->start + delimiters_of(item->kind);
+            expected = item->start + delimiters_of(item);
             if (item->first_child != AMARK_DRAFT_NONE) {
                 parent = id;
                 id = item->first_child;
@@ -1229,6 +1281,257 @@ NAOS_TEST(process_failure_leaves_a_tree)
     NAOS_CHECK_UINT_LT(ems, 2000);
 }
 
+/* ---- the rule of equal lengths (dialect-extension 8.3, 8.4, 8.10) ---- */
+
+#define ALL_LENGTHS                                                    \
+    (AMARK_DIALECT_LENGTH(1) | AMARK_DIALECT_LENGTH(2) |                \
+     AMARK_DIALECT_LENGTH(3) | AMARK_DIALECT_LENGTH(4))
+
+/*
+ * Adds the kind of ch with the rule of equal lengths, the lengths, and the
+ * kind AMARK_KIND_DIALECT_MIN + n, as the inline parser adds a delimiter of
+ * a dialect.
+ */
+static void add_equal(unsigned char ch, unsigned lengths, unsigned n)
+{
+    amark_delimiter_kind_t kind;
+
+    memset(&kind, 0, sizeof(kind));
+    kind.ch = ch;
+    kind.intraword_limited = false;
+    kind.single = AMARK_KIND_DIALECT_MIN + n;
+    kind.pair = AMARK_KIND_DIALECT_MIN + n;
+    kind.match = AMARK_DELIMITER_MATCH_EQUAL;
+    kind.lengths = (unsigned char)lengths;
+    NAOS_REQUIRE_TRUE(amark_delimiters_add_kind(&g_delims, &kind));
+}
+
+NAOS_TEST(init_gives_the_kinds_of_commonmark_the_rule_of_emphasis)
+{
+    NAOS_CHECK_UINT_EQ(g_delims.kinds[0].match,
+                       AMARK_DELIMITER_MATCH_EMPHASIS);
+    NAOS_CHECK_UINT_EQ(g_delims.kinds[1].match,
+                       AMARK_DELIMITER_MATCH_EMPHASIS);
+}
+
+NAOS_TEST(add_kind_appends_kinds_up_to_the_maximum)
+{
+    static const unsigned char chars[] = {'~', '=', '+', '^', '%', ':'};
+    amark_delimiter_kind_t kind;
+    size_t i;
+
+    NAOS_CHECK_UINT_EQ(AMARK_DELIMITER_KIND_MAX,
+                       2 + AMARK_DIALECT_DELIMITER_MAX);
+    for (i = 0; i < sizeof(chars); i++) {
+        add_equal(chars[i], AMARK_DIALECT_LENGTH(i % 4 + 1), (unsigned)i);
+        NAOS_CHECK_UINT_EQ(g_delims.kind_count, 3 + i);
+    }
+    for (i = 0; i < sizeof(chars); i++) {
+        const amark_delimiter_kind_t *k = &g_delims.kinds[2 + i];
+
+        NAOS_TRACE_PUSH("kind %lu", (unsigned long)i);
+        NAOS_CHECK_UINT_EQ(amark_delimiters_kind_of(&g_delims, chars[i]),
+                           2 + i);
+        NAOS_CHECK_UINT_EQ(k->ch, chars[i]);
+        NAOS_CHECK_FALSE(k->intraword_limited);
+        NAOS_CHECK_UINT_EQ(k->single, AMARK_KIND_DIALECT_MIN + i);
+        NAOS_CHECK_UINT_EQ(k->pair, AMARK_KIND_DIALECT_MIN + i);
+        NAOS_CHECK_UINT_EQ(k->match, AMARK_DELIMITER_MATCH_EQUAL);
+        NAOS_CHECK_UINT_EQ(k->lengths, AMARK_DIALECT_LENGTH(i % 4 + 1));
+        NAOS_TRACE_POP();
+    }
+    /* The table is full: nothing changes. */
+    memset(&kind, 0, sizeof(kind));
+    kind.ch = '!';
+    kind.match = AMARK_DELIMITER_MATCH_EQUAL;
+    kind.lengths = AMARK_DIALECT_LENGTH(1);
+    NAOS_CHECK_FALSE(amark_delimiters_add_kind(&g_delims, &kind));
+    NAOS_CHECK_UINT_EQ(g_delims.kind_count, AMARK_DELIMITER_KIND_MAX);
+    NAOS_CHECK_UINT_EQ(amark_delimiters_kind_of(&g_delims, '!'),
+                       AMARK_DELIMITER_KIND_MAX);
+    /* The kinds of CommonMark are kept, and reset keeps the added ones. */
+    NAOS_CHECK_UINT_EQ(amark_delimiters_kind_of(&g_delims, '*'), 0);
+    NAOS_CHECK_UINT_EQ(amark_delimiters_kind_of(&g_delims, '_'), 1);
+    amark_delimiters_reset(&g_delims);
+    NAOS_CHECK_UINT_EQ(g_delims.kind_count, AMARK_DELIMITER_KIND_MAX);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
+}
+
+NAOS_TEST(process_equal_matches_runs_of_the_same_length)
+{
+    add_equal('~', AMARK_DIALECT_LENGTH(1) | AMARK_DIALECT_LENGTH(2), 0);
+    /* Items: 2 `~`, 3 `a`, 4 `~`; the wrapping item is 5. */
+    process_all("~a~");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a</d0>");
+    NAOS_CHECK_UINT_EQ(item_of(5)->kind, AMARK_KIND_DIALECT_MIN);
+    NAOS_CHECK_UINT_EQ(item_of(5)->start, 0);
+    NAOS_CHECK_UINT_EQ(item_of(5)->end, 3);
+    NAOS_CHECK_UINT_EQ(item_of(5)->first_child, 3);
+    NAOS_CHECK_UINT_EQ(item_of(5)->last_child, 3);
+    NAOS_CHECK_UINT_EQ(item_of(2)->parent, AMARK_DRAFT_NONE);
+    NAOS_CHECK_UINT_EQ(item_of(4)->parent, AMARK_DRAFT_NONE);
+    NAOS_CHECK_UINT_EQ(item_of(AMARK_DRAFT_ROOT)->first_child, 5);
+    NAOS_CHECK_UINT_EQ(item_of(AMARK_DRAFT_ROOT)->last_child, 5);
+    /*
+     * A run of two makes one item from the opener's start to the closer's
+     * end, not two nested ones. Items: 2 `x`, 3 `~~`, 4 `a b`, 5 `~~`,
+     * 6 `y`; the wrapping item is 7.
+     */
+    process_all("x~~a b~~y");
+    NAOS_CHECK_STR_EQ(g_html, "x<d0>a b</d0>y");
+    NAOS_CHECK_UINT_EQ(item_of(7)->kind, AMARK_KIND_DIALECT_MIN);
+    NAOS_CHECK_UINT_EQ(item_of(7)->start, 1);
+    NAOS_CHECK_UINT_EQ(item_of(7)->end, 8);
+    NAOS_CHECK_UINT_EQ(item_of(7)->parent, AMARK_DRAFT_ROOT);
+    NAOS_CHECK_UINT_EQ(item_of(7)->first_child, 4);
+    NAOS_CHECK_UINT_EQ(item_of(7)->last_child, 4);
+    NAOS_CHECK_UINT_EQ(item_of(3)->parent, AMARK_DRAFT_NONE);
+    NAOS_CHECK_UINT_EQ(item_of(5)->parent, AMARK_DRAFT_NONE);
+    NAOS_CHECK_UINT_EQ(item_of(2)->next, 7);
+    NAOS_CHECK_UINT_EQ(item_of(7)->next, 6);
+    /* The same kind nests in itself, and an empty content is matched. */
+    process_all("~a ~~b~~ c~");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a <d0>b</d0> c</d0>");
+    process_all("~~~~");
+    NAOS_CHECK_STR_EQ(g_html, "~~~~");
+    process_all("~a~~b~");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a~~b</d0>");
+}
+
+NAOS_TEST(process_equal_does_not_match_runs_of_different_lengths)
+{
+    add_equal('~', AMARK_DIALECT_LENGTH(1) | AMARK_DIALECT_LENGTH(2), 0);
+    process_all("~a~~");
+    NAOS_CHECK_STR_EQ(g_html, "~a~~");
+    process_all("~~a~");
+    NAOS_CHECK_STR_EQ(g_html, "~~a~");
+    /* The closer `~` skips the opener `~~` and finds none; the closer
+       `~~` then finds the opener `~~`, the nearest of its length. */
+    process_all("~~a~ b~~");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a~ b</d0>");
+    process_all("~a ~~b~");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a ~~b</d0>");
+    /* Runs that can both open and close match as well. */
+    process_all("a~~b~~c");
+    NAOS_CHECK_STR_EQ(g_html, "a<d0>b</d0>c");
+    /* Lengths outside the set are never matched, nor used in part. */
+    process_all("~~~a~~~");
+    NAOS_CHECK_STR_EQ(g_html, "~~~a~~~");
+    process_all("~~~~~a~~~~~");
+    NAOS_CHECK_STR_EQ(g_html, "~~~~~a~~~~~");
+}
+
+NAOS_TEST(process_equal_uses_only_the_lengths_of_the_kind)
+{
+    add_equal('~', AMARK_DIALECT_LENGTH(1) | AMARK_DIALECT_LENGTH(4), 0);
+    add_equal('=', AMARK_DIALECT_LENGTH(3), 1);
+    process_all("~a~ ~~b~~ ~~~~c~~~~ ==d== ===e=== =f=");
+    NAOS_CHECK_STR_EQ(g_html,
+                      "<d0>a</d0> ~~b~~ <d0>c</d0> ==d== <d1>e</d1> =f=");
+}
+
+NAOS_TEST(process_equal_nests_with_emphasis)
+{
+    add_equal('~', AMARK_DIALECT_LENGTH(1) | AMARK_DIALECT_LENGTH(2), 0);
+    add_equal('=', AMARK_DIALECT_LENGTH(2), 1);
+    process_all("*~a~*");
+    NAOS_CHECK_STR_EQ(g_html, "<em><d0>a</d0></em>");
+    process_all("~*a*~");
+    NAOS_CHECK_STR_EQ(g_html, "<d0><em>a</em></d0>");
+    process_all("**a ~~b~~ c**");
+    NAOS_CHECK_STR_EQ(g_html, "<strong>a <d0>b</d0> c</strong>");
+    process_all("~~a **b** c~~");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a <strong>b</strong> c</d0>");
+    /* An emphasis closed over an opener takes it off the stack (8.4), and
+       the other way round, as between emphases (example 469). */
+    process_all("*a ~b* c~");
+    NAOS_CHECK_STR_EQ(g_html, "<em>a ~b</em> c~");
+    process_all("~a *b~ c*");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a *b</d0> c*");
+    /* Between two kinds of equal lengths. */
+    process_all("~a ==b~ c==");
+    NAOS_CHECK_STR_EQ(g_html, "<d0>a ==b</d0> c==");
+    process_all("==a ~b~ *c*==");
+    NAOS_CHECK_STR_EQ(g_html, "<d1>a <d0>b</d0> <em>c</em></d1>");
+    /* A run of three `*` around: the emphasis rules are unchanged. */
+    process_all("***~a~***");
+    NAOS_CHECK_STR_EQ(g_html, "<em><strong><d0>a</d0></strong></em>");
+}
+
+NAOS_TEST(process_equal_leaves_the_delimiters_below_bottom)
+{
+    add_equal('~', AMARK_DIALECT_LENGTH(1), 0);
+    /* Items: 2 `~`, 3 `a `, 4 `~`, 5 `b`, 6 `~`. */
+    arrange("~a ~b~");
+    NAOS_REQUIRE_INT_EQ(amark_delimiters_process(&g_delims, &g_draft, 3),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(g_delims.top, 1);
+    NAOS_CHECK_UINT_EQ(element(1)->item, 2);
+    NAOS_CHECK_UINT_EQ(element(1)->next, 0);
+    render();
+    NAOS_CHECK_STR_EQ(g_html, "~a <d0>b</d0>");
+}
+
+static char g_big[1u << 20];
+
+NAOS_TEST(process_equal_bounds_the_search_by_class)
+{
+    /*
+     * n openers `~t ` of length 1, then n closers of lengths 2, 3 and 4 in
+     * turn that cannot open, `t~~ `, `t~~~ `, `t~~~~ `. No closer finds an
+     * opener; each sets the lower bound of its class (cannot open, its
+     * length), so the later closers of the class do not walk over the
+     * openers again. Without the bounds this takes about n * n steps.
+     */
+    static const char *const closers[] = {"t~~ ", "t~~~ ", "t~~~~ "};
+    const size_t n = 60000;
+    size_t len = 0;
+    size_t i;
+
+    add_equal('~', ALL_LENGTHS, 0);
+    for (i = 0; i < 2 * n; i++) {
+        const char *part = i < n ? "~t " : closers[i % 3];
+
+        NAOS_REQUIRE_UINT_LT(len + strlen(part), sizeof(g_big));
+        memcpy(g_big + len, part, strlen(part));
+        len += strlen(part);
+    }
+    g_big[len] = '\0';
+    NAOS_CHECK_UINT_EQ(process_all(g_big), 1);
+    /* The same with closers that can open: `t~~t`, `t~~~t`, `t~~~~t`.
+       Each stays on the stack and is matched by the next of its length. */
+    process_all("~t t~~t t~~~t t~~~~t t~~t t~~~t t~~~~t");
+    NAOS_CHECK_STR_EQ(g_html, "~t t<d0>t t~~~t t~~~~t t</d0>t t"
+                              "~~~t t~~~~t");
+}
+
+NAOS_TEST(process_equal_bounds_the_search_past_closers_that_can_open)
+{
+    /*
+     * n openers `~t `, then n runs `t~~t ` that can open and close: the
+     * first finds no opener and sets the bound of its class, the second
+     * matches it, the third finds no opener above the bound and sets it
+     * again, the fourth matches the third, and so on; the openers `~t `
+     * are walked over once. Then the closers `t~~ ` that cannot open walk
+     * over them once more for their own class. Without the bounds this
+     * takes about n * n steps.
+     */
+    const size_t n = 60000;
+    size_t len = 0;
+    size_t i;
+
+    add_equal('~', ALL_LENGTHS, 0);
+    for (i = 0; i < 3 * n; i++) {
+        const char *part = i < n ? "~t " : i < 2 * n ? "t~~t " : "t~~ ";
+
+        NAOS_REQUIRE_UINT_LT(len + strlen(part), sizeof(g_big));
+        memcpy(g_big + len, part, strlen(part));
+        len += strlen(part);
+    }
+    g_big[len] = '\0';
+    NAOS_CHECK_UINT_EQ(process_all(g_big), 2);
+}
+
 NAOS_SUITE(delimiter,
     NAOS_SET_SETUP(counting),
     NAOS_SET_TEARDOWN(counting),
@@ -1262,7 +1565,16 @@ NAOS_SUITE(delimiter,
     NAOS_ADD_TEST(process_with_bottom_past_every_item_changes_nothing),
     NAOS_ADD_TEST(process_nests_deeply),
     NAOS_ADD_TEST(process_matches_the_input_of_cmark_issue_389),
-    NAOS_ADD_TEST(process_failure_leaves_a_tree)
+    NAOS_ADD_TEST(process_failure_leaves_a_tree),
+    NAOS_ADD_TEST(init_gives_the_kinds_of_commonmark_the_rule_of_emphasis),
+    NAOS_ADD_TEST(add_kind_appends_kinds_up_to_the_maximum),
+    NAOS_ADD_TEST(process_equal_matches_runs_of_the_same_length),
+    NAOS_ADD_TEST(process_equal_does_not_match_runs_of_different_lengths),
+    NAOS_ADD_TEST(process_equal_uses_only_the_lengths_of_the_kind),
+    NAOS_ADD_TEST(process_equal_nests_with_emphasis),
+    NAOS_ADD_TEST(process_equal_leaves_the_delimiters_below_bottom),
+    NAOS_ADD_TEST(process_equal_bounds_the_search_by_class),
+    NAOS_ADD_TEST(process_equal_bounds_the_search_past_closers_that_can_open)
 )
 
 NAOS_MAIN(

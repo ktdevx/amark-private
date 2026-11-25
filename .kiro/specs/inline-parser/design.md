@@ -238,7 +238,7 @@ sequenceDiagram
         I->>T: reset
         I->>I: 走査して項目を足す
         I->>D: process 下限は内容の先頭
-        I->>E: emit 親は段落か見出し
+        I->>E: emit 親は段落か見出し（方言では方言のリーフもある）
         E-->>I: 成功か NOMEM か LIMIT_EXCEEDED
     end
     I-->>P: 結果
@@ -372,7 +372,7 @@ flowchart TD
 
 - 区切りの列の一部だけを使うとき、開く列は右側（内側）から、閉じる列は左側（内側）から使う。残りは外側に残り、テキストになるか、外側の強調に使われる（7.7、7.8）。
 - dest の範囲は、山括弧で囲む書き方では山括弧の内側、囲まない書き方ではその全体である。title の範囲は区切りの内側である。`<>` と空の title は長さ 0 の範囲、書かれていないものは「なし」である（8.2〜8.5）。`[a]()` の dest は「なし」である。
-- 行の内容のバイトは、必ず、段落か見出しの直接の子のどれかの範囲に入る（2.3）。どの項目にも入らないのは、行のプレフィックスと先頭の空白だけである。
+- 行の内容のバイトは、必ず、段落か見出し（dialect-extension の方言では、インラインとして解析する範囲を持つ方言のリーフも）の直接の子のどれかの範囲に入る（2.3）。どの項目にも入らないのは、行のプレフィックスと先頭の空白だけである。
 - 境は、ASCII の起動文字、行の内容の端、行末記号の直後のどれかにしか置かない。UTF-8 の文字の途中と、CR と LF の間では区切らない（2.7）。
 
 ### 内部：読む
@@ -538,7 +538,7 @@ bool amark_inline_scan_link_tail(amark_cursor_t *cursor,
 | Requirements | 2.1, 2.2, 2.4, 2.6, 3.6, 17.3 |
 
 **Responsibilities & Constraints**
-- 項目は、配列の要素で、添字（ID）でつなぐ。ID 0 は「ない」、ID 1 は根（段落か見出しにあたる）である。
+- 項目は、配列の要素で、添字（ID）でつなぐ。ID 0 は「ない」、ID 1 は根（段落か見出し、方言では方言のリーフにあたる）である。
 - 走査が足す項目は、いつも根の最後の子になる。強調とリンクは、根の子の並びの一部を包んで作る。
 - 項目の木は、文書の木の不変条件（子は親の内側、兄弟は重ならず原文の順）を、書き出す時点で満たす。走査の途中は、区切りの項目が縮むことがある。
 - 木を作る API を使うのは、書き出しの関数 `amark_draft_emit`（次の DraftEmit の節）だけである。項目を足す、包む、取り除く関数は、文書に触れない。
@@ -575,13 +575,17 @@ typedef struct amark_draft_item {
     size_t start;
     size_t end;
     uint32_t attr;                   /* リンクと画像：links の添字に 1 を足した値。
-                                        オートリンク：種別に 1 を足した値。なければ 0 */
+                                        オートリンク：種別に 1 を足した値。
+                                        方言の種類：blobs の添字に 1 を足した値。
+                                        なければ 0 */
     amark_node_id_t node;            /* 書き出したノード。DraftEmit だけが書く */
 } amark_draft_item_t;
 
 typedef struct amark_draft {
     amark_array_t items; /* amark_draft_item_t。0 は使わない。1 は根 */
     amark_array_t links; /* amark_draft_link_t */
+    amark_array_t blobs; /* 方言の属性の値の写し（dialect-extension） */
+    amark_arena_t *scratch;
 } amark_draft_t;
 
 void amark_draft_init(amark_draft_t *draft, amark_arena_t *scratch);
@@ -615,6 +619,11 @@ amark_error_t amark_draft_set_link(amark_draft_t *draft,
 void amark_draft_set_autolink(amark_draft_t *draft,
                               amark_draft_id_t id,
                               amark_autolink_type_t type);
+/* 方言の種類の項目に、属性の値の写しを持たせる（dialect-extension）。
+   書き出しで、ノードの属性として文書に写す */
+amark_error_t amark_draft_set_dialect_data(amark_draft_t *draft,
+                                           amark_draft_id_t id,
+                                           const void *data, size_t size);
 const amark_draft_item_t *amark_draft_get(
                                           const amark_draft_t *draft, amark_draft_id_t id);
 ```
@@ -653,16 +662,24 @@ const amark_draft_item_t *amark_draft_get(
 /* src/delimiter.h */
 #define AMARK_DELIMITER_KIND_MAX 8
 
+/* 列の対応の決まり */
+typedef enum amark_delimiter_match {
+    AMARK_DELIMITER_MATCH_EMPHASIS = 0, /* 強調の決まり（6.4 節） */
+    AMARK_DELIMITER_MATCH_EQUAL = 1     /* 同じ長さの列どうし（dialect-extension） */
+} amark_delimiter_match_t;
+
 typedef struct amark_delimiter_kind {
     unsigned char ch;       /* 区切りの文字 */
     bool intraword_limited; /* true：語の中で開閉しない（`_` の規則） */
-    amark_kind_t single;    /* 区切り 1 つずつで作る種類 */
-    amark_kind_t pair;      /* 区切り 2 つずつで作る種類 */
+    amark_kind_t single;    /* 区切り 1 つずつで作る種類（EQUAL：対応した組の種類） */
+    amark_kind_t pair;      /* 区切り 2 つずつで作る種類（EQUAL：single と同じ） */
+    unsigned char match;    /* amark_delimiter_match_t */
+    unsigned char lengths;  /* EQUAL：対応に使える長さのビット。EMPHASIS：0 */
 } amark_delimiter_kind_t;
 
 typedef struct amark_delimiters {
     amark_delimiter_kind_t kinds[AMARK_DELIMITER_KIND_MAX];
-    size_t kind_count;      /* この spec では 2（`*` と `_`） */
+    size_t kind_count;      /* この spec では 2（`*` と `_`）。方言の区切りの分だけ増える */
     amark_array_t stack;    /* 区切りのスタックの要素 */
     uint32_t top;           /* 一番上の要素。0 は空 */
 } amark_delimiters_t;
@@ -670,6 +687,10 @@ typedef struct amark_delimiters {
 /* kinds を CommonMark の 2 つにする */
 void amark_delimiters_init(amark_delimiters_t *delims,
                            amark_arena_t *scratch);
+
+/* 種類を表の後ろに足す。表がいっぱいなら false（dialect-extension が使う） */
+bool amark_delimiters_add_kind(amark_delimiters_t *delims,
+                               const amark_delimiter_kind_t *kind);
 void amark_delimiters_reset(amark_delimiters_t *delims);
 
 /* 区切りの文字から種類の添字を引く。なければ kind_count */
@@ -699,11 +720,12 @@ amark_error_t amark_delimiters_process(amark_delimiters_t *delims,
   - 「3 の倍数の規則」に当たる組は飛ばす（7.5）。当たるのは、どちらかが開けることも閉じることもできる列で、元の長さの和が 3 の倍数で、閉じる列の元の長さが 3 の倍数でないときである。
   - 開く側と閉じる側の今の長さがともに 2 以上なら 2 つずつ、そうでなければ 1 つずつ使う（7.6）。
   - 対応したら、間の区切りをスタックから外し、`amark_draft_wrap` で間の項目を包む。新しい項目の範囲は、`[開く項目の end - 使った数, 閉じる項目の start + 使った数)` である。開く項目の `end` と閉じる項目の `start` を、使った数だけ縮める。長さが 0 になった項目は取り除き、スタックからも外す（3.6、7.8）。
-  - 開く区切りが見つからなかったら、その閉じる区切りの位置を、下限の表に書く。下限の表は、「種類 × 閉じる区切りが開けるかどうか × 閉じる区切りの元の長さを 3 で割った余り」ごとに 1 つの位置を持つ（種類 1 つにつき 6 個）。次に同じ組を探すときは、下限より前を見ない。開けない区切りは、ここでスタックから外す。
-- 下限の表は、`process` の呼び出しごとの局所の配列（`AMARK_DELIMITER_KIND_MAX * 6` 個）である。
+  - 開く区切りが見つからなかったら、その閉じる区切りの位置を、下限の表に書く。下限の表は、種類 1 つにつき 8 個の組（`BOUND_CLASSES`）を持つ。強調の決まりの種類は、「閉じる区切りが開けるかどうか × 閉じる区切りの元の長さを 3 で割った余り」の 6 個を使う。同じ長さの決まりの種類は、「開けるかどうか × 長さ（1〜4）」の 8 個を使う。次に同じ組を探すときは、下限より前を見ない。開けない区切りは、ここでスタックから外す。
+  - 同じ長さの決まり（`AMARK_DELIMITER_MATCH_EQUAL`、dialect-extension の方言の区切り）：閉じる列は、同じ種類で、開けて、元の長さが等しく、その長さが `lengths` にある、いちばん近い列と対応する。3 の倍数の規則は使わない。対応したら、開く列の始まりから閉じる列の終わりまでを 1 つの項目で包み、2 つの列の項目を取り除く。長さが `lengths` にない列は、何とも対応しない（インラインの解析は、そもそもスタックに積まない）。
+- 下限の表は、`process` の呼び出しごとの局所の配列（`AMARK_DELIMITER_KIND_MAX * BOUND_CLASSES` 個）である。`AMARK_DELIMITER_KIND_MAX`（8）は、CommonMark の 2 つと `AMARK_DIALECT_DELIMITER_MAX`（6）の和で、`delimiter.c` がコンパイル時に確かめる。
 
 **Implementation Notes**
-- Integration: dialect-extension は、`kinds` に要素を足すことで、方言の区切りを同じ流れに乗せる（17.2）。この spec は、足す手段（公開 API）を持たない。
+- Integration: dialect-extension は、`amark_delimiters_add_kind` で `kinds` に同じ長さの決まりの要素を足し、方言の区切りを同じ流れに乗せる（17.2）。公開 API は dialect-extension の `amark_dialect_delimiter_t` である。
 - Validation: `classify` は、仕様の 6.2 節の例の前後の文字の組で、表として確かめる。`process` は、項目を手で並べた入力で確かめる。
 - Risks: 下限の表を「長さを 3 で割った余り」と「開けるかどうか」で分けないと、対応を取りこぼす（cmark の issue 389 の入力）。テストに含める。
 
@@ -774,7 +796,7 @@ amark_error_t amark_bracket_close(amark_brackets_t *brackets,
 ##### Service Interface
 ```c
 /* src/draft.h（Draft と同じファイル） */
-/* parent は段落か見出し。parent_depth はその深さ（max_depth が 0 なら使わない）。
+/* parent は段落か見出し（方言では方言のリーフもある）。parent_depth はその深さ（max_depth が 0 なら使わない）。
    max_depth と max_nodes は、0 なら上限なし */
 amark_error_t amark_draft_emit(amark_document_t *doc,
                                amark_draft_t *draft,
@@ -802,15 +824,16 @@ amark_error_t amark_draft_emit(amark_document_t *doc,
 /* src/inline.h */
 amark_error_t amark_inline_parse(amark_document_t *doc,
                                  const amark_resolved_config_t *config,
-                                 amark_arena_t *scratch);
+                                 amark_arena_t *scratch,
+                                 amark_dialect_run_t *run);
 ```
-- Preconditions: `amark_block_parse` が成功している。`scratch` は初期化されたアリーナで、呼ぶ側が解放する。`config` からは、`max_nesting_depth` と `max_node_count` だけを読む（`dialect` は読まない。17.5）。
+- Preconditions: `amark_block_parse` が成功している。`scratch` は初期化されたアリーナで、呼ぶ側が解放する。`config` からは、`max_nesting_depth` と `max_node_count` だけを読む（`dialect` は読まない。17.5）。方言の規則と区切りは、dialect-extension が足した `run` から読む。`run` が `NULL` なら、CommonMark だけで解析する。
 - Postconditions: 成功したら、すべての内容について、インラインのノードが段落と見出しの子になっていて、木は `amark_tree_check` を通る。ブロックのノードは変わっていない（1.6）。失敗したら、`AMARK_ERROR_NOMEM` か `AMARK_ERROR_LIMIT_EXCEEDED` を返す。木は途中まで足されていることがあるが、文書は破棄できる。
-- 内容の一覧にあるのは、段落と見出しだけである。ほかの種類のブロックには触れない（1.3）。
+- 内容の一覧にあるのは、段落と見出し（方言では、インラインとして解析する範囲を持つ方言のリーフ）だけである。ほかの種類のブロックには触れない（1.3）。
 
 ##### State Management
 - 解析の状態は、`amark_inline_parse` の局所の構造体 1 つである。文書、設定の 2 つの上限、`special` の表（256 バイト）、Draft、Delimiter、Bracket、InlineScan の記録、「改行の開始」を持つ。呼び出しの外に状態を残さない（18.4）。
-- `special` の表は、CommonMark の起動文字（`` \ ` & < * _ [ ] ! ``）に印を付けた const の表を、初めに写したものである。区切りの文字の印は、Delimiter の `kinds` から付ける。dialect-extension は、この表と `kinds` に足す（17.1、17.2）。
+- `special` の表は、CommonMark の起動文字（`` \ ` & < * _ [ ] ! ``）に印を付けた const の表を、初めに写したものである。区切りの文字の印は、Delimiter の `kinds` から付ける。dialect-extension は、この表と `kinds` に足す（17.1、17.2）。印は 2 つのビットで、`SPECIAL_COMMONMARK`（1）は構造か区切りの文字、`SPECIAL_DIALECT`（2）は方言のインラインの規則の起動文字である。起動文字の規則は、CommonMark の処理の前に呼ぶ。
 
 **Implementation Notes**
 - **優先の順**：コードスパン、オートリンク、生の HTML は、起動文字に着いた時点で読み切るので、その中の `]`、`*`、`_` は走査されない（14.1、14.3）。エスケープも、`\` に着いた時点で 2 バイトを 1 つの項目にするので、エスケープされた文字は起動文字にならない（4.2、14.4）。文字参照も同じである（5.6）。
@@ -828,13 +851,14 @@ void amark_array_clear(amark_array_t *array);
 
 ```c
 /* src/parse.c の parse_document の中（概略） */
-err = amark_block_parse(doc, config, &scratch);
+err = amark_block_parse(doc, config, &scratch, run);
 amark_arena_deinit(&scratch);
 if (err == AMARK_ERROR_NONE) {
     amark_arena_init(&scratch, &config->allocator);
-    err = amark_inline_parse(doc, config, &scratch);
+    err = amark_inline_parse(doc, config, &scratch, run);
     amark_arena_deinit(&scratch);
 }
+/* run は dialect-extension の実行の状態。方言がなければ NULL */
 ```
 
 ### テストの支援
@@ -871,7 +895,7 @@ size_t amark_test_dump_tree(const amark_document_t *doc, char *buffer,
 ## Data Models
 
 ### Logical Data Model
-- **項目の木**は、内容 1 つぶんの作業用の木である。根は段落か見出しにあたり、ほかの項目は、最終的に 1 つのノードになる（テキストは、隣とまとめられることがある）。区切りの項目と括弧の項目は、初めはテキストで、強調やリンクに使われた分だけ縮むか、取り除かれる。
+- **項目の木**は、内容 1 つぶんの作業用の木である。根は段落か見出し（方言では方言のリーフ）にあたり、ほかの項目は、最終的に 1 つのノードになる（テキストは、隣とまとめられることがある）。区切りの項目と括弧の項目は、初めはテキストで、強調やリンクに使われた分だけ縮むか、取り除かれる。
 - **区切りのスタック**と**括弧のスタック**の要素は、項目を ID で指す。
 - 文書に残るのは、ノードと、リンクと画像とオートリンクの属性だけである。解析のデータ（`amark_parse_data_t`）には、何も足さない。
 

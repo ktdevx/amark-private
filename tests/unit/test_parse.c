@@ -520,7 +520,7 @@ NAOS_TEST(scratch_arena_is_released_on_success)
                             NULL, &g_other),
                         AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_other), AMARK_ERROR_NONE);
-    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_other, &resolved, &g_scratch),
+    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_other, &resolved, &g_scratch, NULL),
                         AMARK_ERROR_NONE);
     check_tree(g_other);
     NAOS_REQUIRE_NOT_NULL(g_scratch.current);
@@ -579,15 +579,25 @@ NAOS_TEST(same_input_gives_the_same_tree)
     }
 }
 
-/* Only its address is used, as an opaque dialect pointer. */
-static const int g_dialect_object = 1;
+/* A valid dialect of one extension with a name only: it adds nothing. */
+static const amark_dialect_extension_t g_name_only = {.name = "name-only"};
+static const amark_dialect_extension_t *const g_name_only_list[] = {
+    &g_name_only,
+};
+static const amark_dialect_t g_dialect = {
+    .struct_size = sizeof(amark_dialect_t),
+    .abi = AMARK_DIALECT_ABI,
+    .extensions = g_name_only_list,
+    .extension_count = 1,
+};
 
 NAOS_TEST(dialect_does_not_change_the_result)
 {
     /*
      * In this spec the dialect member is passed through and never read
      * (Requirement 17.4): a non-NULL dialect gives the same tree, line
-     * records and inline contents as NULL.
+     * records and inline contents as NULL. The dialect is a valid one that
+     * adds nothing, as the configuration check reads its definition.
      */
     static const char content[] =
         "# Title\n\n> quote\nlazy\n\n- a\n\n  b\n-\tc\n\n"
@@ -601,7 +611,7 @@ NAOS_TEST(dialect_does_not_change_the_result)
 
     NAOS_REQUIRE_INT_EQ(amark_parse(S(content), &g_config, &g_doc),
                         AMARK_ERROR_NONE);
-    g_config.dialect = (const amark_dialect_t *)(const void *)&g_dialect_object;
+    g_config.dialect = &g_dialect;
     NAOS_REQUIRE_INT_EQ(amark_parse(S(content), &g_config, &g_other),
                         AMARK_ERROR_NONE);
     check_tree(g_doc);

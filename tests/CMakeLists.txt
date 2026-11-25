@@ -56,9 +56,13 @@ unset(_amark_libm_probe)
 
 # amark_test_support: the counting, failing test allocator ("test_alloc.h"),
 # the dumps of a tree as one line ("tree_dump.h") and of the values of its
-# nodes ("text_dump.h"). A test-only static library, never installed.
+# nodes ("text_dump.h"), valid and invalid dialect definitions
+# ("test_dialect_defs.h") and the dialects of the tests ("test_dialect.h",
+# public API only). A test-only static library, never installed.
 add_library(amark_test_support STATIC
     support/test_alloc.c
+    support/test_dialect.c
+    support/test_dialect_defs.c
     support/text_dump.c
     support/tree_dump.c
 )
@@ -71,6 +75,12 @@ target_link_libraries(amark_test_support PUBLIC amark_testing)
 # Settings shared by every test executable.
 function(_amark_test_target_settings target)
     amark_target_defaults("${target}")
+    if(MSVC)
+        # The tests build their expected strings with strcpy, strcat and
+        # sprintf, which MSVC deprecates (C4996) in favour of its _s
+        # functions; the tests stay portable C99.
+        target_compile_definitions("${target}" PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
     if(AMARK_TEST_LINK_LIBM)
         target_link_libraries("${target}" PRIVATE m)
     endif()
@@ -162,6 +172,11 @@ amark_add_unit_test(test_spec_text_leaf SOURCES unit/test_spec_text_leaf.c)
 amark_add_unit_test(test_spec_text_inline SOURCES unit/test_spec_text_inline.c)
 amark_add_unit_test(test_spec_text_links SOURCES unit/test_spec_text_links.c)
 amark_add_unit_test(test_text_limits SOURCES unit/test_text_limits.c)
+amark_add_unit_test(test_dialect_limits SOURCES unit/test_dialect_limits.c)
+amark_add_unit_test(test_dialect_def SOURCES unit/test_dialect_def.c)
+amark_add_unit_test(test_dialect_block SOURCES unit/test_dialect_block.c)
+amark_add_unit_test(test_dialect_inline SOURCES unit/test_dialect_inline.c)
+amark_add_unit_test(test_dialect_edit SOURCES unit/test_dialect_edit.c)
 
 # Tests that read the input data of the generated tables (tools/data/) to
 # build their expected values get its location as a C string literal.
@@ -180,6 +195,17 @@ amark_add_public_test(test_public_config SOURCES public/test_config.c)
 amark_add_public_test(test_public_parse SOURCES public/test_parse.c)
 # Named test_public_text: test_text is the unit test of the same module.
 amark_add_public_test(test_public_text SOURCES public/test_text.c)
+# Named test_public_dialect: the unit tests of the module are test_dialect_*.
+# It compiles the test dialect (written with the public headers only) into
+# itself, with the support directory, and no internal header directory, on
+# its include path: it does not link amark_test_support, which links
+# amark_testing.
+amark_add_public_test(test_public_dialect
+    SOURCES public/test_dialect.c support/test_dialect.c
+)
+target_include_directories(test_public_dialect PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/support"
+)
 
 # amark_target_defaults sets only C properties (C99 and so on); its warning
 # flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The
@@ -211,6 +237,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND AMARK_NM)
                 "-DNM=${AMARK_NM}"
                 "-DLIBRARY=$<TARGET_FILE:amark>"
                 "-DSYMBOLS_FILE=${CMAKE_CURRENT_SOURCE_DIR}/checks/exported_symbols.txt"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckExports.cmake"
+        )
+        # The exported symbols that start with amark_dialect_ are exactly
+        # the 10 functions of the dialect contract, and none starts with
+        # amark_test_ (no test dialect is exported).
+        add_test(NAME checks.exports.dialect
+            COMMAND "${CMAKE_COMMAND}"
+                "-DNM=${AMARK_NM}"
+                "-DLIBRARY=$<TARGET_FILE:amark>"
+                "-DSYMBOLS_FILE=${CMAKE_CURRENT_SOURCE_DIR}/checks/dialect_symbols.txt"
+                "-DPREFIX=amark_dialect_"
+                "-DEXPECTED_COUNT=10"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/checks/CheckExports.cmake"
         )
     endif()

@@ -105,7 +105,7 @@ static amark_error_t parse_buffer(size_t start, size_t end, size_t max_depth,
     if (err != AMARK_ERROR_NONE) {
         return err;
     }
-    return amark_block_parse(g_doc, &resolved, &g_scratch);
+    return amark_block_parse(g_doc, &resolved, &g_scratch, NULL);
 }
 
 static void set_content(const char *bytes, size_t length)

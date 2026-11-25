@@ -123,7 +123,7 @@ static void parse_buffer(size_t length)
                                               resolved.end, NULL, &g_doc),
                         AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_doc), AMARK_ERROR_NONE);
-    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_doc, &resolved, &g_scratch),
+    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_doc, &resolved, &g_scratch, NULL),
                         AMARK_ERROR_NONE);
     amark_inline_scan_memo_begin(&g_memo);
 }

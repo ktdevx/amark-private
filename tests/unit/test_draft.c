@@ -9,12 +9,14 @@
  * root, wrap a part of the root's children (one, several, none, up to the
  * end), remove from a list of children, ranges, link and autolink
  * attributes, reuse of the places after a reset, failures of the allocator
- * that leave the tree unchanged, the limit on the number of items, and
- * dialect kind IDs kept as they are.
+ * that leave the tree unchanged, the limit on the number of items, dialect
+ * kind IDs kept as they are, and the dialect data of an item (a copy, size
+ * 0, reset, allocator failure, limit).
  *
  * Then the emit step (amark_draft_emit): texts merged (adjacent, apart, a
  * break between), node IDs in document order, the attributes of links,
- * images and autolinks, dialect kinds as inline nodes, the depth and node
+ * images and autolinks, dialect kinds as inline nodes with their dialect
+ * data, the depth and node
  * count limits at their bounds, allocator failures, and the tree check on
  * every tree written.
  */
@@ -540,6 +542,89 @@ NAOS_TEST(dialect_kinds_are_kept_as_they_are)
     NAOS_CHECK_STR_EQ(shape(&g_draft), "2 4(3)");
 }
 
+/*
+ * The draft keeps a copy of the attribute bytes of a dialect item, in the
+ * scratch arena, named by attr (the index in blobs plus 1); changing the
+ * buffer afterwards changes nothing.
+ */
+NAOS_TEST(set_dialect_data_keeps_a_copy)
+{
+    unsigned char bytes[5] = {1, 2, 3, 4, 5};
+    amark_draft_id_t a;
+    amark_draft_id_t b;
+    const amark_draft_item_t *item;
+    const amark_draft_blob_t *blob;
+
+    NAOS_REQUIRE_INT_EQ(amark_draft_reset(&g_draft), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_append(&g_draft, AMARK_KIND_DIALECT_MIN,
+                                           0, 2, &a),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_append(&g_draft,
+                                           AMARK_KIND_DIALECT_MIN + 1u, 2, 4,
+                                           &b),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_set_dialect_data(&g_draft, a, bytes, 5),
+                        AMARK_ERROR_NONE);
+    bytes[0] = 9;
+    NAOS_REQUIRE_INT_EQ(amark_draft_set_dialect_data(&g_draft, b, bytes, 2),
+                        AMARK_ERROR_NONE);
+    memset(bytes, 0, sizeof(bytes));
+
+    item = amark_draft_get(&g_draft, a);
+    NAOS_REQUIRE_UINT_EQ(item->attr, 1);
+    blob = (const amark_draft_blob_t *)amark_array_at(&g_draft.blobs,
+                                                      item->attr - 1);
+    NAOS_REQUIRE_UINT_EQ(blob->size, 5);
+    NAOS_CHECK_TRUE(memcmp(blob->data, "\1\2\3\4\5", 5) == 0);
+
+    item = amark_draft_get(&g_draft, b);
+    NAOS_REQUIRE_UINT_EQ(item->attr, 2);
+    blob = (const amark_draft_blob_t *)amark_array_at(&g_draft.blobs,
+                                                      item->attr - 1);
+    NAOS_REQUIRE_UINT_EQ(blob->size, 2);
+    NAOS_CHECK_TRUE(memcmp(blob->data, "\11\2", 2) == 0);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_draft.links), 0);
+}
+
+/* A size of 0 leaves the item without data, allocates nothing, never fails. */
+NAOS_TEST(set_dialect_data_of_size_zero_is_no_data)
+{
+    amark_draft_id_t a;
+    size_t calls;
+
+    NAOS_REQUIRE_INT_EQ(amark_draft_reset(&g_draft), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_append(&g_draft, AMARK_KIND_DIALECT_MIN,
+                                           0, 2, &a),
+                        AMARK_ERROR_NONE);
+    calls = g_state.malloc_calls;
+    NAOS_CHECK_INT_EQ(amark_draft_set_dialect_data(&g_draft, a, NULL, 0),
+                      AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_draft_get(&g_draft, a)->attr, 0);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_draft.blobs), 0);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+}
+
+/* A reset empties the blobs: the next item's data is at index 0 again. */
+NAOS_TEST(reset_empties_the_dialect_data)
+{
+    amark_draft_id_t a;
+
+    NAOS_REQUIRE_INT_EQ(amark_draft_reset(&g_draft), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_append(&g_draft, AMARK_KIND_DIALECT_MIN,
+                                           0, 2, &a),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_set_dialect_data(&g_draft, a, "xy", 2),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_reset(&g_draft), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_array_len(&g_draft.blobs), 0);
+    NAOS_REQUIRE_INT_EQ(amark_draft_append(&g_draft, AMARK_KIND_DIALECT_MIN,
+                                           0, 2, &a),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_set_dialect_data(&g_draft, a, "z", 1),
+                        AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(amark_draft_get(&g_draft, a)->attr, 1);
+}
+
 /* ---- reuse after reset ---- */
 
 NAOS_TEST(reset_reuses_the_places)
@@ -737,6 +822,64 @@ NAOS_TEST(too_many_links_is_limit_exceeded)
     NAOS_CHECK_INT_EQ(amark_draft_set_link(&g_draft, id, &attr),
                       AMARK_ERROR_LIMIT_EXCEEDED);
     g_draft.links.len = 0;
+    NAOS_CHECK_UINT_EQ(amark_draft_get(&g_draft, id)->attr, 0);
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
+}
+
+/*
+ * Sets dialect data (large enough that the arena soon needs a new block)
+ * until an allocation fails: the error is AMARK_ERROR_NOMEM and the item
+ * keeps attr 0.
+ */
+NAOS_TEST(set_dialect_data_failure_changes_nothing)
+{
+    static unsigned char bytes[1000];
+    size_t i;
+    int failed = 0;
+
+    memset(bytes, 'd', sizeof(bytes));
+    NAOS_REQUIRE_INT_EQ(amark_draft_reset(&g_draft), AMARK_ERROR_NONE);
+    for (i = 0; i < 1000 && !failed; i++) {
+        amark_draft_id_t id;
+        amark_error_t err;
+        size_t len;
+
+        NAOS_REQUIRE_INT_EQ(amark_draft_append(&g_draft,
+                                               AMARK_KIND_DIALECT_MIN, i,
+                                               i + 1, &id),
+                            AMARK_ERROR_NONE);
+        len = amark_array_len(&g_draft.blobs);
+        g_state.fail_at = g_state.malloc_calls + 1;
+        err = amark_draft_set_dialect_data(&g_draft, id, bytes,
+                                           sizeof(bytes));
+        g_state.fail_at = 0;
+        if (err != AMARK_ERROR_NONE) {
+            NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+            NAOS_CHECK_UINT_EQ(amark_draft_get(&g_draft, id)->attr, 0);
+            NAOS_CHECK_UINT_EQ(amark_array_len(&g_draft.blobs), len);
+            failed = 1;
+        } else {
+            NAOS_CHECK_UINT_EQ(amark_draft_get(&g_draft, id)->attr, len + 1);
+        }
+    }
+    NAOS_REQUIRE_TRUE(failed);
+}
+
+/* The blobs, like the links, are named by their index plus 1 in uint32_t. */
+NAOS_TEST(too_much_dialect_data_is_limit_exceeded)
+{
+    amark_draft_id_t id;
+    size_t calls;
+
+    NAOS_REQUIRE_INT_EQ(amark_draft_reset(&g_draft), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_append(&g_draft, AMARK_KIND_DIALECT_MIN,
+                                           0, 4, &id),
+                        AMARK_ERROR_NONE);
+    calls = g_state.malloc_calls;
+    g_draft.blobs.len = (size_t)UINT32_MAX;
+    NAOS_CHECK_INT_EQ(amark_draft_set_dialect_data(&g_draft, id, "ab", 2),
+                      AMARK_ERROR_LIMIT_EXCEEDED);
+    g_draft.blobs.len = 0;
     NAOS_CHECK_UINT_EQ(amark_draft_get(&g_draft, id)->attr, 0);
     NAOS_CHECK_UINT_EQ(g_state.malloc_calls, calls);
 }
@@ -1092,6 +1235,89 @@ NAOS_TEST(emit_writes_dialect_kinds_as_inline_nodes)
     NAOS_CHECK_TRUE(tree_ok());
 }
 
+/*
+ * A dialect item with data gets it as the attribute of its node; the copy
+ * made by set_dialect_data is used, not the caller's buffer. A dialect item
+ * without data has none.
+ */
+NAOS_TEST(emit_writes_dialect_data_as_the_node_attribute)
+{
+    amark_node_id_t para = make_paragraph("a~b~c", 0);
+    unsigned char bytes[3] = {'x', 'y', 'z'};
+    amark_draft_id_t a;
+    amark_draft_id_t w;
+    amark_draft_id_t leaf;
+    amark_draft_id_t bare;
+    const unsigned char *data;
+    size_t size = 99;
+
+    a = add(AMARK_KIND_TEXT, 0, 1);
+    add(AMARK_KIND_TEXT, 2, 3);
+    w = wrap(a, AMARK_DRAFT_NONE, AMARK_KIND_DIALECT_MIN + 7u, 1, 4);
+    leaf = add(AMARK_KIND_DIALECT_MIN, 4, 5);
+    bare = add(AMARK_KIND_DIALECT_MIN + 1u, 5, 5);
+    NAOS_REQUIRE_INT_EQ(amark_draft_set_dialect_data(&g_draft, w, bytes, 3),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(amark_draft_set_dialect_data(&g_draft, leaf, bytes,
+                                                     1),
+                        AMARK_ERROR_NONE);
+    memset(bytes, 0, sizeof(bytes));
+    NAOS_REQUIRE_INT_EQ(emit(para), AMARK_ERROR_NONE);
+    NAOS_CHECK_STR_EQ(dump(),
+                      "(doc (p (text \"a\") (? (text \"b\")) (?) (?)))");
+
+    data = (const unsigned char *)amark_node_dialect_data(
+        g_doc, amark_draft_get(&g_draft, w)->node, &size);
+    NAOS_REQUIRE_TRUE(data != NULL);
+    NAOS_REQUIRE_UINT_EQ(size, 3);
+    NAOS_CHECK_TRUE(memcmp(data, "xyz", 3) == 0);
+
+    data = (const unsigned char *)amark_node_dialect_data(
+        g_doc, amark_draft_get(&g_draft, leaf)->node, &size);
+    NAOS_REQUIRE_TRUE(data != NULL);
+    NAOS_REQUIRE_UINT_EQ(size, 1);
+    NAOS_CHECK_UINT_EQ(data[0], 'x');
+
+    size = 99;
+    NAOS_CHECK_TRUE(amark_node_dialect_data(
+                        g_doc, amark_draft_get(&g_draft, bare)->node,
+                        &size) == NULL);
+    NAOS_CHECK_UINT_EQ(size, 0);
+    NAOS_CHECK_TRUE(tree_ok());
+}
+
+/* The copy into the document can fail: emit reports it. */
+NAOS_TEST(emit_reports_a_dialect_data_failure)
+{
+    amark_node_id_t para = make_paragraph("ab", 0);
+    static unsigned char bytes[8000];
+    amark_draft_id_t leaf;
+    size_t calls;
+
+    memset(bytes, 'q', sizeof(bytes));
+    leaf = add(AMARK_KIND_DIALECT_MIN, 0, 2);
+    NAOS_REQUIRE_INT_EQ(amark_draft_set_dialect_data(&g_draft, leaf, bytes,
+                                                     sizeof(bytes)),
+                        AMARK_ERROR_NONE);
+    /* The node fits in the document's places; the copy, too big for the
+       arena's current block, is the one call to the allocator, and fails. */
+    calls = g_state.malloc_calls;
+    g_state.fail_at = calls + 1;
+    {
+        amark_error_t err = emit(para);
+        size_t made = g_state.malloc_calls - calls;
+
+        g_state.fail_at = 0;
+        if (err == AMARK_ERROR_NONE) {
+            NAOS_FAIL("emit should fail");
+        }
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        NAOS_CHECK_UINT_EQ(made, 1);
+        /* The node was added; only its attribute failed. */
+        NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), 3);
+    }
+}
+
 NAOS_TEST(emit_writes_a_content_that_starts_later)
 {
     /* The paragraph (as a heading would) starts after a prefix. */
@@ -1273,12 +1499,17 @@ NAOS_SUITE(draft,
     NAOS_ADD_TEST(set_link_keeps_a_copy),
     NAOS_ADD_TEST(set_autolink_stores_the_type_plus_one),
     NAOS_ADD_TEST(dialect_kinds_are_kept_as_they_are),
+    NAOS_ADD_TEST(set_dialect_data_keeps_a_copy),
+    NAOS_ADD_TEST(set_dialect_data_of_size_zero_is_no_data),
+    NAOS_ADD_TEST(reset_empties_the_dialect_data),
     NAOS_ADD_TEST(reset_reuses_the_places),
     NAOS_ADD_TEST(append_failure_changes_nothing),
     NAOS_ADD_TEST(wrap_failure_changes_nothing),
     NAOS_ADD_TEST(set_link_failure_changes_nothing),
     NAOS_ADD_TEST(too_many_items_is_limit_exceeded),
     NAOS_ADD_TEST(too_many_links_is_limit_exceeded),
+    NAOS_ADD_TEST(set_dialect_data_failure_changes_nothing),
+    NAOS_ADD_TEST(too_much_dialect_data_is_limit_exceeded),
     NAOS_ADD_TEST(emit_of_an_empty_draft_adds_nothing),
     NAOS_ADD_TEST(emit_merges_adjacent_texts),
     NAOS_ADD_TEST(emit_keeps_texts_apart_when_their_ranges_do_not_meet),
@@ -1287,6 +1518,8 @@ NAOS_SUITE(draft,
     NAOS_ADD_TEST(emit_gives_node_ids_in_document_order),
     NAOS_ADD_TEST(emit_sets_the_attributes_of_links_images_and_autolinks),
     NAOS_ADD_TEST(emit_writes_dialect_kinds_as_inline_nodes),
+    NAOS_ADD_TEST(emit_writes_dialect_data_as_the_node_attribute),
+    NAOS_ADD_TEST(emit_reports_a_dialect_data_failure),
     NAOS_ADD_TEST(emit_writes_a_content_that_starts_later),
     NAOS_ADD_TEST(emit_allows_the_depth_limit_exactly),
     NAOS_ADD_TEST(emit_fails_one_past_the_depth_limit),

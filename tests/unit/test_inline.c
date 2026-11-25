@@ -146,11 +146,11 @@ static amark_error_t parse_with(const char *bytes, size_t length,
                                               resolved.end, NULL, &g_doc),
                         AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_doc), AMARK_ERROR_NONE);
-    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_doc, &resolved, &g_scratch),
+    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_doc, &resolved, &g_scratch, NULL),
                         AMARK_ERROR_NONE);
     amark_arena_deinit(&g_scratch);
     amark_arena_init(&g_scratch, &g_allocator);
-    return amark_inline_parse(g_doc, &resolved, &g_scratch);
+    return amark_inline_parse(g_doc, &resolved, &g_scratch, NULL);
 }
 
 /* Parses the whole of length bytes without limits, requiring success. */
@@ -1297,9 +1297,27 @@ NAOS_TEST(well_formed_input_gives_the_same_tree_in_both_modes)
 
 /* ---- The dialect ---- */
 
-/* Only their addresses are used, as opaque dialect pointers. */
-static const int g_dialect_a = 1;
-static const int g_dialect_b = 2;
+/*
+ * Two valid dialects that add nothing (one extension with a name only, and
+ * two), as the configuration check reads their definitions.
+ */
+static const amark_dialect_extension_t g_name_only_a = {.name = "a"};
+static const amark_dialect_extension_t g_name_only_b = {.name = "b"};
+static const amark_dialect_extension_t *const g_list_a[] = {&g_name_only_a};
+static const amark_dialect_extension_t *const g_list_b[] = {&g_name_only_a,
+                                                          &g_name_only_b};
+static const amark_dialect_t g_dialect_a = {
+    .struct_size = sizeof(amark_dialect_t),
+    .abi = AMARK_DIALECT_ABI,
+    .extensions = g_list_a,
+    .extension_count = 1,
+};
+static const amark_dialect_t g_dialect_b = {
+    .struct_size = sizeof(amark_dialect_t),
+    .abi = AMARK_DIALECT_ABI,
+    .extensions = g_list_b,
+    .extension_count = 2,
+};
 
 /*
  * Parses the length bytes at bytes (copied to g_buffer) through amark_parse
@@ -1374,8 +1392,8 @@ NAOS_TEST(the_dialect_does_not_change_the_inline_result)
     bool forms[5];
     amark_range_t title;
 
-    dialects[0] = (const amark_dialect_t *)(const void *)&g_dialect_a;
-    dialects[1] = (const amark_dialect_t *)(const void *)&g_dialect_b;
+    dialects[0] = &g_dialect_a;
+    dialects[1] = &g_dialect_b;
     parse_dialect(content, sizeof(content) - 1, NULL, &g_doc);
     NAOS_CHECK_TRUE(tree_ok());
     NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, want, sizeof(want)),
@@ -1533,8 +1551,9 @@ static void parse_both(const char *bytes, size_t length)
                                               resolved.end, NULL, &g_blocks),
                         AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_blocks), AMARK_ERROR_NONE);
-    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_blocks, &resolved, &g_scratch),
-                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(
+        amark_block_parse(g_blocks, &resolved, &g_scratch, NULL),
+        AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse((const char *)g_buffer, g_length, &config,
                                     &g_doc),
                         AMARK_ERROR_NONE);

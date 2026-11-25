@@ -13,6 +13,7 @@
 
 #include "arena.h"
 #include "config_internal.h"
+#include "dialect_internal.h"
 #include "document.h"
 #include "line.h"
 
@@ -90,7 +91,15 @@ void amark_line_pos_advance(amark_line_pos_t *pos, const unsigned char *bytes,
  * arena for the working state of the parse (the stack of open blocks, the
  * definitions for the table and the table's working arrays); the
  * caller releases it. With AMARK_UTF8_STRICT the caller has checked that the
- * range is valid UTF-8.
+ * range is valid UTF-8. run is the run state of the parse's dialect, or
+ * NULL without a dialect; with NULL the parse is the CommonMark one (13.1).
+ * With a run, the block start rules of the dialect are called before the
+ * CommonMark starts, and their blocks are opened (4.1 to 4.12); a dialect
+ * block goes on by the continue rule of its kind (5.1 to 5.11), and the
+ * close rule of its kind is called once as it closes, whose valid reply is
+ * applied to the tree (6.1, 6.3, 6.4, 6.8, 6.12). A rejected
+ * result adds a diagnostic to doc (amark_dialect_reject) and the parse goes
+ * on; a rule that returns AMARK_ERROR_NOMEM ends it with AMARK_ERROR_NOMEM.
  *
  * On success, returns AMARK_ERROR_NONE: the tree satisfies every invariant
  * of the tree check, the range of the root is still the parsed range, and
@@ -105,6 +114,7 @@ void amark_line_pos_advance(amark_line_pos_t *pos, const unsigned char *bytes,
  */
 amark_error_t amark_block_parse(amark_document_t *doc,
                                 const amark_resolved_config_t *config,
-                                amark_arena_t *scratch);
+                                amark_arena_t *scratch,
+                                amark_dialect_run_t *run);
 
 #endif /* AMARK_BLOCK_H */
