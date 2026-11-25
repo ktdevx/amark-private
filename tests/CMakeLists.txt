@@ -181,6 +181,8 @@ amark_add_public_test(test_public_config SOURCES public/test_config.c)
 amark_add_public_test(test_public_parse SOURCES public/test_parse.c)
 # Named test_public_text: test_text is the unit test of the same module.
 amark_add_public_test(test_public_text SOURCES public/test_text.c)
+# Named test_public_dialect: the unit tests of the module are test_dialect_*.
+amark_add_public_test(test_public_dialect SOURCES public/test_dialect.c)
 
 # amark_target_defaults sets only C properties (C99 and so on); its warning
 # flags (-Wall -Wextra -Wpedantic [-Werror], /W4 [/WX]) apply to C++ too. The
