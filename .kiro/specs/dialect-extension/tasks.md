@@ -132,7 +132,7 @@
   - _Depends: 1.2_
   - _Requirements: 2.5, 12.2_
 
-- [ ] 3.3 起動文字でインラインの規則を呼ぶ処理を作る
+- [x] 3.3 起動文字でインラインの規則を呼ぶ処理を作る
   - 初期化で、各インラインの規則の起動文字に印を付ける。走査が項目の先頭として訪れた位置で、CommonMark の処理の前に、拡張の順、規則の順に、起動文字が一致する規則を呼ぶ
   - 結果（位置から始まる、長さが 1 以上、内容の範囲の中、終わりが行の内容の中）を確かめ、通れば、登録の種類の子のない項目を足して、範囲の終わりから走査を続ける。「いいえ」と不正のときは次の規則へ進み、どれも作らなければ、これまでの処理に入る
   - 規則に渡す入力に、2.2 で作った行の読み方（次の行の内容の範囲を返す公開の関数が使うもの）をつなぐ
@@ -220,3 +220,4 @@
 - 2.7: テスト用の方言の不正な結果を選ぶ印は `!start-{origin,line,empty,status,nomem}`、`!cont-{origin,line,status,nomem}`、`!close-{index,kind,nesting,bounds,parent,order,inline,prefix,paragraph,status,nomem}`（test_dialect.h に説明がある）。診断は見つかった順で、位置の順ではない。
 - 3.1: EQUAL の区切りは、長さが lengths にない列を何とも対応させない（process 側にも防御がある）。3.4 では、その列をスタックに積まない（8.5）。区切りの種類の構造体の最後に match と lengths が増えたので、初期化子は 6 つの値を書く。
 - 3.2: amark_draft_set_dialect_data は方言の種類の項目だけに使う（大きさ 0 で attr を 0 にするので、リンクの項目に使うと属性が消える）。値は作業用のアリーナに写し、attr は blobs の添字 + 1。
+- 3.3: インラインの規則の起動文字は、解析器の special の写しに SPECIAL_DIALECT（2）を足して印を付ける。テスト用の方言の VAR の不正な結果の印は `$!inline-{origin,empty,parent,status,nomem}`、行をまたぐ形は `$!inline-next` と `$!inline-prefix`。test_dialect_inline.c の count_inline_calls は amark_parse の手順を手で写しているので、4.3 で後処理を足したら合わせる。

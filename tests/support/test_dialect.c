@@ -733,6 +733,122 @@ static amark_error_t grid_close(const amark_dialect_closing_t *closing,
 
 #undef GRID_TRY
 
+/* ---------------------------------------------------------------------- */
+/* VAR */
+
+/* Whether c may be a byte of the name of a VAR. */
+static bool is_var_name_byte(char c)
+{
+    return c != '$' && c != ' ' && c != '\t' && c != '\n' && c != '\r';
+}
+
+/*
+ * Whether the name [start, end) of a VAR is "!" and marker, as the markers
+ * of the other rules: the whole name.
+ */
+static bool is_var_marker(const char *content, size_t start, size_t end,
+                          const char *marker)
+{
+    size_t n = strlen(marker);
+
+    return end - start == n + 1 && content[start] == '!' &&
+           memcmp(content + start + 1, marker, n) == 0;
+}
+
+/*
+ * The forms of a VAR that end on the next line, from a name that ends the
+ * line's content: "!inline-next" ends 1 byte into the content of the next
+ * line, "!inline-prefix" 1 byte before it (inside its prefix or leading
+ * white space). Leaves *out unmatched for any other name, or when no line
+ * follows or the content of the next line is empty (inline-next) or starts
+ * where the line does (inline-prefix: no prefix and no white space).
+ */
+static void var_next_line(const amark_dialect_inline_t *in, size_t name_end,
+                          amark_dialect_inline_result_t *out)
+{
+    const char *c = in->content;
+    size_t start = in->position + 1;
+    amark_range_t next;
+
+    if (name_end != in->line_end ||
+        !amark_dialect_inline_next_line(in, in->line_end, &next)) {
+        return;
+    }
+    if (is_var_marker(c, start, name_end, "inline-next") &&
+        next.start < next.end) {
+        out->matched = true;
+        out->range.end = next.start + 1;
+    } else if (is_var_marker(c, start, name_end, "inline-prefix") &&
+               next.start > in->line_end + 1) {
+        out->matched = true;
+        out->range.end = next.start - 1;
+    }
+}
+
+/*
+ * VAR, at '$': "$name$" on one line, the name being one or more bytes other
+ * than '$', a space, a tab and a line ending, is a VAR whose attributes are
+ * the length of its name in decimal ASCII, written in the state. The
+ * markers of invalid results and the forms that end on the next line are
+ * names (test_dialect.h).
+ */
+static amark_error_t var_inline(const amark_dialect_inline_t *in,
+                                void *state,
+                                amark_dialect_inline_result_t *out)
+{
+    amark_test_counts_t *counts = (amark_test_counts_t *)state;
+    const char *c = in->content;
+    size_t start = in->position + 1;
+    size_t end = start;
+    size_t length;
+    size_t n;
+
+    if (counts != NULL) {
+        counts->inlines++;
+    }
+    while (end < in->line_end && is_var_name_byte(c[end])) {
+        end++;
+    }
+    out->range.start = in->position;
+    if (end == start) {
+        return AMARK_ERROR_NONE;
+    }
+    if (end == in->line_end || c[end] != '$') {
+        var_next_line(in, end, out);
+        length = end - start;
+    } else {
+        out->matched = true;
+        out->range.end = end + 1;
+        length = end - start;
+        if (is_var_marker(c, start, end, "inline-origin")) {
+            out->range.start = in->position + 1;
+        } else if (is_var_marker(c, start, end, "inline-empty")) {
+            out->range.end = in->position;
+        } else if (is_var_marker(c, start, end, "inline-parent")) {
+            out->range.end = in->inline_content.end + 1;
+        } else if (is_var_marker(c, start, end, "inline-status")) {
+            return AMARK_ERROR_INVALID_INPUT;
+        } else if (is_var_marker(c, start, end, "inline-nomem")) {
+            return AMARK_ERROR_NOMEM;
+        }
+    }
+    if (out->matched && counts != NULL) {
+        n = sizeof counts->var_data;
+        do {
+            counts->var_data[--n] = (char)('0' + length % 10);
+            length /= 10;
+        } while (length > 0);
+        out->data = counts->var_data + n;
+        out->data_size = sizeof counts->var_data - n;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/* The inline rules, in the order they are tried. */
+static const amark_dialect_inline_rule_t k_test_inlines[] = {
+    {'$', AMARK_TEST_KIND_VAR, var_inline},
+};
+
 static const amark_dialect_kind_t k_test_kinds[] = {
     {AMARK_TEST_KIND_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
      box_continue, box_close},
@@ -773,7 +889,8 @@ static const amark_dialect_extension_t k_test_extension = {
     k_test_starts,                                  /* block_starts */
     sizeof k_test_starts / sizeof k_test_starts[0],
     grid_close,                                     /* close_paragraph */
-    NULL, 0,                                        /* inline_rules */
+    k_test_inlines,                                 /* inline_rules */
+    sizeof k_test_inlines / sizeof k_test_inlines[0],
     NULL, 0,                                        /* delimiters */
     NULL,                                           /* postprocess */
     test_state_new,                                 /* state_new */

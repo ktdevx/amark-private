@@ -60,6 +60,10 @@
  *         end of that line. The inline content of a cell is its bytes
  *         less the spaces and tabs at its ends (none when that is empty).
  *         A paragraph with no such line stays as it is.
+ *   VAR   the inline rule of '$': "$name$" on one line, the name being one
+ *         or more bytes other than '$', a space, a tab and a line ending,
+ *         is a VAR over the whole "$name$". Its attributes are the length
+ *         of the name in decimal ASCII ("$ab$": "2").
  *
  * Close rules: BOX and FENCE set their attributes to the number of their
  * lines, in decimal ASCII; LINE sets its inline content, from the first
@@ -116,6 +120,25 @@
  *                      paragraph;
  *     close-status     the status AMARK_ERROR_INVALID_INPUT;
  *     close-nomem      the status AMARK_ERROR_NOMEM.
+ *
+ *   Inline markers, as the whole name of a VAR ("$!inline-origin$"): the
+ *   rule matches "$name$" but with
+ *     inline-origin  a range that starts 1 byte after the position;
+ *     inline-empty   a range of length 0;
+ *     inline-parent  a range that ends 1 byte past the end of the inline
+ *                    content;
+ *     inline-status  the status AMARK_ERROR_INVALID_INPUT, not defined;
+ *     inline-nomem   the status AMARK_ERROR_NOMEM.
+ *
+ *   VARs that end on the next line: a "$" and a name that runs to the end
+ *   of the line's content, with no closing '$', where a line of the inline
+ *   content follows (amark_dialect_inline_next_line):
+ *     "$!inline-next"    a VAR up to and with the first byte of the content
+ *                        of the next line (which must not be empty): valid;
+ *     "$!inline-prefix"  a VAR up to the byte right before the content of
+ *                        the next line, which ends inside its prefix or
+ *                        leading white space (there must be one): invalid.
+ *   Any other name without a closing '$' is no VAR.
  */
 #define AMARK_TEST_KIND_BOX (AMARK_KIND_DIALECT_MIN)        /* container */
 #define AMARK_TEST_KIND_NOTE (AMARK_KIND_DIALECT_MIN + 1)   /* container */
@@ -139,8 +162,9 @@
 
 /*
  * The per-document state of the test dialect: how many times each rule of
- * its extension was called in one parse. state_new makes it zeroed with the
- * parse's allocator and state_free releases it.
+ * its extension was called in one parse, and the place where the VAR rule
+ * writes the attributes it returns (they must outlive the call). state_new
+ * makes it zeroed with the parse's allocator and state_free releases it.
  */
 typedef struct amark_test_counts {
     uint64_t block_starts;    /* block start rules */
@@ -149,6 +173,8 @@ typedef struct amark_test_counts {
     uint64_t paragraphs;      /* the paragraph close rule */
     uint64_t inlines;         /* inline rules */
     uint64_t postprocesses;   /* the postprocessing rule */
+    char var_data[24];        /* the attributes of the last VAR matched,
+                                 at the end; the parse copies them */
 } amark_test_counts_t;
 
 /* The dialects; each is static const data and valid. */

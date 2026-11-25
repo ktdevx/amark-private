@@ -8,18 +8,28 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
+#include <amark/dialect.h>
 #include <amark/tree.h>
 
 #include "bracket.h"
 #include "cursor.h"
 #include "delimiter.h"
+#include "dialect_internal.h"
+#include "dialect_reply.h"
 #include "draft.h"
 #include "inline_scan.h"
+#include "line.h"
+#include "line_index.h"
 #include "parse_data.h"
 
 /* The number of entries of a table indexed by a byte. */
 #define BYTE_TABLE_SIZE 256
+
+/* The marks of the special table: CommonMark, and a dialect's trigger. */
+#define SPECIAL_COMMONMARK 1u
+#define SPECIAL_DIALECT 2u
 
 /*
  * The special bytes of CommonMark 0.31.2 that start an inline structure,
@@ -42,7 +52,12 @@ typedef struct inline_parser {
     amark_document_t *doc;
     size_t max_depth; /* 0: no limit */
     size_t max_nodes; /* 0: no limit */
-    unsigned char special[BYTE_TABLE_SIZE]; /* not 0: a special byte */
+    unsigned char special[BYTE_TABLE_SIZE]; /* not 0: a special byte; the
+                                               SPECIAL_DIALECT bit: the
+                                               trigger of an inline rule */
+    amark_dialect_run_t *run; /* NULL: no dialect */
+    amark_range_t content;    /* the inline content being parsed */
+    struct amark_dialect_lines lines; /* its lines; read with a run only */
     amark_draft_t draft;
     amark_delimiters_t delimiters;
     amark_brackets_t brackets;
@@ -56,11 +71,17 @@ typedef struct inline_parser {
 
 static void parser_init(inline_parser_t *parser, amark_document_t *doc,
                         const amark_resolved_config_t *config,
-                        amark_arena_t *scratch)
+                        amark_arena_t *scratch, amark_dialect_run_t *run)
 {
     size_t i;
 
     parser->doc = doc;
+    parser->run = run;
+    parser->content.start = 0;
+    parser->content.end = 0;
+    parser->lines.doc = doc;
+    parser->lines.first_line = 0;
+    parser->lines.line_count = 0;
     parser->max_depth = config->max_nesting_depth;
     parser->max_nodes = config->max_node_count;
     for (i = 0; i < BYTE_TABLE_SIZE; i++) {
@@ -71,7 +92,19 @@ static void parser_init(inline_parser_t *parser, amark_document_t *doc,
     for (i = 0; i < BYTE_TABLE_SIZE; i++) {
         if (amark_delimiters_kind_of(&parser->delimiters, (unsigned char)i) !=
             parser->delimiters.kind_count) {
-            parser->special[i] = 1;
+            parser->special[i] = SPECIAL_COMMONMARK;
+        }
+    }
+    if (run != NULL) {
+        size_t e;
+
+        for (e = 0; e < run->dialect->extension_count; e++) {
+            const amark_dialect_extension_t *ext = run->dialect->extensions[e];
+
+            for (i = 0; i < ext->inline_rule_count; i++) {
+                parser->special[ext->inline_rules[i].trigger] |=
+                    SPECIAL_DIALECT;
+            }
         }
     }
     amark_brackets_init(&parser->brackets, scratch);
@@ -342,6 +375,147 @@ static amark_error_t scan_close_bracket(inline_parser_t *parser)
 }
 
 /*
+ * Whether end, the end of a range that starts at the position, is in the
+ * content of a line or at its end (not in a line ending, a container prefix
+ * or the leading white space of a line): on the position's line up to its
+ * end, or on a later line from the content_start of its record to the end
+ * of its content (7.7). end is at most the end of the inline content.
+ */
+static bool ends_in_line_content(const inline_parser_t *parser, size_t end)
+{
+    const amark_cursor_t *cursor = &parser->cursor;
+    size_t line;
+    amark_line_bounds_t bounds;
+    amark_line_record_t record;
+
+    if (end <= cursor->line_end) {
+        return true;
+    }
+    line = amark_line_index_line_at(amark_document_line_index(parser->doc),
+                                    end);
+    return amark_line_bounds(parser->doc, line, &bounds) &&
+           amark_line_get(parser->doc, line, &record) &&
+           record.content_start <= end && end <= bounds.content_end;
+}
+
+/*
+ * Checks the result *out of an inline rule that returned AMARK_ERROR_NONE
+ * and matched, at position: stores in *reason why it is invalid and returns
+ * false, or returns true (7.7). Attributes of a size above 0 at NULL break
+ * the contract of the rule, as an unknown status does.
+ */
+static bool inline_result_valid(const inline_parser_t *parser,
+                                size_t position,
+                                const amark_dialect_inline_result_t *out,
+                                amark_dialect_reason_t *reason)
+{
+    if (out->data == NULL && out->data_size != 0) {
+        *reason = AMARK_DIALECT_REASON_STATUS;
+    } else if (out->range.start != position) {
+        *reason = AMARK_DIALECT_REASON_ORIGIN;
+    } else if (out->range.end <= out->range.start) {
+        *reason = AMARK_DIALECT_REASON_EMPTY;
+    } else if (out->range.end > parser->content.end) {
+        *reason = AMARK_DIALECT_REASON_PARENT;
+    } else if (!ends_in_line_content(parser, out->range.end)) {
+        *reason = AMARK_DIALECT_REASON_PREFIX;
+    } else {
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Adds the result *out of an inline rule, which passed the check, as an item
+ * of kind with no children and a copy of its attributes, and moves the
+ * position to the end of its range (7.6).
+ */
+static amark_error_t accept_inline(inline_parser_t *parser, amark_kind_t kind,
+                                   const amark_dialect_inline_result_t *out)
+{
+    amark_draft_id_t id;
+    amark_error_t err;
+
+    err = amark_draft_append(&parser->draft, kind, out->range.start,
+                             out->range.end, &id);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    if (out->data_size != 0) {
+        err = amark_draft_set_dialect_data(&parser->draft, id, out->data,
+                                           out->data_size);
+        if (err != AMARK_ERROR_NONE) {
+            return err;
+        }
+    }
+    amark_cursor_seek(&parser->cursor, out->range.end);
+    parser->has_break_start = false;
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * The trigger of an inline rule at the position: calls the rules whose
+ * trigger is that byte, in the order of the extensions and then of their
+ * rules, each once, until one makes an item (7.2, 7.11). A rule that does
+ * not match, or whose result is invalid (with a diagnostic, 7.8, 10.4),
+ * passes to the next. Stores in *made whether an item was made; if not, the
+ * position has not moved. A rule that returns AMARK_ERROR_NOMEM ends the
+ * parse with it (10.10), as does a failure to add the diagnostic.
+ */
+static amark_error_t call_inline_rules(inline_parser_t *parser, bool *made)
+{
+    amark_dialect_run_t *run = parser->run;
+    const amark_cursor_t *cursor = &parser->cursor;
+    size_t position = cursor->pos;
+    unsigned char trigger = cursor->bytes[position];
+    amark_dialect_inline_t in;
+    size_t e;
+
+    *made = false;
+    in.content = (const char *)cursor->bytes;
+    in.content_length = amark_document_content_length(parser->doc);
+    in.position = position;
+    in.line_end = cursor->line_end;
+    in.inline_content = parser->content;
+    in.lines = &parser->lines;
+    for (e = 0; e < run->dialect->extension_count; e++) {
+        const amark_dialect_extension_t *ext = run->dialect->extensions[e];
+        size_t r;
+
+        for (r = 0; r < ext->inline_rule_count; r++) {
+            const amark_dialect_inline_rule_t *rule = &ext->inline_rules[r];
+            amark_dialect_inline_result_t out;
+            amark_dialect_reason_t reason = AMARK_DIALECT_REASON_STATUS;
+            amark_error_t status;
+
+            if (rule->trigger != trigger) {
+                continue;
+            }
+            memset(&out, 0, sizeof(out));
+            out.data = NULL;
+            status = rule->fn(&in, run->states[e], &out);
+            if (status == AMARK_ERROR_NOMEM) {
+                return status;
+            }
+            if (status == AMARK_ERROR_NONE && !out.matched) {
+                continue;
+            }
+            if (status == AMARK_ERROR_NONE &&
+                inline_result_valid(parser, position, &out, &reason)) {
+                *made = true;
+                return accept_inline(parser, rule->kind, &out);
+            }
+            status = amark_dialect_reject(run, e, AMARK_DIALECT_HOOK_INLINE,
+                                          reason, position);
+            if (status != AMARK_ERROR_NONE) {
+                return status;
+            }
+        }
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
  * A special byte at the position: the one place where the rules of the
  * inline structures (and those a dialect adds) are called, chosen by the
  * byte. A structure read here is read to its end at once, so the special
@@ -354,9 +528,17 @@ static amark_error_t scan_special(inline_parser_t *parser)
     amark_cursor_t *cursor = &parser->cursor;
     size_t start = cursor->pos;
     amark_draft_id_t unused;
-    size_t kind = amark_delimiters_kind_of(&parser->delimiters,
-                                           cursor->bytes[start]);
+    size_t kind;
 
+    if ((parser->special[cursor->bytes[start]] & SPECIAL_DIALECT) != 0) {
+        bool made;
+        amark_error_t err = call_inline_rules(parser, &made);
+
+        if (err != AMARK_ERROR_NONE || made) {
+            return err;
+        }
+    }
+    kind = amark_delimiters_kind_of(&parser->delimiters, cursor->bytes[start]);
     if (kind != parser->delimiters.kind_count) {
         return scan_delimiter_run(parser, kind);
     }
@@ -456,6 +638,12 @@ static amark_error_t parse_content(inline_parser_t *parser,
     amark_delimiters_reset(&parser->delimiters);
     amark_brackets_reset(&parser->brackets);
     amark_inline_scan_memo_begin(&parser->memo);
+    parser->content.start = content->start;
+    parser->content.end = content->end;
+    if (parser->run != NULL) {
+        amark_dialect_lines_init(&parser->lines, parser->doc,
+                                 parser->content);
+    }
     err = scan_content(parser, content->start, content->end);
     if (err == AMARK_ERROR_NONE) {
         err = amark_delimiters_process(&parser->delimiters, &parser->draft,
@@ -481,8 +669,7 @@ amark_error_t amark_inline_parse(amark_document_t *doc,
     size_t index;
     amark_error_t err;
 
-    (void)run; /* read once a dialect's rules are called */
-    parser_init(&parser, doc, config, scratch);
+    parser_init(&parser, doc, config, scratch, run);
     for (index = 0; amark_inline_content_at(doc, index, &content); index++) {
         if (content.start == content.end) {
             continue;
