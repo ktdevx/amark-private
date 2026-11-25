@@ -96,6 +96,15 @@ amark_error_t amark_dialect_reply_finish(amark_dialect_run_t *run,
     return AMARK_ERROR_NONE;
 }
 
+void amark_dialect_reply_status(amark_dialect_reply_t *reply,
+                                amark_error_t status)
+{
+    if (status != AMARK_ERROR_NONE && !reply->rejected) {
+        reply->rejected = true;
+        reply->reason = AMARK_DIALECT_REASON_STATUS;
+    }
+}
+
 /* ---------------------------------------------------------------------- */
 /* Checks */
 

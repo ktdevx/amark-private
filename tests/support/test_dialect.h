@@ -41,6 +41,19 @@
  *   NOTE  "@note:" at the start of a block opens a note, which interrupts
  *         a paragraph. It goes on over a line indented at least 2 columns
  *         (the first 2 columns are its prefix) and over blank lines.
+ *   FENCE "@@@" at the start of a block opens a fence, which does not
+ *         interrupt a paragraph. It goes on over every line (blank ones
+ *         included), consuming nothing, up to and with the next line whose
+ *         first non-space byte (at most 3 columns of indentation) starts
+ *         "@@@"; its data records that line. Its lines are recorded at
+ *         their first non-space byte.
+ *   LINE  "@line " at the start of a block opens a one-line leaf, which
+ *         interrupts a paragraph. Its content after the marker is parsed
+ *         as inlines.
+ *
+ * Close rules: BOX and FENCE set their attributes to the number of their
+ * lines, in decimal ASCII; LINE sets its inline content, from the first
+ * non-space byte after its marker to its end. NOTE has none.
  */
 #define AMARK_TEST_KIND_BOX (AMARK_KIND_DIALECT_MIN)        /* container */
 #define AMARK_TEST_KIND_NOTE (AMARK_KIND_DIALECT_MIN + 1)   /* container */

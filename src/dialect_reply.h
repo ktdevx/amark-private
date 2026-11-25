@@ -105,6 +105,16 @@ amark_error_t amark_dialect_reply_begin(amark_dialect_run_t *run,
                                         amark_dialect_reply_t **out);
 
 /*
+ * Records the status the close rule returned, before
+ * amark_dialect_reply_finish: a status other than AMARK_ERROR_NONE rejects
+ * the reply (STATUS, 10.4) unless an earlier request was invalid, whose
+ * reason is kept. The caller ends the parse on AMARK_ERROR_NOMEM instead of
+ * calling this.
+ */
+void amark_dialect_reply_status(amark_dialect_reply_t *reply,
+                                amark_error_t status);
+
+/*
  * Checks reply after the close rule returned and stores in *valid whether
  * it may be applied:
  *   - With a lasting failure, stores false and returns that failure.

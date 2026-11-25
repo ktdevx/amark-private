@@ -94,7 +94,10 @@ void amark_line_pos_advance(amark_line_pos_t *pos, const unsigned char *bytes,
  * range is valid UTF-8. run is the run state of the parse's dialect, or
  * NULL without a dialect; with NULL the parse is the CommonMark one (13.1).
  * With a run, the block start rules of the dialect are called before the
- * CommonMark starts, and their blocks are opened (4.1 to 4.12). A rejected
+ * CommonMark starts, and their blocks are opened (4.1 to 4.12); a dialect
+ * block goes on by the continue rule of its kind (5.1 to 5.11), and the
+ * close rule of its kind is called once as it closes, whose valid reply is
+ * applied to the tree (6.1, 6.3, 6.4, 6.8, 6.12). A rejected
  * result adds a diagnostic to doc (amark_dialect_reject) and the parse goes
  * on; a rule that returns AMARK_ERROR_NOMEM ends it with AMARK_ERROR_NOMEM.
  *

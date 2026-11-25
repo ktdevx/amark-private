@@ -158,15 +158,142 @@ static amark_error_t note_continue(const amark_dialect_line_t *line,
     return AMARK_ERROR_NONE;
 }
 
+/* Counts a call of a close rule of a block kind, if there is a state. */
+static void count_close(void *state)
+{
+    if (state != NULL) {
+        ((amark_test_counts_t *)state)->block_closes++;
+    }
+}
+
+/*
+ * Sets the attributes of block 0 of reply to count in decimal ASCII. A
+ * rejected request is left to the reply; only AMARK_ERROR_NOMEM is
+ * returned.
+ */
+static amark_error_t set_count(amark_dialect_reply_t *reply, size_t count)
+{
+    char digits[24];
+    size_t n = sizeof digits;
+    amark_error_t err;
+
+    do {
+        digits[--n] = (char)('0' + count % 10);
+        count /= 10;
+    } while (count > 0);
+    err = amark_dialect_reply_set_data(reply, 0, digits + n,
+                                       sizeof digits - n);
+    return err == AMARK_ERROR_NOMEM ? err : AMARK_ERROR_NONE;
+}
+
+/* BOX closes with the number of its lines as its attributes. */
+static amark_error_t box_close(const amark_dialect_closing_t *closing,
+                               void *state, amark_dialect_reply_t *reply)
+{
+    count_close(state);
+    return set_count(reply, closing->line_count);
+}
+
+/* The bit of FENCE's data that records its closing line. */
+#define FENCE_CLOSED 1u
+
+/*
+ * FENCE: "@@@" at the position opens a fence; the three bytes are its
+ * start marker. It does not interrupt a paragraph.
+ */
+static amark_error_t fence_start(const amark_dialect_line_t *line,
+                                 void *state,
+                                 amark_dialect_block_start_result_t *out)
+{
+    count_start(state);
+    if (line->line_end - line->position >= 3 &&
+        memcmp(line->content + line->position, "@@@", 3) == 0) {
+        out->matched = true;
+        out->consumed.start = line->position;
+        out->consumed.end = line->position + 3;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * FENCE goes on over every line, consuming nothing, until the line after
+ * its closing line: one whose first non-space byte, at most 3 columns from
+ * the position, starts "@@@". The data records that line was seen.
+ */
+static amark_error_t fence_continue(
+    const amark_dialect_line_t *line, const amark_dialect_open_block_t *block,
+    void *state, amark_dialect_block_continue_result_t *out)
+{
+    count_continue(state);
+    if ((block->data & FENCE_CLOSED) != 0) {
+        return AMARK_ERROR_NONE;
+    }
+    out->matched = true;
+    out->consumed.start = line->position;
+    out->consumed.end = line->position;
+    if (line->indent < 4 && line->line_end - line->first_nonspace >= 3 &&
+        memcmp(line->content + line->first_nonspace, "@@@", 3) == 0) {
+        out->data = block->data | FENCE_CLOSED;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/* FENCE closes with the number of its lines as its attributes. */
+static amark_error_t fence_close(const amark_dialect_closing_t *closing,
+                                 void *state, amark_dialect_reply_t *reply)
+{
+    count_close(state);
+    return set_count(reply, closing->line_count);
+}
+
+/*
+ * LINE: "@line " at the position opens a one-line leaf; the six bytes are
+ * its start marker. It interrupts a paragraph.
+ */
+static amark_error_t line_start(const amark_dialect_line_t *line,
+                                void *state,
+                                amark_dialect_block_start_result_t *out)
+{
+    count_start(state);
+    if (line->line_end - line->position >= 6 &&
+        memcmp(line->content + line->position, "@line ", 6) == 0) {
+        out->matched = true;
+        out->consumed.start = line->position;
+        out->consumed.end = line->position + 6;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * LINE closes with its content, from where its line's content starts (the
+ * first non-space byte after the marker) to its end, as inline content.
+ */
+static amark_error_t line_close(const amark_dialect_closing_t *closing,
+                                void *state, amark_dialect_reply_t *reply)
+{
+    amark_dialect_line_span_t span;
+    amark_range_t range;
+    amark_error_t err;
+
+    count_close(state);
+    if (!amark_dialect_closing_line(closing, 0, &span)) {
+        return AMARK_ERROR_NONE;
+    }
+    range.start = span.content_start;
+    range.end = closing->range.end;
+    err = amark_dialect_reply_set_inline(reply, 0, range);
+    return err == AMARK_ERROR_NOMEM ? err : AMARK_ERROR_NONE;
+}
+
 static const amark_dialect_kind_t k_test_kinds[] = {
     {AMARK_TEST_KIND_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
-     box_continue, NULL},
+     box_continue, box_close},
     {AMARK_TEST_KIND_NOTE, AMARK_DIALECT_CONTAINER,
      AMARK_DIALECT_BLANK_CONTINUES, note_continue, NULL},
     {AMARK_TEST_KIND_FENCE, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CONTINUES,
-     NULL, NULL},
+     fence_continue, fence_close},
     {AMARK_TEST_KIND_LINE, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     NULL, line_close},
     {AMARK_TEST_KIND_GRID, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
      NULL, NULL},
     {AMARK_TEST_KIND_ROW, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
@@ -187,6 +314,8 @@ static const amark_dialect_kind_t k_test_kinds[] = {
 static const amark_dialect_block_start_t k_test_starts[] = {
     {AMARK_TEST_KIND_BOX, true, box_start},
     {AMARK_TEST_KIND_NOTE, true, note_start},
+    {AMARK_TEST_KIND_FENCE, false, fence_start},
+    {AMARK_TEST_KIND_LINE, true, line_start},
 };
 
 static const amark_dialect_extension_t k_test_extension = {
