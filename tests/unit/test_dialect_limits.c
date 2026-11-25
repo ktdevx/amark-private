@@ -14,10 +14,16 @@
  * calls. Each input is small enough to fit with a wide margin in the first
  * block of every arena, so a small growth of a structure of the parsers does
  * not change the count.
+ *
+ * Dialects without effect: a parse with a dialect of 0 extensions, with a
+ * dialect whose rules all say no, or with the test dialect on input that has
+ * none of its syntax, gives the same tree as a parse without a dialect
+ * (Requirements 13.3 and 15.6).
  */
 
 #include "document.h"
 #include "test_alloc.h"
+#include "test_dialect.h"
 #include "tree_check.h"
 #include "tree_dump.h"
 
@@ -144,6 +150,170 @@ NAOS_SUITE(allocation_baseline,
     NAOS_ADD_TEST(nested_lists_emphasis_and_links_keep_the_baseline)
 )
 
+/* ---------------------------------------------------------------------- */
+/* Dialects without effect */
+
+#define WIDE_DUMP_SIZE 2048
+
+/*
+ * Input with the markers of the test dialect's syntax (none of which the
+ * dialects below act on), CommonMark blocks and inlines, and the trigger
+ * characters of the dialect whose rules all say no.
+ */
+static const char k_markers[] =
+    "@> box\n"
+    "@>\n"
+    "\n"
+    "@note: a note\n"
+    "  goes on\n"
+    "\n"
+    "@@@\n"
+    "fenced\n"
+    "@@@\n"
+    "@line *one* line\n"
+    "\n"
+    "| a | b |\n"
+    "| c | d |\n"
+    "\n"
+    "- [x] done $var$ ~one~ ~~two~~\n"
+    "- [ ] open [link](/url) `code`\n"
+    "\n"
+    "> quote with **strong** text\n"
+    "\n"
+    "    indented code\n"
+    "\n"
+    "```c\n"
+    "fenced code\n"
+    "```\n"
+    "# Heading\n"
+    "<div>html</div>\n"
+    "\n"
+    "[ref]: /dest\n"
+    "\n"
+    "* * *\n";
+
+/*
+ * Parses content with dialect (NULL: none) into a fresh g_doc, requires
+ * success and a tree that passes the check, and writes its dump to buffer.
+ */
+static void parse_and_dump(const amark_dialect_t *dialect, const char *content,
+                           size_t length, char *buffer, size_t size)
+{
+    amark_tree_check_result_t check;
+    size_t dump_length;
+
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    g_config.dialect = dialect;
+    NAOS_REQUIRE_INT_EQ(amark_parse(content, length, &g_config, &g_doc),
+                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(g_doc);
+    check = amark_tree_check(g_doc);
+    NAOS_CHECK_INT_EQ(check.violation, AMARK_TREE_VIOLATION_NONE);
+    NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), 0);
+    dump_length = amark_test_dump_tree(g_doc, buffer, size);
+    NAOS_REQUIRE_UINT_LT(dump_length, size);
+}
+
+/* Requires the dump with dialect to equal the dump without a dialect. */
+static void check_same_tree(const amark_dialect_t *dialect,
+                            const char *content, size_t length)
+{
+    char without[WIDE_DUMP_SIZE];
+    char with[WIDE_DUMP_SIZE];
+
+    parse_and_dump(NULL, content, length, without, sizeof without);
+    parse_and_dump(dialect, content, length, with, sizeof with);
+    NAOS_CHECK_STR_EQ(with, without);
+    g_config.dialect = NULL;
+}
+
+NAOS_TEST(the_test_dialects_pass_the_configuration_check)
+{
+    NAOS_REQUIRE_NOT_NULL(amark_test_dialect());
+    NAOS_REQUIRE_NOT_NULL(amark_test_dialect_plain());
+    NAOS_REQUIRE_NOT_NULL(amark_test_dialect_empty());
+    NAOS_CHECK_UINT_EQ(amark_test_dialect()->extension_count, 1);
+    NAOS_CHECK_UINT_EQ(amark_test_dialect_plain()->extension_count, 1);
+    NAOS_CHECK_UINT_EQ(amark_test_dialect_empty()->extension_count, 0);
+
+    g_config.dialect = amark_test_dialect();
+    NAOS_CHECK_INT_EQ(amark_config_validate(&g_config, 0), AMARK_ERROR_NONE);
+    g_config.dialect = amark_test_dialect_plain();
+    NAOS_CHECK_INT_EQ(amark_config_validate(&g_config, 0), AMARK_ERROR_NONE);
+    g_config.dialect = amark_test_dialect_empty();
+    NAOS_CHECK_INT_EQ(amark_config_validate(&g_config, 0), AMARK_ERROR_NONE);
+    g_config.dialect = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.malloc_calls, 0);
+}
+
+NAOS_TEST(the_test_dialect_registers_every_kind)
+{
+    const amark_dialect_extension_t *ext = amark_test_dialect()->extensions[0];
+    size_t i;
+    size_t k;
+    const amark_kind_t want[] = {
+        AMARK_TEST_KIND_BOX,   AMARK_TEST_KIND_NOTE,   AMARK_TEST_KIND_FENCE,
+        AMARK_TEST_KIND_LINE,  AMARK_TEST_KIND_GRID,   AMARK_TEST_KIND_ROW,
+        AMARK_TEST_KIND_CELL,  AMARK_TEST_KIND_VAR,    AMARK_TEST_KIND_STRIKE,
+        AMARK_TEST_KIND_CHECK, AMARK_TEST_KIND_TASK};
+    const int cls[] = {
+        AMARK_DIALECT_CONTAINER, AMARK_DIALECT_CONTAINER,
+        AMARK_DIALECT_LEAF,      AMARK_DIALECT_LEAF,
+        AMARK_DIALECT_CONTAINER, AMARK_DIALECT_CONTAINER,
+        AMARK_DIALECT_LEAF,      AMARK_DIALECT_INLINE,
+        AMARK_DIALECT_INLINE,    AMARK_DIALECT_INLINE,
+        AMARK_DIALECT_CONTAINER};
+
+    NAOS_REQUIRE_UINT_EQ(ext->kind_count, sizeof want / sizeof want[0]);
+    for (i = 0; i < sizeof want / sizeof want[0]; i++) {
+        for (k = 0; k < ext->kind_count; k++) {
+            if (ext->kinds[k].id == want[i]) {
+                break;
+            }
+        }
+        NAOS_REQUIRE_UINT_LT(k, ext->kind_count);
+        NAOS_CHECK_INT_EQ(ext->kinds[k].cls, cls[i]);
+    }
+    /* A per-document state. */
+    NAOS_CHECK_TRUE(ext->state_new != NULL);
+    NAOS_CHECK_TRUE(ext->state_free != NULL);
+}
+
+NAOS_TEST(a_dialect_of_no_extensions_gives_the_same_tree)
+{
+    check_same_tree(amark_test_dialect_empty(), S(""));
+    check_same_tree(amark_test_dialect_empty(), S(k_paragraph));
+    check_same_tree(amark_test_dialect_empty(), S(k_nested));
+    check_same_tree(amark_test_dialect_empty(), S(k_markers));
+}
+
+NAOS_TEST(a_dialect_whose_rules_say_no_gives_the_same_tree)
+{
+    check_same_tree(amark_test_dialect_plain(), S(""));
+    check_same_tree(amark_test_dialect_plain(), S(k_paragraph));
+    check_same_tree(amark_test_dialect_plain(), S(k_nested));
+    check_same_tree(amark_test_dialect_plain(), S(k_markers));
+}
+
+NAOS_TEST(the_test_dialect_gives_the_same_tree_without_its_syntax)
+{
+    check_same_tree(amark_test_dialect(), S(""));
+    check_same_tree(amark_test_dialect(), S(k_paragraph));
+    check_same_tree(amark_test_dialect(), S(k_nested));
+}
+
+NAOS_SUITE(dialects_without_effect,
+    NAOS_SET_SETUP(counting),
+    NAOS_SET_TEARDOWN(counting),
+    NAOS_ADD_TEST(the_test_dialects_pass_the_configuration_check),
+    NAOS_ADD_TEST(the_test_dialect_registers_every_kind),
+    NAOS_ADD_TEST(a_dialect_of_no_extensions_gives_the_same_tree),
+    NAOS_ADD_TEST(a_dialect_whose_rules_say_no_gives_the_same_tree),
+    NAOS_ADD_TEST(the_test_dialect_gives_the_same_tree_without_its_syntax)
+)
+
 NAOS_MAIN(
-    NAOS_ADD_SUITE(allocation_baseline)
+    NAOS_ADD_SUITE(allocation_baseline),
+    NAOS_ADD_SUITE(dialects_without_effect)
 )
