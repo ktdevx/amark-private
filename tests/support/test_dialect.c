@@ -68,11 +68,101 @@ static amark_error_t box_start(const amark_dialect_line_t *line, void *state,
     return AMARK_ERROR_NONE;
 }
 
+/* Counts a call of a block continue rule in the state, if there is one. */
+static void count_continue(void *state)
+{
+    if (state != NULL) {
+        ((amark_test_counts_t *)state)->block_continues++;
+    }
+}
+
+/*
+ * BOX goes on over a line whose first non-space byte, at most 3 columns
+ * from the position, starts "@>": the prefix is the white space before it,
+ * the two bytes and one space after them, if there is one.
+ */
+static amark_error_t box_continue(const amark_dialect_line_t *line,
+                                  const amark_dialect_open_block_t *block,
+                                  void *state,
+                                  amark_dialect_block_continue_result_t *out)
+{
+    const char *at = line->content + line->first_nonspace;
+    size_t end = line->first_nonspace + 2;
+
+    (void)block;
+    count_continue(state);
+    if (line->indent < 4 && line->line_end - line->first_nonspace >= 2 &&
+        at[0] == '@' && at[1] == '>') {
+        if (end < line->line_end && line->content[end] == ' ') {
+            end++;
+        }
+        out->matched = true;
+        out->consumed.start = line->position;
+        out->consumed.end = end;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * NOTE: "@note:" at the position opens a note; the six bytes and one space
+ * after them, if there is one, are its start marker. It interrupts a
+ * paragraph.
+ */
+static amark_error_t note_start(const amark_dialect_line_t *line, void *state,
+                                amark_dialect_block_start_result_t *out)
+{
+    size_t end = line->position + 6;
+
+    count_start(state);
+    if (line->line_end - line->position >= 6 &&
+        memcmp(line->content + line->position, "@note:", 6) == 0) {
+        if (end < line->line_end && line->content[end] == ' ') {
+            end++;
+        }
+        out->matched = true;
+        out->consumed.start = line->position;
+        out->consumed.end = end;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * NOTE goes on over a line indented at least 2 columns from the position:
+ * the prefix is the bytes of the first 2 columns (a tab, whole, may give
+ * more). A blank line does not reach the rule: the note goes on over it.
+ */
+static amark_error_t note_continue(const amark_dialect_line_t *line,
+                                   const amark_dialect_open_block_t *block,
+                                   void *state,
+                                   amark_dialect_block_continue_result_t *out)
+{
+    size_t at = line->position;
+    size_t column = line->column;
+
+    (void)block;
+    count_continue(state);
+    if (line->indent < 2) {
+        return AMARK_ERROR_NONE;
+    }
+    while (column < line->column + 2) {
+        if (line->content[at] == '\t') {
+            column += 4 - column % 4;
+        } else {
+            column++;
+        }
+        at++;
+    }
+    out->matched = true;
+    out->consumed.start = line->position;
+    out->consumed.end = at;
+    return AMARK_ERROR_NONE;
+}
+
 static const amark_dialect_kind_t k_test_kinds[] = {
     {AMARK_TEST_KIND_BOX, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CLOSES,
-     NULL, NULL},
+     box_continue, NULL},
     {AMARK_TEST_KIND_NOTE, AMARK_DIALECT_CONTAINER,
-     AMARK_DIALECT_BLANK_CONTINUES, NULL, NULL},
+     AMARK_DIALECT_BLANK_CONTINUES, note_continue, NULL},
     {AMARK_TEST_KIND_FENCE, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CONTINUES,
      NULL, NULL},
     {AMARK_TEST_KIND_LINE, AMARK_DIALECT_LEAF, AMARK_DIALECT_BLANK_CLOSES,
@@ -96,6 +186,7 @@ static const amark_dialect_kind_t k_test_kinds[] = {
 /* The block start rules, in the order they are tried. */
 static const amark_dialect_block_start_t k_test_starts[] = {
     {AMARK_TEST_KIND_BOX, true, box_start},
+    {AMARK_TEST_KIND_NOTE, true, note_start},
 };
 
 static const amark_dialect_extension_t k_test_extension = {

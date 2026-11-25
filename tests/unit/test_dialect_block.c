@@ -36,6 +36,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define K_BOX AMARK_TEST_DEF_BOX   /* container of "first" */
@@ -1468,6 +1469,7 @@ NAOS_SUITE(reply,
 #define K_BAD (AMARK_KIND_DIALECT_MIN + 201)  /* container of "bad" */
 #define K_PROBE (AMARK_KIND_DIALECT_MIN + 202) /* container of "probe" */
 #define K_PROBE_LEAF (AMARK_KIND_DIALECT_MIN + 203) /* leaf of "probe" */
+#define K_CONT (AMARK_KIND_DIALECT_MIN + 204) /* container of "cont" */
 
 static amark_config_t g_config;
 
@@ -1670,6 +1672,10 @@ static const char *kind_name(amark_kind_t kind)
         return "def";
     case AMARK_TEST_KIND_BOX:
         return "box";
+    case AMARK_TEST_KIND_NOTE:
+        return "note";
+    case K_CONT:
+        return "cont";
     case K_GOOD:
         return "good";
     case K_BAD:
@@ -1693,19 +1699,23 @@ static void shape_put(char *buffer, size_t *length, const char *s)
 }
 
 /*
- * Requires the blocks of g_doc to be written as want: each block as its
- * kind name and range, "name[start,end]", followed by its block children
- * in parentheses, separated by spaces. Inlines are left out.
+ * Writes to buffer (SHAPE_SIZE bytes) the blocks from first on: first, its
+ * next siblings and the blocks inside them, each block as its kind name and
+ * range, "name[start,end]", followed by its block children in parentheses,
+ * separated by spaces. Inlines are left out. AMARK_NODE_NONE writes "".
  */
-static void check_shape(const char *want)
+static void shape_of(amark_node_id_t first, char *buffer)
 {
-    char buffer[SHAPE_SIZE];
     char item[64];
     size_t length = 0;
-    amark_node_id_t root = amark_document_root(g_doc);
-    amark_node_id_t node = root;
+    amark_node_id_t top;
+    amark_node_id_t node = first;
 
     buffer[0] = '\0';
+    if (first == AMARK_NODE_NONE) {
+        return;
+    }
+    top = amark_node_parent(g_doc, first);
     for (;;) {
         amark_node_id_t child;
         amark_range_t range;
@@ -1721,17 +1731,24 @@ static void check_shape(const char *want)
             node = child;
             continue;
         }
-        while (node != root &&
-               amark_node_next_sibling(g_doc, node) == AMARK_NODE_NONE) {
+        while (amark_node_next_sibling(g_doc, node) == AMARK_NODE_NONE) {
             node = amark_node_parent(g_doc, node);
+            if (node == top) {
+                return;
+            }
             shape_put(buffer, &length, ")");
-        }
-        if (node == root) {
-            break;
         }
         shape_put(buffer, &length, " ");
         node = amark_node_next_sibling(g_doc, node);
     }
+}
+
+/* Requires the blocks of g_doc, from the root, to be written as want. */
+static void check_shape(const char *want)
+{
+    char buffer[SHAPE_SIZE];
+
+    shape_of(amark_document_root(g_doc), buffer);
     NAOS_CHECK_STR_EQ(buffer, want);
 }
 
@@ -1778,14 +1795,14 @@ NAOS_TEST(one_line_box_is_a_container_block)
                        AMARK_KIND_TEXT);
 }
 
-NAOS_TEST(box_does_not_continue_on_the_next_line)
+NAOS_TEST(box_ends_at_a_blank_line_and_at_the_end_of_the_content)
 {
     /* Line 3 is a sibling; a blank line ends the box. */
     PARSE(amark_test_dialect(), "@> a\n\nb\n", 0);
     check_shape("doc[0,8](box[0,4](p[3,4]) p[6,7])");
-    /* Line 2 is a box of its own, after the first one. */
-    PARSE(amark_test_dialect(), "@> a\n@> b\n", 0);
-    check_shape("doc[0,10](box[0,4](p[3,4]) box[5,9](p[8,9]))");
+    /* After a blank line, "@> " opens a box of its own. */
+    PARSE(amark_test_dialect(), "@> a\n\n@> b\n", 0);
+    check_shape("doc[0,11](box[0,4](p[3,4]) box[6,10](p[9,10]))");
     /* The box ends at the end of the content too. */
     PARSE(amark_test_dialect(), "x\n\n@> last", 0);
     check_shape("doc[0,10](p[0,1] box[3,10](p[6,10]))");
@@ -2049,7 +2066,7 @@ NAOS_SUITE(start,
     NAOS_SET_SETUP(start),
     NAOS_SET_TEARDOWN(start),
     NAOS_ADD_TEST(one_line_box_is_a_container_block),
-    NAOS_ADD_TEST(box_does_not_continue_on_the_next_line),
+    NAOS_ADD_TEST(box_ends_at_a_blank_line_and_at_the_end_of_the_content),
     NAOS_ADD_TEST(box_starts_at_its_first_non_space_byte),
     NAOS_ADD_TEST(boxes_nest_on_one_line),
     NAOS_ADD_TEST(commonmark_blocks_start_inside_a_box),
@@ -2070,7 +2087,648 @@ NAOS_SUITE(start,
     NAOS_ADD_TEST(without_a_dialect_the_markers_are_text)
 )
 
+/* ---------------------------------------------------------------------- */
+/* Continue rules */
+
+/*
+ * The local extension "cont" is test data: '%' opens a container of K_CONT
+ * (which goes on over blank lines and cannot interrupt a paragraph), and
+ * its continue rule records what it sees and returns the result that the
+ * input selects after the '%' at the first non-space byte.
+ */
+
+/* What the continue rule of "cont" saw. */
+static struct {
+    size_t calls;
+    amark_dialect_line_t line;          /* the input of the last call */
+    amark_dialect_open_block_t block;   /* the open block of the last call */
+    amark_dialect_block_continue_result_t given; /* *out as the parse
+                                                    filled it */
+} g_cont;
+
+/* A large input built in a test; teardown releases it. */
+static char *g_big;
+
+/* Opens a container on '%', which is its start marker; its data is 1. */
+static amark_error_t cont_start(const amark_dialect_line_t *line,
+                                void *state,
+                                amark_dialect_block_start_result_t *out)
+{
+    (void)state;
+    if (line->content[line->position] == '%') {
+        out->matched = true;
+        out->consumed.start = line->position;
+        out->consumed.end = line->position + 1;
+        out->data = 1;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * At '%' followed by a letter (at the first non-space byte): 'k' a valid
+ * prefix up to the letter, with data one more than the block's; 'e' a
+ * valid empty prefix, data left as is; 'o' a range not starting at the
+ * position; 'l' a range past the end of the line; 'r' a range that ends
+ * before it starts; 's' and 'x' a status the contract does not define; 'n'
+ * AMARK_ERROR_NOMEM. Anything else: no.
+ */
+static amark_error_t cont_continue(const amark_dialect_line_t *line,
+                                   const amark_dialect_open_block_t *block,
+                                   void *state,
+                                   amark_dialect_block_continue_result_t *out)
+{
+    size_t at = line->first_nonspace;
+
+    (void)state;
+    g_cont.calls++;
+    g_cont.line = *line;
+    g_cont.block = *block;
+    g_cont.given = *out;
+    if (line->line_end - at < 2 || line->content[at] != '%') {
+        return AMARK_ERROR_NONE;
+    }
+    out->matched = true;
+    out->consumed.start = line->position;
+    out->consumed.end = at + 2;
+    switch (line->content[at + 1]) {
+    case 'k':
+        out->data = block->data + 1;
+        break;
+    case 'e':
+        out->consumed.end = line->position;
+        break;
+    case 'o':
+        out->consumed.start = line->position + 1;
+        break;
+    case 'l':
+        out->consumed.end = line->line_end + 1;
+        break;
+    case 'r':
+        out->consumed.end = line->position - 1;
+        break;
+    case 's':
+        return AMARK_ERROR_INVALID_INPUT;
+    case 'x':
+        return AMARK_ERROR_LIMIT_EXCEEDED;
+    case 'n':
+        return AMARK_ERROR_NOMEM;
+    default:
+        out->matched = false;
+        break;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+static const amark_dialect_kind_t k_cont_kinds[] = {
+    {K_CONT, AMARK_DIALECT_CONTAINER, AMARK_DIALECT_BLANK_CONTINUES,
+     cont_continue, NULL},
+};
+static const amark_dialect_block_start_t k_cont_starts[] = {
+    {K_CONT, false, cont_start},
+};
+static const amark_dialect_extension_t k_cont_ext = {
+    "cont", k_cont_kinds, 1, k_cont_starts, 1, NULL, NULL, 0, NULL, 0,
+    NULL, NULL, NULL};
+static const amark_dialect_extension_t *const k_cont_exts[] = {&k_cont_ext};
+static const amark_dialect_t k_cont_dialect = {
+    sizeof(amark_dialect_t), AMARK_DIALECT_ABI, k_cont_exts, 1};
+
+NAOS_SETUP(cont)
+{
+    amark_test_alloc_init(&g_state);
+    amark_config_init(&g_config);
+    g_config.allocator = amark_test_allocator(&g_state);
+    g_doc = NULL;
+    g_big = NULL;
+    memset(&g_cont, 0, sizeof(g_cont));
+}
+
+NAOS_TEARDOWN(cont)
+{
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    free(g_big);
+    g_big = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+/* The diagnostic number index of g_doc is a block continue one of name. */
+static void check_continue_diagnostic(size_t index, const char *name,
+                                      const char *reason, size_t offset,
+                                      size_t line)
+{
+    char expected[160];
+    amark_diagnostic_t diag;
+
+    NAOS_REQUIRE_TRUE(amark_document_diagnostic(g_doc, index, &diag));
+    (void)strcpy(expected, "dialect \"");
+    (void)strcat(expected, name);
+    (void)strcat(expected, "\": block continue: ");
+    (void)strcat(expected, reason);
+    NAOS_CHECK_STR_EQ(diag.message, expected);
+    NAOS_CHECK_UINT_EQ(diag.offset, offset);
+    NAOS_CHECK_UINT_EQ(diag.line, line);
+    NAOS_CHECK_INT_EQ(diag.severity, AMARK_SEVERITY_ERROR);
+}
+
+/* The record of line line of g_doc starts its content at content_start. */
+static void check_line_record(size_t line, size_t content_start)
+{
+    amark_line_record_t record;
+
+    NAOS_REQUIRE_TRUE(amark_line_get(g_doc, line, &record));
+    NAOS_CHECK_UINT_EQ(record.content_start, content_start);
+}
+
+NAOS_TEST(box_goes_on_over_lines_that_start_with_its_marker)
+{
+    amark_node_id_t box;
+    amark_node_id_t para;
+
+    PARSE(amark_test_dialect(), "@> a\n@> b\n", 0);
+    check_shape("doc[0,10](box[0,9](p[3,9]))");
+    box = amark_node_first_child(g_doc, amark_document_root(g_doc));
+    check_node(box, AMARK_TEST_KIND_BOX, 0, 9, 1, 2, NULL);
+    para = amark_node_first_child(g_doc, box);
+    NAOS_CHECK_UINT_EQ(amark_node_start_line(g_doc, para), 1);
+    NAOS_CHECK_UINT_EQ(amark_node_end_line(g_doc, para), 2);
+    check_line_record(2, 8);
+
+    /* Three lines; the marker alone ends the paragraph, not the box. */
+    PARSE(amark_test_dialect(), "@> a\n@>\n@> b\n", 0);
+    check_shape("doc[0,13](box[0,12](p[3,4] p[11,12]))");
+    box = amark_node_first_child(g_doc, amark_document_root(g_doc));
+    check_node(box, AMARK_TEST_KIND_BOX, 0, 12, 1, 3, NULL);
+
+    /* The box ends at the end of its last line, before a sibling. */
+    PARSE(amark_test_dialect(), "@> a\n@> b\n\nc\n", 0);
+    check_shape("doc[0,13](box[0,9](p[3,9]) p[11,12])");
+
+    /* The marker may be indented up to 3 columns; 4 is not a marker. */
+    PARSE(amark_test_dialect(), "@> a\n   @> b\n", 0);
+    check_shape("doc[0,13](box[0,12](p[3,12]))");
+    check_line_record(2, 11);
+    PARSE(amark_test_dialect(), "@> # h\n    @> b\n", 0);
+    check_shape("doc[0,16](box[0,6](h[3,6]) code[11,15])");
+
+    /* A line without the marker closes it. */
+    PARSE(amark_test_dialect(), "@> # h\nb\n", 0);
+    check_shape("doc[0,9](box[0,6](h[3,6]) p[7,8])");
+}
+
+NAOS_TEST(blocks_inside_a_box_go_on_over_its_lines)
+{
+    PARSE(amark_test_dialect(), "@> - a\n@>   b\n", 0);
+    check_shape("doc[0,14](box[0,13](list[3,13](li[3,13](p[5,13]))))");
+    PARSE(amark_test_dialect(), "@>     x\n@>     y\n", 0);
+    check_shape("doc[0,18](box[0,17](code[7,17]))");
+    PARSE(amark_test_dialect(), "@> ```\n@> x\n@> ```\n", 0);
+    check_shape("doc[0,19](box[0,18](code[3,18]))");
+    check_line_record(2, 10);
+}
+
+NAOS_TEST(dialect_and_commonmark_containers_nest_across_lines)
+{
+    PARSE(amark_test_dialect(), "@> @> a\n@> @> b\n", 0);
+    check_shape("doc[0,16](box[0,15](box[3,15](p[6,15])))");
+    check_line_record(2, 14);
+    PARSE(amark_test_dialect(), "- @> a\n  @> b\n", 0);
+    check_shape("doc[0,14](list[0,13](li[0,13](box[2,13](p[5,13]))))");
+    PARSE(amark_test_dialect(), "> @> a\n> @> b\n", 0);
+    check_shape("doc[0,14](bq[0,13](box[2,13](p[5,13])))");
+    PARSE(amark_test_dialect(), "@> > a\n@> > b\n", 0);
+    check_shape("doc[0,14](box[0,13](bq[3,13](p[5,13])))");
+    PARSE(amark_test_dialect(), "@note: @> a\n  @> b\n", 0);
+    check_shape("doc[0,19](note[0,18](box[7,18](p[10,18])))");
+    PARSE(amark_test_dialect(), "@> @note: a\n@>   b\n", 0);
+    check_shape("doc[0,19](box[0,18](note[3,18](p[10,18])))");
+    /* The inner box does not go on; the outer one does. */
+    PARSE(amark_test_dialect(), "@> @> # h\n@> b\n", 0);
+    check_shape("doc[0,15](box[0,14](box[3,9](h[6,9]) p[13,14]))");
+}
+
+NAOS_TEST(a_lazy_line_goes_on_the_paragraph_inside_a_box)
+{
+    PARSE(amark_test_dialect(), "@> a\nb\n", 0);
+    check_shape("doc[0,7](box[0,6](p[3,6]))");
+    check_line_record(2, 5);
+    PARSE(amark_test_dialect(), "@> @> a\nb\n", 0);
+    check_shape("doc[0,10](box[0,9](box[3,9](p[6,9])))");
+    PARSE(amark_test_dialect(), "@> @> a\n@> b\n", 0);
+    check_shape("doc[0,13](box[0,12](box[3,12](p[6,12])))");
+    /* Like a block quote: "> a" then "b". */
+    PARSE(amark_test_dialect(), "@> > a\nb\n", 0);
+    check_shape("doc[0,9](box[0,8](bq[3,8](p[5,8])))");
+    /* Not lazy: a blank line, or a line that starts a block. */
+    PARSE(amark_test_dialect(), "@> a\n- b\n", 0);
+    check_shape("doc[0,9](box[0,4](p[3,4]) list[5,8](li[5,8](p[7,8])))");
+}
+
+NAOS_TEST(note_goes_on_over_indented_lines_and_blank_lines)
+{
+    amark_node_id_t note;
+
+    PARSE(amark_test_dialect(), "@note: a\n  b\n", 0);
+    check_shape("doc[0,13](note[0,12](p[7,12]))");
+    note = amark_node_first_child(g_doc, amark_document_root(g_doc));
+    check_node(note, AMARK_TEST_KIND_NOTE, 0, 12, 1, 2, NULL);
+    check_line_record(2, 11);
+
+    /* Over 1, 2 and 3 blank lines; the note ends at its last line. */
+    PARSE(amark_test_dialect(), "@note: a\n\n  b\n", 0);
+    check_shape("doc[0,14](note[0,13](p[7,8] p[12,13]))");
+    PARSE(amark_test_dialect(), "@note: a\n\n\n  b\n", 0);
+    check_shape("doc[0,15](note[0,14](p[7,8] p[13,14]))");
+    PARSE(amark_test_dialect(), "@note: a\n \n\t\n\n  b\n\nc\n", 0);
+    check_shape("doc[0,21](note[0,17](p[7,8] p[16,17]) p[19,20])");
+    note = amark_node_first_child(g_doc, amark_document_root(g_doc));
+    check_node(note, AMARK_TEST_KIND_NOTE, 0, 17, 1, 5, NULL);
+
+    /* A tab is 4 columns, consumed whole. */
+    PARSE(amark_test_dialect(), "@note: a\n\tb\n", 0);
+    check_shape("doc[0,12](note[0,11](p[7,11]))");
+    check_line_record(2, 10);
+
+    /* One column is not enough: lazy, or closed. */
+    PARSE(amark_test_dialect(), "@note: a\n b\n", 0);
+    check_shape("doc[0,12](note[0,11](p[7,11]))");
+    PARSE(amark_test_dialect(), "@note: # h\n b\n", 0);
+    check_shape("doc[0,14](note[0,10](h[7,10]) p[12,13])");
+    PARSE(amark_test_dialect(), "@note: a\n\nb\n", 0);
+    check_shape("doc[0,12](note[0,8](p[7,8]) p[10,11])");
+
+    /* A box inside a note closes at a blank line; the note goes on. */
+    PARSE(amark_test_dialect(), "@note: @> a\n\n  b\n", 0);
+    check_shape("doc[0,17](note[0,16](box[7,11](p[10,11]) p[15,16]))");
+}
+
+NAOS_TEST(dialect_blocks_close_at_the_end_of_the_content)
+{
+    PARSE(amark_test_dialect(), "@> a\n@> b", 0);
+    check_shape("doc[0,9](box[0,9](p[3,9]))");
+    PARSE(amark_test_dialect(), "@note: a\n  b", 0);
+    check_shape("doc[0,12](note[0,12](p[7,12]))");
+    PARSE(amark_test_dialect(), "@note: a\n\n", 0);
+    check_shape("doc[0,10](note[0,8](p[7,8]))");
+    PARSE(amark_test_dialect(), "- @note: @> a\n    @> b\n", 0);
+    check_shape("doc[0,23](list[0,22](li[0,22](note[2,22](box[9,22]"
+                "(p[12,22])))))");
+}
+
+/*
+ * Parses "@note:" + rest and "-     " + rest (a list item whose first line
+ * is blank, with the same content indent of 2 columns, so that the bytes
+ * after the first line are the same) and requires the note and the item to
+ * have the same range, the same blocks inside and the same blocks after.
+ */
+static void check_note_as_item(const char *rest)
+{
+    char input[256];
+    char inside[SHAPE_SIZE];
+    char after[SHAPE_SIZE];
+    char want[SHAPE_SIZE];
+    amark_node_id_t root;
+    amark_node_id_t node;
+    amark_range_t note;
+    amark_range_t range;
+    size_t length = strlen(rest) + 6;
+
+    NAOS_REQUIRE_UINT_LT(length, sizeof input);
+    (void)strcpy(input, "@note:");
+    (void)strcat(input, rest);
+    parse_with(amark_test_dialect(), input, length, 0);
+    root = amark_document_root(g_doc);
+    node = amark_node_first_child(g_doc, root);
+    NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node), AMARK_TEST_KIND_NOTE);
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &note));
+    shape_of(amark_node_first_child(g_doc, node), inside);
+    shape_of(amark_node_next_sibling(g_doc, node), after);
+
+    (void)memcpy(input, "-     ", 6);
+    parse_with(amark_test_dialect(), input, length, 0);
+    root = amark_document_root(g_doc);
+    node = amark_node_first_child(g_doc, root);
+    NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node), AMARK_KIND_LIST);
+    shape_of(amark_node_next_sibling(g_doc, node), want);
+    NAOS_CHECK_STR_EQ(after, want);
+    node = amark_node_first_child(g_doc, node);
+    NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node), AMARK_KIND_LIST_ITEM);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, node), AMARK_NODE_NONE);
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &range));
+    NAOS_CHECK_UINT_EQ(note.start, range.start);
+    NAOS_CHECK_UINT_EQ(note.end, range.end);
+    shape_of(amark_node_first_child(g_doc, node), want);
+    NAOS_CHECK_STR_EQ(inside, want);
+}
+
+/* The parts of the inputs below, between which the blank lines go. */
+typedef struct note_case {
+    const char *parts[4]; /* NULL after the last one */
+} note_case_t;
+
+static const note_case_t k_note_cases[] = {
+    /* A list, its item going on after the blank lines, then the note. */
+    {{"\n  - a\n", "    b\n", "  c\n", "d\n"}},
+    {{"\n  - a\n    - b\n", "      c\n", "d\n", NULL}},
+    /* Indented and fenced code, and the note after it. */
+    {{"\n      code\n", "      more\n", "  c\n", "d\n"}},
+    {{"\n  ```\n  x\n", "  ```\n", "  c\n", "d\n"}},
+    {{"\n  ~~~\n", "  x\n", NULL, NULL}},
+    /* HTML blocks: condition 6 ends at a blank line, 2 at its end. */
+    {{"\n  <div>\n  x\n", "  y\n", "d\n", NULL}},
+    {{"\n  <!--\n", "  -->\n", "  c\n", "d\n"}},
+    /* Open at the end of the content. */
+    {{"\n  - a\n", "", NULL, NULL}},
+    {{"\n      code\n", "", NULL, NULL}}};
+
+/* The blank lines put between the parts. */
+static const char *const k_note_blanks[] = {
+    "\n", "\n\n", "\n\n\n", "  \n", " \n\t\n      \n"};
+
+NAOS_TEST(blocks_in_a_note_end_where_they_end_in_a_list_item)
+{
+    size_t c;
+    size_t b;
+
+    for (c = 0; c < sizeof k_note_cases / sizeof k_note_cases[0]; c++) {
+        for (b = 0; b < sizeof k_note_blanks / sizeof k_note_blanks[0];
+             b++) {
+            char rest[200];
+            size_t i;
+
+            (void)strcpy(rest, k_note_cases[c].parts[0]);
+            for (i = 1; i < 4 && k_note_cases[c].parts[i] != NULL; i++) {
+                NAOS_REQUIRE_UINT_LT(strlen(rest) + 20 +
+                                         strlen(k_note_cases[c].parts[i]),
+                                     sizeof rest);
+                (void)strcat(rest, k_note_blanks[b]);
+                (void)strcat(rest, k_note_cases[c].parts[i]);
+            }
+            check_note_as_item(rest);
+        }
+    }
+    /* An empty item inside: one empty line closes it in both. */
+    check_note_as_item("\n  -\n\n    a\n");
+    check_note_as_item("\n  -\n\n\n    a\n");
+}
+
+NAOS_TEST(blank_lines_in_a_note_are_added_the_same_with_and_without_cutoff)
+{
+    static const char content[] =
+        "@note:\n"        /* 0 */
+        "      x\n"       /* 7 */
+        "        \n"      /* 15: the first blank line, matched */
+        "        \n"      /* 24: the cutoff from the second one */
+        "        \n"      /* 33 */
+        "      y\n";      /* 42 */
+
+    PARSE(amark_test_dialect(), content, 0);
+    check_shape("doc[0,50](note[0,49](code[13,49]))");
+    /*
+     * On the blank lines the note consumes nothing and the code takes 4
+     * columns, with or without the cutoff; elsewhere the note takes 2.
+     */
+    check_line_record(3, 19);
+    check_line_record(4, 28);
+    check_line_record(5, 37);
+    check_line_record(6, 48);
+}
+
+NAOS_TEST(blank_lines_after_a_deep_note_cost_no_more_than_the_depth_once)
+{
+    enum { DEPTH = 10000, LINES = 40000 };
+    size_t length = 7 * DEPTH + 2 + LINES + 2 * DEPTH + 2;
+    size_t at = 0;
+    size_t i;
+    amark_node_id_t node;
+
+    g_big = (char *)malloc(length);
+    NAOS_REQUIRE_TRUE(g_big != NULL);
+    for (i = 0; i < DEPTH; i++) {
+        memcpy(g_big + at, "@note: ", 7);
+        at += 7;
+    }
+    memcpy(g_big + at, "a\n", 2);
+    at += 2;
+    memset(g_big + at, '\n', LINES);
+    at += LINES;
+    memset(g_big + at, ' ', 2 * DEPTH);
+    at += 2 * DEPTH;
+    memcpy(g_big + at, "b\n", 2);
+    at += 2;
+    NAOS_REQUIRE_UINT_EQ(at, length);
+    g_config.max_nesting_depth = 0;
+    parse_with(amark_test_dialect(), g_big, length, 0);
+    /* The notes, two paragraphs in the innermost one and their texts. */
+    NAOS_CHECK_UINT_EQ(amark_document_node_count(g_doc), DEPTH + 5);
+    node = amark_document_root(g_doc);
+    for (i = 0; i < DEPTH; i++) {
+        node = amark_node_first_child(g_doc, node);
+        NAOS_REQUIRE_UINT_EQ(amark_node_kind(g_doc, node),
+                             AMARK_TEST_KIND_NOTE);
+    }
+    node = amark_node_next_sibling(g_doc, amark_node_first_child(g_doc, node));
+    NAOS_REQUIRE_TRUE(node != AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, node), AMARK_KIND_PARAGRAPH);
+    NAOS_CHECK_UINT_EQ(amark_node_start_line(g_doc, node), LINES + 2);
+}
+
+NAOS_TEST(continue_rules_see_the_line_the_position_and_the_block)
+{
+    static const char content[] = "> % a\n>   %k b\n";
+
+    PARSE(&k_cont_dialect, content, 0);
+    check_shape("doc[0,15](bq[0,14](cont[2,14](p[4,14])))");
+    NAOS_CHECK_UINT_EQ(g_cont.calls, 1);
+    NAOS_REQUIRE_NOT_NULL(g_cont.line.content);
+    NAOS_CHECK_UINT_EQ(g_cont.line.content_length, sizeof(content) - 1);
+    NAOS_CHECK_UINT_EQ(g_cont.line.line, 2);
+    NAOS_CHECK_UINT_EQ(g_cont.line.line_start, 6);
+    NAOS_CHECK_UINT_EQ(g_cont.line.line_end, 14);
+    /* After the quote marker and its space, on white space. */
+    NAOS_CHECK_UINT_EQ(g_cont.line.position, 8);
+    NAOS_CHECK_UINT_EQ(g_cont.line.column, 2);
+    NAOS_CHECK_UINT_EQ(g_cont.line.first_nonspace, 10);
+    NAOS_CHECK_UINT_EQ(g_cont.line.indent, 2);
+    NAOS_CHECK_UINT_EQ(g_cont.block.kind, K_CONT);
+    NAOS_CHECK_UINT_EQ(g_cont.block.range.start, 2);
+    NAOS_CHECK_UINT_EQ(g_cont.block.range.end, 5);
+    NAOS_CHECK_UINT_EQ(g_cont.block.data, 1);
+    /* The result comes filled with "no" and the block's data. */
+    NAOS_CHECK_FALSE(g_cont.given.matched);
+    NAOS_CHECK_UINT_EQ(g_cont.given.consumed.start, 0);
+    NAOS_CHECK_UINT_EQ(g_cont.given.consumed.end, 0);
+    NAOS_CHECK_UINT_EQ(g_cont.given.data, 1);
+    check_line_record(2, 13);
+}
+
+NAOS_TEST(an_accepted_continue_writes_back_data_and_extends_the_block)
+{
+    /* 'k' adds one to the data; 'e' consumes nothing and keeps it. */
+    PARSE(&k_cont_dialect, "% a\n%k b\n%e c\n%k d\n", 0);
+    NAOS_CHECK_UINT_EQ(g_cont.calls, 3);
+    NAOS_CHECK_UINT_EQ(g_cont.block.data, 2);
+    NAOS_CHECK_UINT_EQ(g_cont.block.range.start, 0);
+    NAOS_CHECK_UINT_EQ(g_cont.block.range.end, 13);
+    /* "%e c" is paragraph text: nothing of it was consumed. */
+    check_shape("doc[0,19](cont[0,18](p[2,18]))");
+    check_line_record(3, 9);
+    /* The container ends at the end of the line it went on over. */
+    PARSE(&k_cont_dialect, "% # h\n%k\n", 0);
+    check_shape("doc[0,9](cont[0,8](h[2,5]))");
+}
+
+NAOS_TEST(continue_rules_are_called_once_per_block_and_non_blank_line)
+{
+    /* Blank lines do not call the rule; the container goes on. */
+    PARSE(&k_cont_dialect, "% a\n\n\n%k b\n", 0);
+    NAOS_CHECK_UINT_EQ(g_cont.calls, 1);
+    check_shape("doc[0,11](cont[0,10](p[2,3] p[9,10]))");
+    /* Two containers: each rule once on line 2, at its own position. */
+    memset(&g_cont, 0, sizeof(g_cont));
+    PARSE(&k_cont_dialect, "%% a\n%k%k b\n", 0);
+    NAOS_CHECK_UINT_EQ(g_cont.calls, 2);
+    NAOS_CHECK_UINT_EQ(g_cont.line.position, 7);
+    check_shape("doc[0,12](cont[0,11](cont[1,11](p[3,11])))");
+    /* Not called again when the outer one does not go on. */
+    memset(&g_cont, 0, sizeof(g_cont));
+    PARSE(&k_cont_dialect, "%% # h\nb\n", 0);
+    NAOS_CHECK_UINT_EQ(g_cont.calls, 1);
+    check_shape("doc[0,9](cont[0,6](cont[1,6](h[3,6])) p[7,8])");
+}
+
+NAOS_TEST(a_block_without_continue_rule_ends_at_the_next_non_blank_line)
+{
+    /* "bad" has no continue rule: lazy, or closed. */
+    PARSE(&k_bad_dialect, "!k a\n  b\n", 0);
+    check_shape("doc[0,9](bad[0,8](p[3,8]))");
+    PARSE(&k_bad_dialect, "!k # h\n  b\n", 0);
+    check_shape("doc[0,11](bad[0,6](h[3,6]) p[9,10])");
+}
+
+NAOS_TEST(invalid_continue_results_are_rejected_as_no)
+{
+    /* The paragraph goes on lazily; the diagnostic is at the position. */
+    PARSE(&k_cont_dialect, "% a\n%o b\n", 1);
+    check_continue_diagnostic(0, "cont",
+                              "range does not start at the position", 4, 2);
+    check_shape("doc[0,9](cont[0,8](p[2,8]))");
+
+    PARSE(&k_cont_dialect, "% a\n %l b\n", 1);
+    check_continue_diagnostic(0, "cont", "range leaves the line", 4, 2);
+    check_shape("doc[0,10](cont[0,9](p[2,9]))");
+
+    PARSE(&k_cont_dialect, "% a\n %r b\n", 1);
+    check_continue_diagnostic(0, "cont", "range leaves the line", 4, 2);
+    check_shape("doc[0,10](cont[0,9](p[2,9]))");
+
+    /* Without a paragraph, the container closes; '%' opens a new one. */
+    PARSE(&k_cont_dialect, "%\n%o b\n", 1);
+    check_continue_diagnostic(0, "cont",
+                              "range does not start at the position", 2, 2);
+    check_shape("doc[0,7](cont[0,1] cont[2,6](p[3,6]))");
+
+    /* Nested: the inner rule sees the position after the outer prefix. */
+    PARSE(&k_cont_dialect, "%% # h\n%k%l b\n", 1);
+    check_continue_diagnostic(0, "cont", "range leaves the line", 9, 2);
+    check_shape("doc[0,14](cont[0,13](cont[1,6](h[3,6]) cont[9,13]"
+                "(p[10,13])))");
+}
+
+NAOS_TEST(a_continue_status_outside_the_contract_is_rejected_as_no)
+{
+    PARSE(&k_cont_dialect, "% a\n%s b\n\n%x c\n", 2);
+    check_continue_diagnostic(0, "cont", "unknown return value", 4, 2);
+    check_continue_diagnostic(1, "cont", "unknown return value", 10, 4);
+    /* Line 4 has no paragraph to go on: '%' opens a new container. */
+    check_shape("doc[0,15](cont[0,8](p[2,8]) cont[10,14](p[11,14]))");
+}
+
+NAOS_TEST(a_rejected_continue_rule_is_still_called_and_accepted_later)
+{
+    PARSE(&k_cont_dialect, "% # h\n%o\n%k b\n", 1);
+    check_shape("doc[0,14](cont[0,5](h[2,5]) cont[6,13](p[7,13]))");
+    PARSE(&k_cont_dialect, "% a\n%o b\n\n%k c\n", 1);
+    check_shape("doc[0,15](cont[0,14](p[2,8] p[13,14]))");
+}
+
+NAOS_TEST(nomem_from_a_continue_rule_ends_the_parse)
+{
+    static const char content[] = "% a\n\n%n b\n";
+
+    const amark_dialect_extension_t *exts[2];
+    amark_dialect_t dialect;
+
+    g_config.dialect = &k_cont_dialect;
+    NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1, &g_config,
+                                  &g_doc),
+                      AMARK_ERROR_NOMEM);
+    NAOS_CHECK_NULL(g_doc);
+
+    /* With the test extension first, its state is released too. */
+    exts[0] = amark_test_dialect()->extensions[0];
+    exts[1] = &k_cont_ext;
+    dialect.struct_size = sizeof(dialect);
+    dialect.abi = AMARK_DIALECT_ABI;
+    dialect.extensions = exts;
+    dialect.extension_count = 2;
+    g_config.dialect = &dialect;
+    NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1, &g_config,
+                                  &g_doc),
+                      AMARK_ERROR_NOMEM);
+    NAOS_CHECK_NULL(g_doc);
+    NAOS_CHECK_UINT_GT(g_state.free_calls, 0);
+    g_config.dialect = NULL;
+}
+
+NAOS_TEST(a_failed_continue_diagnostic_ends_the_parse_with_nomem)
+{
+    static const char content[] = "% a\n%o b\n";
+    size_t calls;
+    size_t i;
+
+    PARSE(&k_cont_dialect, "% a\n%o b\n", 1);
+    calls = g_state.malloc_calls;
+    for (i = 1; i <= calls; i++) {
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = i;
+        NAOS_CHECK_INT_EQ(amark_parse(content, sizeof(content) - 1,
+                                      &g_config, &g_doc),
+                          AMARK_ERROR_NOMEM);
+        NAOS_CHECK_NULL(g_doc);
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    }
+    g_state.fail_at = 0;
+}
+
+NAOS_SUITE(cont,
+    NAOS_SET_SETUP(cont),
+    NAOS_SET_TEARDOWN(cont),
+    NAOS_ADD_TEST(box_goes_on_over_lines_that_start_with_its_marker),
+    NAOS_ADD_TEST(blocks_inside_a_box_go_on_over_its_lines),
+    NAOS_ADD_TEST(dialect_and_commonmark_containers_nest_across_lines),
+    NAOS_ADD_TEST(a_lazy_line_goes_on_the_paragraph_inside_a_box),
+    NAOS_ADD_TEST(note_goes_on_over_indented_lines_and_blank_lines),
+    NAOS_ADD_TEST(dialect_blocks_close_at_the_end_of_the_content),
+    NAOS_ADD_TEST(blocks_in_a_note_end_where_they_end_in_a_list_item),
+    NAOS_ADD_TEST(blank_lines_in_a_note_are_added_the_same_with_and_without_cutoff),
+    NAOS_ADD_TEST(blank_lines_after_a_deep_note_cost_no_more_than_the_depth_once),
+    NAOS_ADD_TEST(continue_rules_see_the_line_the_position_and_the_block),
+    NAOS_ADD_TEST(an_accepted_continue_writes_back_data_and_extends_the_block),
+    NAOS_ADD_TEST(continue_rules_are_called_once_per_block_and_non_blank_line),
+    NAOS_ADD_TEST(a_block_without_continue_rule_ends_at_the_next_non_blank_line),
+    NAOS_ADD_TEST(invalid_continue_results_are_rejected_as_no),
+    NAOS_ADD_TEST(a_continue_status_outside_the_contract_is_rejected_as_no),
+    NAOS_ADD_TEST(a_rejected_continue_rule_is_still_called_and_accepted_later),
+    NAOS_ADD_TEST(nomem_from_a_continue_rule_ends_the_parse),
+    NAOS_ADD_TEST(a_failed_continue_diagnostic_ends_the_parse_with_nomem)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(reply),
-    NAOS_ADD_SUITE(start)
+    NAOS_ADD_SUITE(start),
+    NAOS_ADD_SUITE(cont)
 )

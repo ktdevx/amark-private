@@ -35,7 +35,12 @@
  *
  *   BOX   "@> " at the start of a block (after the prefixes, at most 3
  *         columns of indentation) opens a box, which interrupts a
- *         paragraph; a blank line closes it.
+ *         paragraph. It goes on over a line that starts with "@>" (at
+ *         most 3 columns of indentation; the marker, and one space after
+ *         it, are its prefix); a blank line closes it.
+ *   NOTE  "@note:" at the start of a block opens a note, which interrupts
+ *         a paragraph. It goes on over a line indented at least 2 columns
+ *         (the first 2 columns are its prefix) and over blank lines.
  */
 #define AMARK_TEST_KIND_BOX (AMARK_KIND_DIALECT_MIN)        /* container */
 #define AMARK_TEST_KIND_NOTE (AMARK_KIND_DIALECT_MIN + 1)   /* container */

@@ -39,8 +39,9 @@
  * blocks (does a new block start here) and close_block. Dialect kinds take
  * the default branches. With a dialect (run is not NULL), its block start
  * rules are called before the CommonMark starts, and a dialect container
- * takes the starts as the document does; dialect blocks do not continue on
- * a later line yet, and a dialect container's node gets its range when it
+ * takes the starts as the document does; a dialect block goes on over a
+ * line by the continue rule of its kind, or over a blank line by its
+ * registration, and a dialect container's node gets its range when it
  * closes.
  */
 
@@ -199,8 +200,10 @@ typedef struct open_block {
     /* The blank line marks (tight and loose, and the blank line run). */
     bool ends_blank;       /* this block ended with a blank line */
     bool last_child_blank; /* the value its last closed child reported */
-    bool blank_run;        /* lists: on the previous line, the rest of the
-                              line was blank here (see add_blank_run_line) */
+    bool blank_run;        /* lists and dialect containers that go on over
+                              blank lines: on the previous line, the rest of
+                              the line was blank here (see
+                              add_blank_run_line) */
     bool loose;            /* lists: a blank line separates items or their
                               children */
 } open_block_t;
@@ -222,6 +225,7 @@ typedef struct block_parser {
                              this offset (see start_thematic_break) */
     size_t blank_mark;    /* the index of the one open element whose
                              ends_blank may be set (see note_blank_line) */
+    amark_error_t failure; /* the error of a CONTINUE_FAILED result */
 } block_parser_t;
 
 static size_t stack_top(const block_parser_t *p)
@@ -630,9 +634,12 @@ typedef enum continue_result {
     CONTINUE_YES,       /* it continues; its prefix is consumed */
     CONTINUE_LINE_DONE, /* it took the whole line and ends with it (a
                            closing fence); the caller closes it */
-    CONTINUE_BLANK_RUN  /* a list where the rest of the line is blank, as it
-                           was on the previous line: every element inside
-                           it continues (see add_blank_run_line) */
+    CONTINUE_BLANK_RUN, /* a list, or a dialect container that goes on over
+                           blank lines, where the rest of the line is
+                           blank, as it was on the previous line: every
+                           element inside it continues (see
+                           add_blank_run_line) */
+    CONTINUE_FAILED     /* the parse ends with the error in failure */
 } continue_result_t;
 
 /*
@@ -737,14 +744,16 @@ static continue_result_t continue_list_item(block_parser_t *p,
 }
 
 /*
- * Whether every element inside the list at index continues on the current
- * line, the rest of which is blank here as it was on the previous line (the
- * list's blank_run). That line closed every element inside the list that a
- * blank line does not continue, and opened nothing, so what is left inside
- * it continues on any blank line: lists, items with children, and at the
- * top an indented or fenced code block or an HTML block of conditions 1 to
- * 5 (a paragraph, a block quote and an HTML block of conditions 6 and 7 do
- * not go on over a blank line). The one exception is an item with nothing
+ * Whether every element inside the list at index (or the dialect container
+ * that goes on over blank lines) continues on the current line, the rest of
+ * which is blank here as it was on the previous line (its blank_run). That
+ * line closed every element inside it that a blank line does not continue,
+ * and opened nothing, so what is left inside it continues on any blank
+ * line: lists, items with children, dialect blocks registered to go on over
+ * blank lines, and at the top an indented or fenced code block or an HTML
+ * block of conditions 1 to 5 (a paragraph, a block quote, an HTML block of
+ * conditions 6 and 7 and a dialect block registered to close do not go on
+ * over a blank line). The one exception is an item with nothing
  * in it, which can only be the top: it went on over the previous line by
  * its indentation (a line of white space), and goes on over this one only
  * with as many columns as the items from the list to it consume, the
@@ -760,6 +769,115 @@ static bool blank_run_continues(const block_parser_t *p, size_t index)
                top->content_indent - stack_at(p, index)->content_indent;
     }
     return true;
+}
+
+/*
+ * The continuation of the dialect block at index, block (5.1 to 5.9).
+ *
+ * When the rest of the line is blank, the rule is not called: the
+ * registration of the kind closes the block or continues it, consuming
+ * nothing (5.6). A container that goes on over blank lines keeps the blank
+ * line run mark as a list does, and from the second blank line of a run the
+ * elements inside it are not matched (CONTINUE_BLANK_RUN): the previous
+ * line closed every element inside it that a blank line does not continue,
+ * the dialect blocks among them, which close on a blank line by their
+ * registration, so the rest continue on this one. A run of blank lines
+ * after deeply nested containers thus costs no more per line than one
+ * element.
+ *
+ * On a line that is not blank, a kind without a continue rule does not
+ * continue (5.7); otherwise its rule is called once, at the current
+ * position, which may be on white space, with *out filled with "no" and the
+ * block's data (5.1, 5.2). A result is valid when its range starts at the
+ * position (ORIGIN) and does not end before it starts or after the end of
+ * the line's content (LINE) (5.8); a status other than AMARK_ERROR_NONE and
+ * AMARK_ERROR_NOMEM is rejected too (STATUS, 10.4). An accepted result
+ * consumes its range by bytes (a tab is taken whole), keeps the data it
+ * gives, and a container ends at least at the end of the line's content
+ * (5.4, 5.11). "No", or a rejected result with its diagnostic at the
+ * position, is a block that does not continue (5.5, 5.9).
+ * AMARK_ERROR_NOMEM from the rule, or from adding the diagnostic, ends the
+ * parse (10.10).
+ */
+static continue_result_t continue_dialect_block(block_parser_t *p,
+                                                size_t index,
+                                                open_block_t *block)
+{
+    amark_line_pos_t *pos = &p->pos;
+    const amark_dialect_kind_t *dkind = block->dkind;
+    amark_dialect_line_t line;
+    amark_dialect_open_block_t open;
+    amark_dialect_block_continue_result_t out;
+    amark_dialect_reason_t reason;
+    amark_error_t status;
+
+    if (pos->blank) {
+        if (dkind->blank != AMARK_DIALECT_BLANK_CONTINUES) {
+            return CONTINUE_NO;
+        }
+        if (dkind->cls == AMARK_DIALECT_CONTAINER) {
+            if (block->blank_run && blank_run_continues(p, index)) {
+                return CONTINUE_BLANK_RUN;
+            }
+            block->blank_run = true;
+        }
+        return CONTINUE_YES;
+    }
+    block->blank_run = false;
+    if (dkind->continue_fn == NULL) {
+        return CONTINUE_NO;
+    }
+
+    memset(&line, 0, sizeof(line));
+    line.content = (const char *)p->bytes;
+    line.content_length = amark_document_content_length(p->doc);
+    line.line = pos->line;
+    line.line_start = p->line_start;
+    line.line_end = pos->content_end;
+    line.position = pos->offset;
+    line.column = pos->column;
+    line.first_nonspace = pos->first_nonspace;
+    line.indent = pos->indent;
+    open.kind = block->kind;
+    open.range.start = block->start;
+    open.range.end = block->end;
+    open.data = block->data;
+    memset(&out, 0, sizeof(out));
+    out.data = block->data;
+
+    status = dkind->continue_fn(&line, &open,
+                                p->run->states[block->extension], &out);
+    if (status == AMARK_ERROR_NOMEM) {
+        p->failure = AMARK_ERROR_NOMEM;
+        return CONTINUE_FAILED;
+    }
+    if (status != AMARK_ERROR_NONE) {
+        reason = AMARK_DIALECT_REASON_STATUS;
+    } else if (!out.matched) {
+        return CONTINUE_NO;
+    } else if (out.consumed.start != pos->offset) {
+        reason = AMARK_DIALECT_REASON_ORIGIN;
+    } else if (out.consumed.end < out.consumed.start ||
+               out.consumed.end > pos->content_end) {
+        reason = AMARK_DIALECT_REASON_LINE;
+    } else {
+        amark_line_pos_advance(pos, p->bytes,
+                               out.consumed.end - pos->offset,
+                               AMARK_ADVANCE_BYTES);
+        block->data = out.data;
+        if (dkind->cls == AMARK_DIALECT_CONTAINER) {
+            block->end = pos->content_end;
+        }
+        return CONTINUE_YES;
+    }
+    status = amark_dialect_reject(p->run, block->extension,
+                                  AMARK_DIALECT_HOOK_BLOCK_CONTINUE, reason,
+                                  pos->offset);
+    if (status != AMARK_ERROR_NONE) {
+        p->failure = status;
+        return CONTINUE_FAILED;
+    }
+    return CONTINUE_NO;
 }
 
 /*
@@ -819,8 +937,7 @@ static continue_result_t continue_block(block_parser_t *p, size_t index)
     case AMARK_KIND_LIST_ITEM:
         return continue_list_item(p, block);
     default:
-        /* Dialect kinds do not continue. */
-        return CONTINUE_NO;
+        return continue_dialect_block(p, index, block);
     }
 }
 
@@ -1577,13 +1694,15 @@ static amark_error_t add_line(block_parser_t *p, size_t container)
 }
 
 /*
- * The blank line cutoff: the first phase came to the list at index list, the
- * rest of the line is blank, it was blank there on the previous line too,
- * and every element inside the list continues (blank_run_continues). The
- * line changes nothing else: nothing opens or closes on it, and the blank
- * line marks stay as the previous line left them (note_blank_line would set
- * the same ones), so the elements inside the list are not matched one by
- * one, which would cost the depth on every line of a run of blank lines.
+ * The blank line cutoff: the first phase came to the list at index list (or
+ * to a dialect container that goes on over blank lines, which consumes
+ * nothing on them), the rest of the line is blank, it was blank there on
+ * the previous line too, and every element inside it continues
+ * (blank_run_continues). The line changes nothing else: nothing opens or
+ * closes on it, and the blank line marks stay as the previous line left
+ * them (note_blank_line would set the same ones), so the elements inside
+ * the list are not matched one by one, which would cost the depth on every
+ * line of a run of blank lines.
  *
  * The line gets the record of a blank line, or is added to the code or HTML
  * block at the top. Then the items between the list and the top consume
@@ -1702,6 +1821,9 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
 
         amark_line_pos_find_nonspace(&p->pos, p->bytes);
         result = continue_block(p, i);
+        if (result == CONTINUE_FAILED) {
+            return p->failure;
+        }
         if (result == CONTINUE_LINE_DONE) {
             /* The element at i is the innermost: a leaf. */
             return close_above(p, i - 1);
@@ -1779,6 +1901,7 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     p.line_taken = false;
     p.break_kill = 0;
     p.blank_mark = 0;
+    p.failure = AMARK_ERROR_NONE;
     amark_array_init(&p.stack, scratch, sizeof(open_block_t));
     amark_array_init(&p.definitions, scratch,
                      sizeof(amark_definition_entry_t));
