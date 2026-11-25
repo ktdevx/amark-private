@@ -67,6 +67,16 @@
  *   STRIKE the delimiter kind of '~': runs of 1 and 2 match runs of the
  *         same length, as amark_dialect_delimiter_t defines ("~a~" and
  *         "~~a~~"; "~a~~" and "~~~a~~~" are text).
+ *   CHECK the postprocessing rule, over the paragraphs in document order:
+ *   TASK  a paragraph whose first child is a text that starts where the
+ *         paragraph starts with "[x] " or "[ ] " gets a CHECK over "[x]" as
+ *         its first child. The text is split after the mark (when more
+ *         follows) and its first part shrunk to the space after "]", so
+ *         the children are the CHECK, a text " " and the rest. When the
+ *         paragraph is the first child of a list item, the item becomes a
+ *         TASK whose attributes are its number among the TASKs of the
+ *         document (the per-document count tasks), in decimal ASCII: "1"
+ *         for the first.
  *
  * Close rules: BOX and FENCE set their attributes to the number of their
  * lines, in decimal ASCII; LINE sets its inline content, from the first
@@ -142,6 +152,15 @@
  *                        the next line, which ends inside its prefix or
  *                        leading white space (there must be one): invalid.
  *   Any other name without a closing '$' is no VAR.
+ *
+ *   Postprocessing markers, right after the "[x] " or "[ ] " of a paragraph
+ *   ("- [x] !post-order"): after the edits of that paragraph, the
+ *   postprocessing rule
+ *     post-order   adds a second CHECK over the first one, an invalid edit
+ *                  (ORDER, at the start of the paragraph), and goes on;
+ *     post-status  returns AMARK_ERROR_INVALID_INPUT, not defined, at once
+ *                  (the later paragraphs get no CHECK);
+ *     post-nomem   returns AMARK_ERROR_NOMEM at once.
  */
 #define AMARK_TEST_KIND_BOX (AMARK_KIND_DIALECT_MIN)        /* container */
 #define AMARK_TEST_KIND_NOTE (AMARK_KIND_DIALECT_MIN + 1)   /* container */
@@ -165,7 +184,8 @@
 
 /*
  * The per-document state of the test dialect: how many times each rule of
- * its extension was called in one parse, and the place where the VAR rule
+ * its extension was called in one parse, how many TASKs its postprocessing
+ * rule made (the attributes of each TASK), and the place where the VAR rule
  * writes the attributes it returns (they must outlive the call). state_new
  * makes it zeroed with the parse's allocator and state_free releases it.
  */
@@ -176,6 +196,7 @@ typedef struct amark_test_counts {
     uint64_t paragraphs;      /* the paragraph close rule */
     uint64_t inlines;         /* inline rules */
     uint64_t postprocesses;   /* the postprocessing rule */
+    uint64_t tasks;           /* the TASKs the postprocessing rule made */
     char var_data[24];        /* the attributes of the last VAR matched,
                                  at the end; the parse copies them */
 } amark_test_counts_t;

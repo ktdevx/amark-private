@@ -522,3 +522,46 @@ amark_error_t amark_dialect_edit_split_text(amark_dialect_editor_t *editor,
     *second = id;
     return AMARK_ERROR_NONE;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Calling the postprocessing rules */
+
+amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
+                                        size_t max_depth, size_t max_nodes)
+{
+    const amark_dialect_t *dialect = run->dialect;
+    amark_dialect_editor_t editor;
+    amark_dialect_post_t post;
+    size_t i;
+    amark_error_t err;
+
+    for (i = 0; i < dialect->extension_count; i++) {
+        const amark_dialect_extension_t *ext = dialect->extensions[i];
+
+        if (ext->postprocess == NULL) {
+            continue;
+        }
+        /* Set again for each rule: a rule may not change what it got. */
+        post.doc = run->doc;
+        post.content = (const char *)run->doc->content;
+        post.content_length = run->doc->content_length;
+        amark_dialect_editor_init(&editor, run, i, max_depth, max_nodes);
+        err = ext->postprocess(&post, run->states[i], &editor);
+        if (editor.failure != AMARK_ERROR_NONE) {
+            return editor.failure;
+        }
+        if (err == AMARK_ERROR_NOMEM) {
+            return err;
+        }
+        if (err != AMARK_ERROR_NONE) {
+            /* A value the contract does not define (10.4). */
+            err = amark_dialect_reject(run, i, AMARK_DIALECT_HOOK_POSTPROCESS,
+                                       AMARK_DIALECT_REASON_STATUS,
+                                       position(&editor, NULL));
+            if (err != AMARK_ERROR_NONE) {
+                return err;
+            }
+        }
+    }
+    return AMARK_ERROR_NONE;
+}

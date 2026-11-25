@@ -844,6 +844,159 @@ static amark_error_t var_inline(const amark_dialect_inline_t *in,
     return AMARK_ERROR_NONE;
 }
 
+/* ---------------------------------------------------------------------- */
+/* CHECK and TASK: the postprocessing rule */
+
+/* Whether the bytes [at, end) start "[x] " or "[ ] ". */
+static bool is_check_mark(const char *content, size_t at, size_t end)
+{
+    return end - at >= 4 && content[at] == '[' &&
+           (content[at + 1] == 'x' || content[at + 1] == ' ') &&
+           content[at + 2] == ']' && content[at + 3] == ' ';
+}
+
+/*
+ * What an edit that should pass gives the rule to return: nothing for a
+ * rejected edit (the diagnostic is added; the rule goes on), and the error
+ * of a failure that lasts.
+ */
+static amark_error_t edit_status(amark_error_t err)
+{
+    return err == AMARK_ERROR_INVALID_INPUT ? AMARK_ERROR_NONE : err;
+}
+
+#define POST_TRY(call)                                                     \
+    do {                                                                   \
+        amark_error_t post_err_ = (call);                                  \
+        if (post_err_ != AMARK_ERROR_NONE) {                               \
+            return edit_status(post_err_);                                 \
+        }                                                                  \
+    } while (0)
+
+/*
+ * Makes the CHECK of paragraph para if its first child is a text that
+ * starts where it starts with "[x] " or "[ ] " (at s): splits the text after
+ * the mark (when more follows), shrinks the first part to the space after
+ * "]", adds a CHECK over "[x]" before it, and, when para is the first child
+ * of a list item, turns the item into a TASK whose attributes are the
+ * number of TASKs made in this document so far, in decimal ASCII. Then
+ * applies the postprocessing marker after the mark, if any. Returns the
+ * status the rule returns: AMARK_ERROR_NONE to go on with the next
+ * paragraph.
+ */
+static amark_error_t check_paragraph(const amark_dialect_post_t *post,
+                                     amark_test_counts_t *counts,
+                                     amark_dialect_editor_t *editor,
+                                     amark_node_id_t para)
+{
+    const amark_document_t *doc = post->doc;
+    const char *c = post->content;
+    amark_node_id_t text = amark_node_first_child(doc, para);
+    amark_node_id_t item = amark_node_parent(doc, para);
+    amark_node_id_t node = AMARK_NODE_NONE;
+    amark_range_t p;
+    amark_range_t t;
+    amark_range_t r;
+    char data[24];
+    uint64_t number;
+    size_t n;
+    size_t s;
+
+    if (text == AMARK_NODE_NONE ||
+        amark_node_kind(doc, text) != AMARK_KIND_TEXT ||
+        !amark_node_range(doc, para, &p) || !amark_node_range(doc, text, &t) ||
+        t.start != p.start || t.end - t.start < 4 ||
+        !is_check_mark(c, p.start, p.end)) {
+        return AMARK_ERROR_NONE;
+    }
+    s = p.start;
+    if (t.end > s + 4) {
+        POST_TRY(amark_dialect_edit_split_text(editor, text, s + 4, &node));
+    }
+    r.start = s + 3;
+    r.end = s + 4;
+    POST_TRY(amark_dialect_edit_shrink(editor, text, r));
+    r.start = s;
+    r.end = s + 3;
+    POST_TRY(amark_dialect_edit_add_child(editor, para, AMARK_NODE_NONE,
+                                          AMARK_TEST_KIND_CHECK, r, NULL, 0,
+                                          &node));
+    if (amark_node_kind(doc, item) == AMARK_KIND_LIST_ITEM &&
+        amark_node_first_child(doc, item) == para) {
+        POST_TRY(amark_dialect_edit_set_kind(editor, item,
+                                             AMARK_TEST_KIND_TASK));
+        number = counts != NULL ? ++counts->tasks : 0;
+        n = sizeof data;
+        do {
+            data[--n] = (char)('0' + number % 10);
+            number /= 10;
+        } while (number > 0);
+        POST_TRY(amark_dialect_edit_set_data(editor, item, data + n,
+                                             sizeof data - n));
+    }
+
+    if (has_marker(c, s + 4, p.end, "post-order")) {
+        /* A second CHECK over the first: rejected (ORDER). */
+        POST_TRY(amark_dialect_edit_add_child(editor, para, AMARK_NODE_NONE,
+                                              AMARK_TEST_KIND_CHECK, r, NULL,
+                                              0, &node));
+    } else if (has_marker(c, s + 4, p.end, "post-status")) {
+        return AMARK_ERROR_INVALID_INPUT;
+    } else if (has_marker(c, s + 4, p.end, "post-nomem")) {
+        return AMARK_ERROR_NOMEM;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+#undef POST_TRY
+
+/*
+ * The postprocessing rule: walks the blocks of the document in document
+ * order with the functions of tree.h (without recursion) and makes the
+ * CHECK of each paragraph (check_paragraph). Stops at the first paragraph
+ * whose status is not AMARK_ERROR_NONE and returns it.
+ */
+static amark_error_t test_post(const amark_dialect_post_t *post, void *state,
+                               amark_dialect_editor_t *editor)
+{
+    amark_test_counts_t *counts = (amark_test_counts_t *)state;
+    const amark_document_t *doc = post->doc;
+    amark_node_id_t root = amark_document_root(doc);
+    amark_node_id_t node = root;
+    amark_node_id_t child;
+    amark_error_t err;
+
+    if (counts != NULL) {
+        counts->postprocesses++;
+    }
+    while (node != AMARK_NODE_NONE) {
+        child = AMARK_NODE_NONE;
+        if (amark_node_kind(doc, node) == AMARK_KIND_PARAGRAPH) {
+            err = check_paragraph(post, counts, editor, node);
+            if (err != AMARK_ERROR_NONE) {
+                return err;
+            }
+        } else {
+            child = amark_node_first_child(doc, node);
+        }
+        /* The children of a block are all blocks or all inlines. */
+        if (child != AMARK_NODE_NONE && amark_node_is_block(doc, child)) {
+            node = child;
+            continue;
+        }
+        while (node != root &&
+               amark_node_next_sibling(doc, node) == AMARK_NODE_NONE) {
+            node = amark_node_parent(doc, node);
+        }
+        node = node == root ? AMARK_NODE_NONE
+                            : amark_node_next_sibling(doc, node);
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/* ---------------------------------------------------------------------- */
+/* The definition */
+
 /* The inline rules, in the order they are tried. */
 static const amark_dialect_inline_rule_t k_test_inlines[] = {
     {'$', AMARK_TEST_KIND_VAR, var_inline},
@@ -899,7 +1052,7 @@ static const amark_dialect_extension_t k_test_extension = {
     sizeof k_test_inlines / sizeof k_test_inlines[0],
     k_test_delimiters,                              /* delimiters */
     sizeof k_test_delimiters / sizeof k_test_delimiters[0],
-    NULL,                                           /* postprocess */
+    test_post,                                      /* postprocess */
     test_state_new,                                 /* state_new */
     test_state_free                                 /* state_free */
 };

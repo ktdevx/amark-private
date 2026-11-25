@@ -26,6 +26,7 @@
 #include "arena.h"
 #include "block.h"
 #include "config_internal.h"
+#include "dialect_edit.h"
 #include "dialect_internal.h"
 #include "document.h"
 #include "inline.h"
@@ -804,9 +805,12 @@ NAOS_SUITE(order,
 /* The number of calls */
 
 /*
- * Parses length bytes of content with the test dialect as amark_parse does,
- * with a run state of this test, and returns the number of calls of the
- * inline rule that the dialect's state counted, read before the run ends.
+ * Parses length bytes of content with the test dialect as amark_parse does
+ * (the block parse, the inline parse and the postprocessing rules, in the
+ * order of parse_document in src/parse.c), with a run state of this test,
+ * and returns the number of calls of the inline rule that the dialect's
+ * state counted, read before the run ends. It also requires the
+ * postprocessing rule to have been called once (13.4).
  * Requires the parse to succeed and its tree to pass the check; g_doc is
  * the document.
  */
@@ -840,7 +844,14 @@ static uint64_t count_inline_calls(const char *content, size_t length)
         err = amark_inline_parse(g_doc, &resolved, &scratch, &run);
         amark_arena_deinit(&scratch);
     }
+    if (err == AMARK_ERROR_NONE) {
+        err = amark_dialect_postprocess(&run, resolved.max_nesting_depth,
+                                        resolved.max_node_count);
+    }
     calls = ((const amark_test_counts_t *)run.states[0])->inlines;
+    NAOS_CHECK_UINT_EQ(
+        ((const amark_test_counts_t *)run.states[0])->postprocesses,
+        err == AMARK_ERROR_NONE ? 1 : 0);
     amark_dialect_run_end(&run);
     NAOS_REQUIRE_INT_EQ(err, AMARK_ERROR_NONE);
     check_tree();

@@ -202,6 +202,17 @@ typedef struct amark_dialect_post {
  * has no state functions). A rule returns AMARK_ERROR_NONE on success;
  * AMARK_ERROR_NOMEM stops the parse, and any other error rejects the
  * rule's result.
+ *
+ * The postprocessing rule of each extension that has one is called once
+ * per document, after the inline parse, in the order of the extensions.
+ * Its edits are applied as they are made, so any other error it returns
+ * adds a diagnostic but does not undo them; the next extension's rule is
+ * called as usual. When an edit fails in a way the parse cannot go on from
+ * (a failed allocation, a limit exceeded), the parse ends with that error
+ * once the rule returns, whatever the rule returns.
+ *
+ * state_new returns AMARK_ERROR_NONE and may leave *state NULL; any other
+ * value ends the parse with AMARK_ERROR_NOMEM, before any rule is called.
  */
 typedef amark_error_t (*amark_dialect_block_start_fn)(
     const amark_dialect_line_t *line, void *state,

@@ -58,4 +58,27 @@ void amark_dialect_editor_init(amark_dialect_editor_t *editor,
                                amark_dialect_run_t *run, size_t extension,
                                size_t max_depth, size_t max_nodes);
 
+/*
+ * Calls the postprocessing rule of each extension of run->dialect that has
+ * one, in the order of the extensions, once each (9.1, 9.2). It is called
+ * once per document, after the inline parse. Each rule gets the document
+ * (run->doc, read with the functions of tree.h) and its content, its
+ * extension's per-document state, and an editor set up for its extension
+ * with the limits max_depth and max_nodes (0: no limit), on this function's
+ * stack.
+ *
+ * After a rule returns:
+ *   - if the editor has a lasting failure, returns it (10.10, 10.11);
+ *   - if the rule returned AMARK_ERROR_NOMEM, returns it (10.10);
+ *   - if it returned any value other than AMARK_ERROR_NONE, adds a
+ *     rejection diagnostic (hook POSTPROCESS, reason STATUS, at the start
+ *     of the root) and goes on with the next extension (10.4); the edits
+ *     the rule made stay (they each passed their checks, so the tree keeps
+ *     its invariants: 9.9, 10.5). A failure to add the diagnostic is
+ *     returned.
+ * Returns AMARK_ERROR_NONE when every rule ran.
+ */
+amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
+                                        size_t max_depth, size_t max_nodes);
+
 #endif /* AMARK_DIALECT_EDIT_H */

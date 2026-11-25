@@ -17,12 +17,21 @@
  * exactly as it was (every field of every node, the attributes and the
  * dump of the tree), add one diagnostic with the expected text and
  * position, and return AMARK_ERROR_INVALID_INPUT.
+ *
+ * The suite postprocess parses with amark_parse, which calls the
+ * postprocessing rules after the inline parse, once per document, in the
+ * order of the extensions (amark_dialect_postprocess; 1.4, 9.1, 9.2): the
+ * CHECK and TASK of the test dialect, its invalid edit, its undefined
+ * return value and its AMARK_ERROR_NOMEM (10.4, 10.5, 10.10, 15.1, 15.3,
+ * 15.4), and local dialects of two postprocessing extensions. Every tree
+ * returned passes amark_tree_check (9.9).
  */
 
 #include "dialect_edit.h"
 #include "dialect_internal.h"
 #include "document.h"
 #include "test_alloc.h"
+#include "test_dialect.h"
 #include "tree_check.h"
 #include "tree_dump.h"
 #include "tree_internal.h"
@@ -1821,6 +1830,508 @@ NAOS_SUITE(add_child,
     NAOS_ADD_TEST(add_child_rejects_arguments_the_contract_does_not_define)
 )
 
+/* ---------------------------------------------------------------------- */
+/* Postprocessing from the parse (amark_dialect_postprocess) */
+
+/*
+ * Two extensions with postprocessing rules, over the kinds of the first
+ * dialect. Each rule reads the first child of the root, a paragraph. The
+ * first adds an empty MARK at its start and then returns a value the
+ * contract does not define; the second adds an empty SUB at its end. The
+ * third splits the first text of the paragraph and returns
+ * AMARK_ERROR_NONE whatever the split returned.
+ */
+static amark_error_t post_first(const amark_dialect_post_t *post,
+                                void *state, amark_dialect_editor_t *editor)
+{
+    amark_node_id_t para = amark_node_first_child(post->doc,
+                                                  amark_document_root(
+                                                      post->doc));
+    amark_node_id_t out = AMARK_NODE_NONE;
+    amark_range_t r;
+
+    (void)state;
+    /* Checks only: a rule must not leave the parse through longjmp. */
+    if (!amark_node_range(post->doc, para, &r)) {
+        NAOS_CHECK_TRUE(false);
+        return AMARK_ERROR_NONE;
+    }
+    r.end = r.start;
+    NAOS_CHECK_INT_EQ(amark_dialect_edit_add_child(editor, para,
+                                                   AMARK_NODE_NONE, K_MARK,
+                                                   r, NULL, 0, &out),
+                      AMARK_ERROR_NONE);
+    return AMARK_ERROR_LIMIT_EXCEEDED;
+}
+
+static amark_error_t post_second(const amark_dialect_post_t *post,
+                                 void *state, amark_dialect_editor_t *editor)
+{
+    amark_node_id_t para = amark_node_first_child(post->doc,
+                                                  amark_document_root(
+                                                      post->doc));
+    amark_node_id_t out = AMARK_NODE_NONE;
+    amark_range_t r;
+
+    (void)state;
+    /* Checks only: a rule must not leave the parse through longjmp. */
+    if (!amark_node_range(post->doc, para, &r)) {
+        NAOS_CHECK_TRUE(false);
+        return AMARK_ERROR_NONE;
+    }
+    r.start = r.end;
+    NAOS_CHECK_INT_EQ(amark_dialect_edit_add_child(editor, para,
+                                                   AMARK_NODE_NONE, K_SUB, r,
+                                                   NULL, 0, &out),
+                      AMARK_ERROR_NONE);
+    return AMARK_ERROR_NONE;
+}
+
+static amark_error_t post_split(const amark_dialect_post_t *post,
+                                void *state, amark_dialect_editor_t *editor)
+{
+    amark_node_id_t para = amark_node_first_child(post->doc,
+                                                  amark_document_root(
+                                                      post->doc));
+    amark_node_id_t out = AMARK_NODE_NONE;
+    amark_range_t r;
+
+    (void)state;
+    if (!amark_node_range(post->doc, amark_node_first_child(post->doc, para),
+                          &r)) {
+        NAOS_CHECK_TRUE(false);
+        return AMARK_ERROR_NONE;
+    }
+    (void)amark_dialect_edit_split_text(editor,
+                                        amark_node_first_child(post->doc,
+                                                               para),
+                                        r.start + 1, &out);
+    return AMARK_ERROR_NONE;
+}
+
+static const amark_dialect_extension_t k_post1 = {
+    "first", k_kinds1, sizeof(k_kinds1) / sizeof(k_kinds1[0]),
+    NULL, 0, NULL, NULL, 0, NULL, 0, post_first, NULL, NULL};
+
+static const amark_dialect_extension_t k_post2 = {
+    "second", k_kinds2, sizeof(k_kinds2) / sizeof(k_kinds2[0]),
+    NULL, 0, NULL, NULL, 0, NULL, 0, post_second, NULL, NULL};
+
+static const amark_dialect_extension_t k_post_split = {
+    "first", k_kinds1, sizeof(k_kinds1) / sizeof(k_kinds1[0]),
+    NULL, 0, NULL, NULL, 0, NULL, 0, post_split, NULL, NULL};
+
+static const amark_dialect_extension_t *const k_post_exts[] = {&k_post1,
+                                                               &k_post2};
+static const amark_dialect_extension_t *const k_split_exts[] = {
+    &k_post_split, &k_post2};
+
+static const amark_dialect_t k_post_dialect = {
+    sizeof(amark_dialect_t), AMARK_DIALECT_ABI, k_post_exts, 2};
+static const amark_dialect_t k_split_dialect = {
+    sizeof(amark_dialect_t), AMARK_DIALECT_ABI, k_split_exts, 2};
+
+static amark_config_t g_config;
+static const char *g_content; /* the content parsed into g_doc */
+
+NAOS_SETUP(parse)
+{
+    amark_test_alloc_init(&g_state);
+    amark_config_init(&g_config);
+    g_config.allocator = amark_test_allocator(&g_state);
+    g_doc = NULL;
+    g_content = NULL;
+}
+
+NAOS_TEARDOWN(parse)
+{
+    g_state.fail_at = 0;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+/*
+ * Parses content with dialect: requires err, and on success a tree that
+ * passes the check and diagnostics diagnostics; on failure, no document.
+ */
+static void parse_with(const amark_dialect_t *dialect, const char *content,
+                       amark_error_t err, size_t diagnostics)
+{
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    g_content = content;
+    g_config.dialect = dialect;
+    NAOS_REQUIRE_INT_EQ(amark_parse(content, strlen(content), &g_config,
+                                    &g_doc),
+                        err);
+    if (err != AMARK_ERROR_NONE) {
+        NAOS_CHECK_NULL(g_doc);
+        return;
+    }
+    NAOS_REQUIRE_NOT_NULL(g_doc);
+    check_tree();
+    NAOS_CHECK_UINT_EQ(amark_document_diagnostic_count(g_doc), diagnostics);
+}
+
+/* Checks node: kind, block or inline, over [start, end). */
+static void check_node(amark_node_id_t node, amark_kind_t kind, bool block,
+                       size_t start, size_t end)
+{
+    amark_range_t r;
+
+    NAOS_REQUIRE_TRUE(node != AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, node), kind);
+    NAOS_CHECK_TRUE(amark_node_is_block(g_doc, node) == block);
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &r));
+    NAOS_CHECK_UINT_EQ(r.start, start);
+    NAOS_CHECK_UINT_EQ(r.end, end);
+}
+
+/* Checks that the attributes of node are the string data. */
+static void check_data(amark_node_id_t node, const char *data)
+{
+    size_t size = 99;
+    const void *bytes = amark_node_dialect_data(g_doc, node, &size);
+
+    NAOS_REQUIRE_NOT_NULL(bytes);
+    NAOS_REQUIRE_UINT_EQ(size, strlen(data));
+    NAOS_CHECK_TRUE(memcmp(bytes, data, size) == 0);
+}
+
+/*
+ * Checks a paragraph over [start, end) that the test dialect made a CHECK
+ * in: its children are the CHECK over "[x]", the text " " and then a text
+ * that starts after it, each one starting where the one before ends.
+ * Returns the third child.
+ */
+static amark_node_id_t check_checked(amark_node_id_t para, size_t start,
+                                     size_t end)
+{
+    amark_node_id_t check = amark_node_first_child(g_doc, para);
+    amark_node_id_t space;
+    amark_node_id_t rest;
+    amark_node_id_t node;
+    amark_range_t prev;
+    amark_range_t r;
+
+    check_node(para, AMARK_KIND_PARAGRAPH, true, start, end);
+    check_node(check, AMARK_TEST_KIND_CHECK, false, start, start + 3);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, check), AMARK_NODE_NONE);
+    NAOS_CHECK_UINT_EQ(amark_node_parent(g_doc, check), para);
+    space = amark_node_next_sibling(g_doc, check);
+    check_node(space, AMARK_KIND_TEXT, false, start + 3, start + 4);
+    rest = amark_node_next_sibling(g_doc, space);
+    NAOS_REQUIRE_TRUE(rest != AMARK_NODE_NONE);
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, rest, &r));
+    NAOS_CHECK_UINT_EQ(r.start, start + 4);
+    /* Siblings in source order, within the paragraph. */
+    NAOS_REQUIRE_TRUE(amark_node_range(g_doc, check, &prev));
+    for (node = space; node != AMARK_NODE_NONE;
+         node = amark_node_next_sibling(g_doc, node)) {
+        NAOS_REQUIRE_TRUE(amark_node_range(g_doc, node, &r));
+        NAOS_CHECK_UINT_LE(prev.end, r.start);
+        NAOS_CHECK_UINT_LE(r.end, end);
+        prev = r;
+    }
+    return rest;
+}
+
+/* Checks diagnostic index of g_doc against g_content. */
+static void check_parse_diagnostic(size_t index, size_t offset,
+                                   const char *message)
+{
+    amark_diagnostic_t diag;
+    size_t line = 1;
+    size_t i;
+
+    for (i = 0; i < offset; i++) {
+        if (g_content[i] == '\n') {
+            line++;
+        }
+    }
+    NAOS_REQUIRE_TRUE(amark_document_diagnostic(g_doc, index, &diag));
+    NAOS_CHECK_UINT_EQ(diag.offset, offset);
+    NAOS_CHECK_UINT_EQ(diag.line, line);
+    NAOS_CHECK_INT_EQ(diag.severity, AMARK_SEVERITY_ERROR);
+    NAOS_CHECK_STR_EQ(diag.message, message);
+}
+
+#define MSG_TEST "dialect \"test\": postprocess: "
+
+NAOS_TEST(postprocess_makes_checks_and_tasks)
+{
+    static const char k_in[] = "- [x] done\n"      /* 0 */
+                               "- [ ] todo *em*\n" /* 11 */
+                               "- plain\n"         /* 27 */
+                               "\n"                /* 35 */
+                               "[ ] loose\n";      /* 36 */
+    amark_node_id_t root;
+    amark_node_id_t list;
+    amark_node_id_t item;
+    amark_node_id_t rest;
+
+    parse_with(amark_test_dialect(), k_in, AMARK_ERROR_NONE, 0);
+    root = amark_document_root(g_doc);
+    list = amark_node_first_child(g_doc, root);
+    NAOS_CHECK_UINT_EQ(amark_node_kind(g_doc, list), AMARK_KIND_LIST);
+
+    /* The list items become TASKs, numbered in document order. */
+    item = amark_node_first_child(g_doc, list);
+    check_node(item, AMARK_TEST_KIND_TASK, true, 0, 10);
+    check_data(item, "1");
+    rest = check_checked(amark_node_first_child(g_doc, item), 2, 10);
+    check_node(rest, AMARK_KIND_TEXT, false, 6, 10);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, rest), AMARK_NODE_NONE);
+
+    item = amark_node_next_sibling(g_doc, item);
+    check_node(item, AMARK_TEST_KIND_TASK, true, 11, 26);
+    check_data(item, "2");
+    rest = check_checked(amark_node_first_child(g_doc, item), 13, 26);
+    check_node(rest, AMARK_KIND_TEXT, false, 17, 22);
+    check_node(amark_node_next_sibling(g_doc, rest), AMARK_KIND_EMPHASIS,
+               false, 22, 26);
+
+    /* Without the mark, the item stays. */
+    item = amark_node_next_sibling(g_doc, item);
+    check_node(item, AMARK_KIND_LIST_ITEM, true, 27, 34);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, item), AMARK_NODE_NONE);
+
+    /* Outside a list item: the CHECK only. */
+    rest = check_checked(amark_node_next_sibling(g_doc, list), 36, 45);
+    check_node(rest, AMARK_KIND_TEXT, false, 40, 45);
+
+    NAOS_REQUIRE_UINT_LT(amark_test_dump_tree(g_doc, g_after, SNAPSHOT_SIZE),
+                         SNAPSHOT_SIZE);
+    NAOS_CHECK_STR_EQ(g_after,
+                      "(doc (ul - tight (? (p (?) (text \" \") "
+                      "(text \"done\"))) (? (p (?) (text \" \") "
+                      "(text \"todo \") (em (text \"em\")))) "
+                      "(li (p (text \"plain\")))) "
+                      "(p (?) (text \" \") (text \"loose\")))");
+}
+
+NAOS_TEST(postprocess_needs_the_mark_at_the_start_of_the_paragraph)
+{
+    /* The mark alone, inside the text, after an inline, in a later
+     * paragraph of the item, and in a box: the CHECK where it starts a
+     * paragraph, the TASK only for the first paragraph of an item. */
+    static const char k_in[] = "[x]\n"            /* 0 */
+                               "\n"               /* 4 */
+                               "a [x] b\n"        /* 5 */
+                               "\n"               /* 13 */
+                               "*e* [x] c\n"      /* 14 */
+                               "\n"               /* 24 */
+                               "- a\n"            /* 25 */
+                               "\n"               /* 29 */
+                               "  [x] b\n"        /* 30 */
+                               "\n"               /* 38 */
+                               "@> [ ] d\n";      /* 39 */
+    amark_node_id_t node;
+    amark_node_id_t item;
+
+    parse_with(amark_test_dialect(), k_in, AMARK_ERROR_NONE, 0);
+    node = amark_node_first_child(g_doc, amark_document_root(g_doc));
+    check_node(amark_node_first_child(g_doc, node), AMARK_KIND_TEXT, false,
+               0, 3);
+    node = amark_node_next_sibling(g_doc, node);
+    check_node(amark_node_first_child(g_doc, node), AMARK_KIND_TEXT, false,
+               5, 12);
+    node = amark_node_next_sibling(g_doc, node);
+    check_node(amark_node_first_child(g_doc, node), AMARK_KIND_EMPHASIS,
+               false, 14, 17);
+    node = amark_node_next_sibling(g_doc, node);
+    item = amark_node_first_child(g_doc, node);
+    check_node(item, AMARK_KIND_LIST_ITEM, true, 25, 37);
+    check_checked(amark_node_next_sibling(g_doc,
+                                          amark_node_first_child(g_doc, item)),
+                  32, 37);
+    node = amark_node_next_sibling(g_doc, node);
+    check_node(node, AMARK_TEST_KIND_BOX, true, 39, 47);
+    check_checked(amark_node_first_child(g_doc, node), 42, 47);
+}
+
+NAOS_TEST(postprocess_numbers_the_tasks_of_each_document_from_one)
+{
+    static const char k_in[] = "- [x] a\n  - [ ] b\n- [x] c\n";
+    amark_node_id_t outer;
+    amark_node_id_t inner;
+    int i;
+
+    /* The count is per document: the second parse starts again. */
+    for (i = 0; i < 2; i++) {
+        parse_with(amark_test_dialect(), k_in, AMARK_ERROR_NONE, 0);
+        outer = amark_node_first_child(g_doc,
+                                       amark_document_root(g_doc));
+        outer = amark_node_first_child(g_doc, outer);
+        check_node(outer, AMARK_TEST_KIND_TASK, true, 0, 17);
+        check_data(outer, "1");
+        inner = amark_node_first_child(
+            g_doc, amark_node_next_sibling(g_doc,
+                                           amark_node_first_child(g_doc,
+                                                                  outer)));
+        check_node(inner, AMARK_TEST_KIND_TASK, true, 10, 17);
+        check_data(inner, "2");
+        outer = amark_node_next_sibling(g_doc, outer);
+        check_node(outer, AMARK_TEST_KIND_TASK, true, 18, 25);
+        check_data(outer, "3");
+    }
+}
+
+NAOS_TEST(an_invalid_edit_adds_a_diagnostic_and_the_rule_goes_on)
+{
+    static const char k_in[] = "- [x] !post-order\n" /* 0 */
+                               "- [ ] b\n";          /* 18 */
+    amark_node_id_t item;
+
+    parse_with(amark_test_dialect(), k_in, AMARK_ERROR_NONE, 1);
+    check_parse_diagnostic(0, 2, MSG_TEST R_ORDER);
+    /* The edits before it stay; one CHECK only; later paragraphs too. */
+    item = amark_node_first_child(g_doc, amark_node_first_child(
+                                             g_doc,
+                                             amark_document_root(g_doc)));
+    check_node(item, AMARK_TEST_KIND_TASK, true, 0, 17);
+    check_checked(amark_node_first_child(g_doc, item), 2, 17);
+    item = amark_node_next_sibling(g_doc, item);
+    check_node(item, AMARK_TEST_KIND_TASK, true, 18, 25);
+    check_data(item, "2");
+    check_checked(amark_node_first_child(g_doc, item), 20, 25);
+}
+
+NAOS_TEST(an_undefined_return_value_adds_a_diagnostic_and_keeps_the_edits)
+{
+    static const char k_in[] = "x\n"                /* 0 */
+                               "\n"                 /* 2 */
+                               "[x] !post-status\n" /* 3 */
+                               "\n"                 /* 20 */
+                               "[x] b\n";           /* 21 */
+    amark_node_id_t para;
+
+    parse_with(amark_test_dialect(), k_in, AMARK_ERROR_NONE, 1);
+    /* At the start of the parsed range. */
+    check_parse_diagnostic(0, 0, MSG_TEST R_STATUS);
+    para = amark_node_next_sibling(
+        g_doc, amark_node_first_child(g_doc, amark_document_root(g_doc)));
+    check_checked(para, 3, 19);
+    /* The rule returned before the last paragraph. */
+    para = amark_node_next_sibling(g_doc, para);
+    check_node(amark_node_first_child(g_doc, para), AMARK_KIND_TEXT, false,
+               21, 26);
+}
+
+NAOS_TEST(an_undefined_return_value_is_at_the_start_of_the_parsed_range)
+{
+    static const char k_in[] = "skip\n[x] !post-status\nskip\n";
+
+    g_config.start = 5;
+    g_config.end = 22;
+    parse_with(amark_test_dialect(), k_in, AMARK_ERROR_NONE, 1);
+    check_parse_diagnostic(0, 5, MSG_TEST R_STATUS);
+}
+
+NAOS_TEST(an_undefined_return_value_goes_on_with_the_next_extension)
+{
+    static const char k_in[] = "ab\n";
+    amark_node_id_t para;
+    amark_node_id_t node;
+
+    parse_with(&k_post_dialect, k_in, AMARK_ERROR_NONE, 1);
+    check_parse_diagnostic(0, 0, MSG_FIRST R_STATUS);
+    para = amark_node_first_child(g_doc, amark_document_root(g_doc));
+    /* The edit of the first rule stays; the second rule ran after it. */
+    node = amark_node_first_child(g_doc, para);
+    check_node(node, K_MARK, false, 0, 0);
+    node = amark_node_next_sibling(g_doc, node);
+    check_node(node, AMARK_KIND_TEXT, false, 0, 2);
+    node = amark_node_next_sibling(g_doc, node);
+    check_node(node, K_SUB, false, 2, 2);
+    NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, node), AMARK_NODE_NONE);
+}
+
+NAOS_TEST(a_rule_that_returns_nomem_ends_the_parse)
+{
+    parse_with(amark_test_dialect(), "- [x] !post-nomem\n", AMARK_ERROR_NOMEM,
+               0);
+    /* After edits, and before any. */
+    parse_with(amark_test_dialect(), "[ ] !post-nomem\n", AMARK_ERROR_NOMEM,
+               0);
+}
+
+NAOS_TEST(a_lasting_failure_ends_the_parse_with_its_error)
+{
+    /* doc, paragraph, text: the split of the test dialect is one too many. */
+    g_config.max_node_count = 3;
+    parse_with(amark_test_dialect(), "[x] a\n", AMARK_ERROR_LIMIT_EXCEEDED, 0);
+    /* Even when the rule returns AMARK_ERROR_NONE after it. */
+    parse_with(&k_split_dialect, "ab\n", AMARK_ERROR_LIMIT_EXCEEDED, 0);
+    /* With room for the nodes, both succeed. */
+    g_config.max_node_count = 6;
+    parse_with(amark_test_dialect(), "[x] a\n", AMARK_ERROR_NONE, 0);
+    parse_with(&k_split_dialect, "ab\n", AMARK_ERROR_NONE, 0);
+}
+
+NAOS_TEST(an_input_with_every_hook_of_the_test_dialect_parses)
+{
+    static const char k_in[] =
+        "@> box $v$ and ~s~\n"
+        "@> - [x] task in a box\n"
+        "\n"
+        "@note: note\n"
+        "  more ~~x~~\n"
+        "\n"
+        "  @@@\n"
+        "  fenced\n"
+        "  @@@\n"
+        "@line *line* $ab$\n"
+        "head\n"
+        "| a | *b* |\n"
+        "| c | `d` |\n"
+        "\n"
+        "- [ ] todo $x$\n"
+        "- [x] done\n";
+    static const amark_kind_t k_kinds[] = {
+        AMARK_TEST_KIND_BOX,  AMARK_TEST_KIND_NOTE,   AMARK_TEST_KIND_FENCE,
+        AMARK_TEST_KIND_LINE, AMARK_TEST_KIND_GRID,   AMARK_TEST_KIND_ROW,
+        AMARK_TEST_KIND_CELL, AMARK_TEST_KIND_VAR,    AMARK_TEST_KIND_STRIKE,
+        AMARK_TEST_KIND_CHECK, AMARK_TEST_KIND_TASK};
+    size_t seen[sizeof k_kinds / sizeof k_kinds[0]];
+    amark_node_id_t node;
+    size_t i;
+
+    parse_with(amark_test_dialect(), k_in, AMARK_ERROR_NONE, 0);
+    memset(seen, 0, sizeof seen);
+    for (node = 1; node <= amark_document_node_count(g_doc); node++) {
+        for (i = 0; i < sizeof k_kinds / sizeof k_kinds[0]; i++) {
+            if (amark_node_kind(g_doc, node) == k_kinds[i]) {
+                seen[i]++;
+            }
+        }
+    }
+    for (i = 0; i < sizeof k_kinds / sizeof k_kinds[0]; i++) {
+        NAOS_CHECK_UINT_GT(seen[i], 0);
+    }
+    NAOS_CHECK_UINT_EQ(seen[10], 3); /* TASK */
+    NAOS_CHECK_UINT_EQ(seen[9], 3);  /* CHECK */
+}
+
+NAOS_SUITE(postprocess,
+    NAOS_SET_SETUP(parse),
+    NAOS_SET_TEARDOWN(parse),
+    NAOS_ADD_TEST(postprocess_makes_checks_and_tasks),
+    NAOS_ADD_TEST(postprocess_needs_the_mark_at_the_start_of_the_paragraph),
+    NAOS_ADD_TEST(postprocess_numbers_the_tasks_of_each_document_from_one),
+    NAOS_ADD_TEST(an_invalid_edit_adds_a_diagnostic_and_the_rule_goes_on),
+    NAOS_ADD_TEST(
+        an_undefined_return_value_adds_a_diagnostic_and_keeps_the_edits),
+    NAOS_ADD_TEST(
+        an_undefined_return_value_is_at_the_start_of_the_parsed_range),
+    NAOS_ADD_TEST(an_undefined_return_value_goes_on_with_the_next_extension),
+    NAOS_ADD_TEST(a_rule_that_returns_nomem_ends_the_parse),
+    NAOS_ADD_TEST(a_lasting_failure_ends_the_parse_with_its_error),
+    NAOS_ADD_TEST(an_input_with_every_hook_of_the_test_dialect_parses)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(common),
     NAOS_ADD_SUITE(set_kind),
@@ -1828,5 +2339,6 @@ NAOS_MAIN(
     NAOS_ADD_SUITE(shrink),
     NAOS_ADD_SUITE(add_child),
     NAOS_ADD_SUITE(split_text),
-    NAOS_ADD_SUITE(adding)
+    NAOS_ADD_SUITE(adding),
+    NAOS_ADD_SUITE(postprocess)
 )

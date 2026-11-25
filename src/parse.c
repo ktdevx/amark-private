@@ -10,8 +10,9 @@
  * parse data, begins the run state of the dialect (only when there is one),
  * runs the block parser with a scratch arena, and then the inline parser
  * with the scratch arena made again (nothing of the block parse is kept in
- * it). Owns the lifetimes of the document, the run state and the scratch
- * arena; knows no block or inline rules.
+ * it), and then, with a dialect, its postprocessing rules. Owns the
+ * lifetimes of the document, the run state and the scratch arena; knows no
+ * block or inline rules.
  */
 
 #include <amark/parse.h>
@@ -21,6 +22,7 @@
 #include "arena.h"
 #include "block.h"
 #include "config_internal.h"
+#include "dialect_edit.h"
 #include "dialect_internal.h"
 #include "document.h"
 #include "inline.h"
@@ -68,6 +70,10 @@ static amark_error_t parse_document(const unsigned char *bytes, size_t length,
             amark_arena_init(&scratch, &config->allocator);
             err = amark_inline_parse(doc, config, &scratch, run);
             amark_arena_deinit(&scratch);
+        }
+        if (err == AMARK_ERROR_NONE && run != NULL) {
+            err = amark_dialect_postprocess(run, config->max_nesting_depth,
+                                            config->max_node_count);
         }
     }
     if (run != NULL) {
