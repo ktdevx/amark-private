@@ -3805,10 +3805,297 @@ NAOS_SUITE(para,
     NAOS_ADD_TEST(failed_allocations_in_a_replacement_end_the_parse_with_nomem)
 )
 
+/* ---------------------------------------------------------------------- */
+/* Invalid results through the markers of the test dialect */
+
+/*
+ * The test dialect selects an invalid result by a marker in the input: "!"
+ * and a name right after the syntax (test_dialect.h). These tests go
+ * through amark_test_dialect() only; the setup and teardown of "start"
+ * (teardown: no block left, so the per-document state is freed too).
+ */
+
+/* Parses content with the test dialect and requires AMARK_ERROR_NOMEM. */
+static void check_marker_nomem(const char *content)
+{
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    amark_test_alloc_init(&g_state);
+    g_config.allocator = amark_test_allocator(&g_state);
+    g_config.dialect = amark_test_dialect();
+    NAOS_CHECK_INT_EQ(amark_parse(content, strlen(content), &g_config,
+                                  &g_doc),
+                      AMARK_ERROR_NOMEM);
+    NAOS_CHECK_NULL(g_doc);
+    NAOS_CHECK_UINT_GT(g_state.free_calls, 0);
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    g_config.dialect = NULL;
+}
+
+NAOS_TEST(marker_start_results_that_are_invalid_open_nothing)
+{
+    /* "@> !start-origin a" 0-18: a paragraph; the box at 20 is parsed. */
+    PARSE(amark_test_dialect(), "@> !start-origin a\n\n@> b\n", 1);
+    check_start_diagnostic(0, "test", "range does not start at the position",
+                           0, 1);
+    check_shape("doc[0,25](p[0,18] box[20,24](p[23,24]))");
+
+    /* In a block quote: the diagnostic is at the position, 2. */
+    PARSE(amark_test_dialect(), "> @> !start-line a\n", 1);
+    check_start_diagnostic(0, "test", "range leaves the line", 2, 1);
+    check_shape("doc[0,19](bq[0,18](p[2,18]))");
+
+    /* A container of length 0. */
+    PARSE(amark_test_dialect(), "@note: !start-empty\n", 1);
+    check_start_diagnostic(0, "test", "empty range", 0, 1);
+    check_shape("doc[0,20](p[0,19])");
+    PARSE(amark_test_dialect(), "x\n\n@> !start-empty\n", 1);
+    check_start_diagnostic(0, "test", "empty range", 3, 3);
+    check_shape("doc[0,19](p[0,1] p[3,18])");
+
+    /* A status the contract does not define, on the leaves. */
+    PARSE(amark_test_dialect(), "@line !start-status\n", 1);
+    check_start_diagnostic(0, "test", "unknown return value", 0, 1);
+    check_shape("doc[0,20](p[0,19])");
+    PARSE(amark_test_dialect(), "@@@!start-line\n", 1);
+    check_start_diagnostic(0, "test", "range leaves the line", 0, 1);
+    check_shape("doc[0,15](p[0,14])");
+}
+
+NAOS_TEST(marker_continue_results_that_are_invalid_continue_nothing)
+{
+    amark_node_id_t box;
+
+    /*
+     * "@> a" 0-4, "@> !cont-origin b" 5-22, "@> c" 23-27. The first box
+     * does not go on over line 2; a new box opens there and goes on over
+     * line 3 (the rule is called again and accepted).
+     */
+    PARSE(amark_test_dialect(), "@> a\n@> !cont-origin b\n@> c\n", 1);
+    check_continue_diagnostic(0, "test",
+                              "range does not start at the position", 5, 2);
+    check_shape("doc[0,28](box[0,4](p[3,4]) box[5,27](p[8,27]))");
+    box = first_block();
+    check_node(box, AMARK_TEST_KIND_BOX, 0, 4, 1, 1, "1");
+    check_node(amark_node_next_sibling(g_doc, box), AMARK_TEST_KIND_BOX, 5,
+               27, 2, 3, "2");
+
+    PARSE(amark_test_dialect(), "@> a\n@> !cont-line b\n", 1);
+    check_continue_diagnostic(0, "test", "range leaves the line", 5, 2);
+    check_shape("doc[0,21](box[0,4](p[3,4]) box[5,20](p[8,20]))");
+
+    PARSE(amark_test_dialect(), "@> a\n@> !cont-status\n", 1);
+    check_continue_diagnostic(0, "test", "unknown return value", 5, 2);
+    check_shape("doc[0,21](box[0,4](p[3,4]) box[5,20](p[8,20]))");
+
+    /* In a block quote: the position is after its prefix. */
+    PARSE(amark_test_dialect(), "> @> a\n> @> !cont-origin\n", 1);
+    check_continue_diagnostic(0, "test",
+                              "range does not start at the position", 9, 2);
+    check_shape("doc[0,25](bq[0,24](box[2,6](p[5,6]) box[9,24](p[12,24])))");
+}
+
+NAOS_TEST(marker_close_replies_of_dialect_blocks_that_are_invalid)
+{
+    amark_node_id_t node;
+
+    /* A container: the attributes it would set are not kept. */
+    PARSE(amark_test_dialect(), "@> !close-index a\n\n@> b\n", 1);
+    check_close_diagnostic(0, "test", "parent is not an earlier block", 0,
+                           1);
+    check_shape("doc[0,24](box[0,17](p[3,17]) box[19,23](p[22,23]))");
+    node = first_block();
+    check_node(node, AMARK_TEST_KIND_BOX, 0, 17, 1, 1, NULL);
+    check_node(amark_node_next_sibling(g_doc, node), AMARK_TEST_KIND_BOX, 19,
+               23, 3, 3, "1");
+
+    PARSE(amark_test_dialect(), "@> !close-nesting\n", 1);
+    check_close_diagnostic(0, "test", "node not allowed at this place", 0, 1);
+    check_node(first_block(), AMARK_TEST_KIND_BOX, 0, 17, 1, 1, NULL);
+
+    PARSE(amark_test_dialect(), "@> !close-inline\n", 1);
+    check_close_diagnostic(0, "test", "inline content not allowed here", 0,
+                           1);
+    check_node(first_block(), AMARK_TEST_KIND_BOX, 0, 16, 1, 1, NULL);
+
+    PARSE(amark_test_dialect(), "@> !close-status\n", 1);
+    check_close_diagnostic(0, "test", "unknown return value", 0, 1);
+    check_node(first_block(), AMARK_TEST_KIND_BOX, 0, 16, 1, 1, NULL);
+
+    /* Leaves: neither attributes nor inline content are kept. */
+    PARSE(amark_test_dialect(), "@@@!close-bounds\nx\n@@@\nafter\n", 1);
+    check_close_diagnostic(0, "test", "range leaves the content", 0, 1);
+    check_shape("doc[0,29](fence[0,22] p[23,28])");
+    check_node(first_block(), AMARK_TEST_KIND_FENCE, 0, 22, 1, 3, NULL);
+
+    PARSE(amark_test_dialect(), "@line !close-parent x\nnext\n", 1);
+    check_close_diagnostic(0, "test", "range leaves the parent", 0, 1);
+    check_shape("doc[0,27](line[0,21] p[22,26])");
+    node = first_block();
+    check_node(node, AMARK_TEST_KIND_LINE, 0, 21, 1, 1, NULL);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, node), AMARK_NODE_NONE);
+
+    PARSE(amark_test_dialect(), "@line !close-index x\n", 1);
+    check_close_diagnostic(0, "test", "parent is not an earlier block", 0,
+                           1);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, first_block()),
+                       AMARK_NODE_NONE);
+
+    PARSE(amark_test_dialect(), "@line !close-nesting x\n", 1);
+    check_close_diagnostic(0, "test", "node not allowed at this place", 0, 1);
+
+    PARSE(amark_test_dialect(), "@line !close-status x\n", 1);
+    check_close_diagnostic(0, "test", "unknown return value", 0, 1);
+    NAOS_CHECK_UINT_EQ(amark_node_first_child(g_doc, first_block()),
+                       AMARK_NODE_NONE);
+
+    /*
+     * A fence in a box: "@> " 0-3, "@@@!close-prefix" 3-19, "@> b" 20-24;
+     * an inline range from 20, in the box's prefix on line 2.
+     */
+    PARSE(amark_test_dialect(), "@> @@@!close-prefix\n@> b\n", 1);
+    check_close_diagnostic(0, "test", "range ends inside a line prefix", 3,
+                           1);
+    check_shape("doc[0,25](box[0,24](fence[3,24]))");
+    check_node(amark_node_first_child(g_doc, first_block()),
+               AMARK_TEST_KIND_FENCE, 3, 24, 1, 2, NULL);
+}
+
+/* A close marker of the grid, and the reason it gives. */
+typedef struct {
+    const char *name;
+    const char *reason;
+} grid_marker_t;
+
+static const grid_marker_t k_grid_markers[] = {
+    {"index", "parent is not an earlier block"},
+    {"kind", "kind not registered by the extension"},
+    {"nesting", "node not allowed at this place"},
+    {"bounds", "range leaves the content"},
+    {"parent", "range leaves the parent"},
+    {"order", "siblings overlap or are out of order"},
+    {"inline", "inline content not allowed here"},
+    {"prefix", "range ends inside a line prefix"},
+    {"paragraph", "paragraph part does not cover whole lines"},
+    {"status", "unknown return value"},
+};
+
+NAOS_TEST(marker_close_replies_of_paragraphs_that_are_invalid)
+{
+    char content[64];
+    char shape[128];
+    size_t i;
+
+    for (i = 0; i < sizeof k_grid_markers / sizeof k_grid_markers[0]; i++) {
+        size_t n = strlen(k_grid_markers[i].name);
+        int length;
+
+        /*
+         * "|!close-NAME a" 0-(10+n), " b" (11+n)-(13+n): the paragraph
+         * stays as it is; "after" (15+n)-(20+n) is parsed.
+         */
+        length = sprintf(content, "|!close-%s a\n b\n\nafter\n",
+                         k_grid_markers[i].name);
+        parse_with(amark_test_dialect(), content, (size_t)length, 1);
+        check_close_diagnostic(0, "test", k_grid_markers[i].reason, 0, 1);
+        (void)sprintf(shape, "doc[0,%lu](p[0,%lu] p[%lu,%lu])",
+                      (unsigned long)(21 + n), (unsigned long)(13 + n),
+                      (unsigned long)(15 + n), (unsigned long)(20 + n));
+        check_shape(shape);
+    }
+
+    /* In a block quote, after a line: the diagnostic is at the paragraph. */
+    PARSE(amark_test_dialect(), "> x\n> |!close-order\n", 1);
+    check_close_diagnostic(0, "test", "siblings overlap or are out of order",
+                           2, 1);
+    check_shape("doc[0,20](bq[0,19](p[2,19]))");
+}
+
+NAOS_TEST(marker_nomem_from_each_hook_ends_the_parse)
+{
+    check_marker_nomem("a\n\n@> !start-nomem\n");
+    check_marker_nomem("@line !start-nomem\n");
+    check_marker_nomem("@> a\n@> !cont-nomem\n");
+    check_marker_nomem("@> !close-nomem\n");
+    check_marker_nomem("@@@!close-nomem\n");
+    check_marker_nomem("@line !close-nomem\n");
+    check_marker_nomem("a\n\n|!close-nomem\n");
+}
+
+NAOS_TEST(marker_rejected_rules_are_called_again_and_accepted)
+{
+    amark_node_id_t node;
+
+    /* Start: see marker_start_results_that_are_invalid_open_nothing. */
+    PARSE(amark_test_dialect(), "@line !start-origin\n\n@line a\n", 1);
+    check_shape("doc[0,29](p[0,19] line[21,28])");
+
+    /* Continue: the same box rule, later in the same box. */
+    PARSE(amark_test_dialect(), "@> a\n@> b\n@> !cont-line\n@> c\n@> d\n",
+          1);
+    check_shape("doc[0,34](box[0,9](p[3,9]) box[10,33](p[13,33]))");
+    node = amark_node_next_sibling(g_doc, first_block());
+    check_node(node, AMARK_TEST_KIND_BOX, 10, 33, 3, 5, "3");
+
+    /* Close: a fence, then the grid. */
+    PARSE(amark_test_dialect(), "@@@!close-index\n@@@\n\n@@@\n@@@\n", 1);
+    check_shape("doc[0,29](fence[0,19] fence[21,28])");
+    check_node(first_block(), AMARK_TEST_KIND_FENCE, 0, 19, 1, 2, NULL);
+    check_node(amark_node_next_sibling(g_doc, first_block()),
+               AMARK_TEST_KIND_FENCE, 21, 28, 4, 5, "2");
+    PARSE(amark_test_dialect(), "|!close-order\n\n|a|\n", 1);
+    check_shape("doc[0,19](p[0,13] grid[15,18](row[15,18](cell[16,17])))");
+}
+
+NAOS_TEST(marker_inputs_whose_results_all_pass_have_no_diagnostic)
+{
+    PARSE(amark_test_dialect(),
+          "@> a\n@> b\n\n@note: c\n  d\n\n@@@\nx\n@@@\n@line e\n|f|g|\n", 0);
+    check_shape("doc[0,49](box[0,9](p[3,9]) note[11,23](p[18,23]) "
+                "fence[25,34] line[35,42] grid[43,48](row[43,48]"
+                "(cell[44,45] cell[46,47])))");
+    /* Names that are no marker are kept as text. */
+    PARSE(amark_test_dialect(), "@> !other a\n\n|!other|\n", 0);
+    check_shape("doc[0,22](box[0,11](p[3,11]) grid[13,21](row[13,21]"
+                "(cell[14,20])))");
+}
+
+NAOS_TEST(marker_diagnostics_are_in_the_order_found)
+{
+    /*
+     * "@> !close-index a" 0-17, "@> @> !start-origin b" 18-39, "" 40,
+     * "|!close-kind" 41-53. The start on line 2 is found before the box
+     * that starts on line 1 closes.
+     */
+    PARSE(amark_test_dialect(),
+          "@> !close-index a\n@> @> !start-origin b\n\n|!close-kind\n", 3);
+    check_start_diagnostic(0, "test", "range does not start at the position",
+                           21, 2);
+    check_close_diagnostic(1, "test", "parent is not an earlier block", 0,
+                           1);
+    check_close_diagnostic(2, "test", "kind not registered by the extension",
+                           41, 4);
+    check_shape("doc[0,54](box[0,39](p[3,39]) p[41,53])");
+}
+
+NAOS_SUITE(marker,
+    NAOS_SET_SETUP(start),
+    NAOS_SET_TEARDOWN(start),
+    NAOS_ADD_TEST(marker_start_results_that_are_invalid_open_nothing),
+    NAOS_ADD_TEST(marker_continue_results_that_are_invalid_continue_nothing),
+    NAOS_ADD_TEST(marker_close_replies_of_dialect_blocks_that_are_invalid),
+    NAOS_ADD_TEST(marker_close_replies_of_paragraphs_that_are_invalid),
+    NAOS_ADD_TEST(marker_nomem_from_each_hook_ends_the_parse),
+    NAOS_ADD_TEST(marker_rejected_rules_are_called_again_and_accepted),
+    NAOS_ADD_TEST(marker_inputs_whose_results_all_pass_have_no_diagnostic),
+    NAOS_ADD_TEST(marker_diagnostics_are_in_the_order_found)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(reply),
     NAOS_ADD_SUITE(start),
     NAOS_ADD_SUITE(cont),
     NAOS_ADD_SUITE(close),
-    NAOS_ADD_SUITE(para)
+    NAOS_ADD_SUITE(para),
+    NAOS_ADD_SUITE(marker)
 )

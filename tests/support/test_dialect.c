@@ -42,6 +42,134 @@ static void test_state_free(const amark_allocator_t *allocator, void *state)
     }
 }
 
+/* ---------------------------------------------------------------------- */
+/* The markers of invalid results (test_dialect.h) */
+
+/*
+ * Whether "!" and name are at at, before end, followed by end or by a
+ * space, a tab or a line ending.
+ */
+static bool has_marker(const char *content, size_t at, size_t end,
+                       const char *name)
+{
+    size_t n = strlen(name);
+
+    if (at >= end || end - at < n + 1 || content[at] != '!' ||
+        memcmp(content + at + 1, name, n) != 0) {
+        return false;
+    }
+    at += n + 1;
+    return at == end || content[at] == ' ' || content[at] == '\t' ||
+           content[at] == '\n' || content[at] == '\r';
+}
+
+/*
+ * Turns the start *out just matched into the invalid result that a start
+ * marker after its syntax (at out->consumed.end) selects, and returns the
+ * status to return. No marker: *out stays and AMARK_ERROR_NONE.
+ */
+static amark_error_t start_marker(const amark_dialect_line_t *line,
+                                  amark_dialect_block_start_result_t *out)
+{
+    const char *c = line->content;
+    size_t at = out->consumed.end;
+    size_t end = line->line_end;
+
+    if (has_marker(c, at, end, "start-origin")) {
+        out->consumed.start = line->position + 1;
+    } else if (has_marker(c, at, end, "start-line")) {
+        out->consumed.end = line->line_end + 1;
+    } else if (has_marker(c, at, end, "start-empty")) {
+        out->consumed.end = out->consumed.start;
+    } else if (has_marker(c, at, end, "start-status")) {
+        return AMARK_ERROR_INVALID_INPUT;
+    } else if (has_marker(c, at, end, "start-nomem")) {
+        return AMARK_ERROR_NOMEM;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/*
+ * The same for the continue *out just matched, with a continue marker after
+ * the prefix it consumes.
+ */
+static amark_error_t continue_marker(
+    const amark_dialect_line_t *line,
+    amark_dialect_block_continue_result_t *out)
+{
+    const char *c = line->content;
+    size_t at = out->consumed.end;
+    size_t end = line->line_end;
+
+    if (has_marker(c, at, end, "cont-origin")) {
+        out->consumed.start = line->position + 1;
+    } else if (has_marker(c, at, end, "cont-line")) {
+        out->consumed.end = line->line_end + 1;
+    } else if (has_marker(c, at, end, "cont-status")) {
+        return AMARK_ERROR_INVALID_INPUT;
+    } else if (has_marker(c, at, end, "cont-nomem")) {
+        return AMARK_ERROR_NOMEM;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/* What a request of a rule gives it to return: only AMARK_ERROR_NOMEM. */
+static amark_error_t kept(amark_error_t err)
+{
+    return err == AMARK_ERROR_NOMEM ? err : AMARK_ERROR_NONE;
+}
+
+/*
+ * After the valid reply of the close rule of a block kind, the invalid
+ * request that a close marker at at (right after the syntax on the block's
+ * first line) selects; returns the status to return.
+ */
+static amark_error_t close_marker(const amark_dialect_closing_t *closing,
+                                  size_t at, amark_dialect_reply_t *reply)
+{
+    const char *c = closing->content;
+    size_t end = closing->range.end;
+    size_t index;
+    amark_dialect_line_span_t span;
+    amark_range_t range = closing->range;
+
+    if (has_marker(c, at, end, "close-index")) {
+        return kept(amark_dialect_reply_set_data(reply, 1, "x", 1));
+    }
+    if (has_marker(c, at, end, "close-nesting")) {
+        return kept(amark_dialect_reply_add_block(
+            reply, AMARK_DIALECT_TOP, closing->kind, range, &index));
+    }
+    if (has_marker(c, at, end, "close-inline")) {
+        return kept(amark_dialect_reply_set_inline(reply, 0, range));
+    }
+    if (has_marker(c, at, end, "close-bounds")) {
+        range.end = (size_t)-1;
+        return kept(amark_dialect_reply_set_inline(reply, 0, range));
+    }
+    if (has_marker(c, at, end, "close-parent")) {
+        range.start = closing->range.end;
+        range.end = closing->range.end + 1;
+        return kept(amark_dialect_reply_set_inline(reply, 0, range));
+    }
+    if (has_marker(c, at, end, "close-prefix")) {
+        if (amark_dialect_closing_line(closing, 1, &span)) {
+            range.start = span.start;
+            return kept(amark_dialect_reply_set_inline(reply, 0, range));
+        }
+        return AMARK_ERROR_NONE;
+    }
+    if (has_marker(c, at, end, "close-status")) {
+        return AMARK_ERROR_INVALID_INPUT;
+    }
+    if (has_marker(c, at, end, "close-nomem")) {
+        return AMARK_ERROR_NOMEM;
+    }
+    return AMARK_ERROR_NONE;
+}
+
+/* ---------------------------------------------------------------------- */
+
 /* Counts a call of a block start rule in the state, if there is one. */
 static void count_start(void *state)
 {
@@ -65,6 +193,7 @@ static amark_error_t box_start(const amark_dialect_line_t *line, void *state,
         out->matched = true;
         out->consumed.start = line->position;
         out->consumed.end = line->position + 3;
+        return start_marker(line, out);
     }
     return AMARK_ERROR_NONE;
 }
@@ -100,6 +229,7 @@ static amark_error_t box_continue(const amark_dialect_line_t *line,
         out->matched = true;
         out->consumed.start = line->position;
         out->consumed.end = end;
+        return continue_marker(line, out);
     }
     return AMARK_ERROR_NONE;
 }
@@ -123,6 +253,7 @@ static amark_error_t note_start(const amark_dialect_line_t *line, void *state,
         out->matched = true;
         out->consumed.start = line->position;
         out->consumed.end = end;
+        return start_marker(line, out);
     }
     return AMARK_ERROR_NONE;
 }
@@ -191,8 +322,14 @@ static amark_error_t set_count(amark_dialect_reply_t *reply, size_t count)
 static amark_error_t box_close(const amark_dialect_closing_t *closing,
                                void *state, amark_dialect_reply_t *reply)
 {
+    amark_error_t err;
+
     count_close(state);
-    return set_count(reply, closing->line_count);
+    err = set_count(reply, closing->line_count);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    return close_marker(closing, closing->range.start + 3, reply);
 }
 
 /* The bit of FENCE's data that records its closing line. */
@@ -212,6 +349,7 @@ static amark_error_t fence_start(const amark_dialect_line_t *line,
         out->matched = true;
         out->consumed.start = line->position;
         out->consumed.end = line->position + 3;
+        return start_marker(line, out);
     }
     return AMARK_ERROR_NONE;
 }
@@ -243,8 +381,14 @@ static amark_error_t fence_continue(
 static amark_error_t fence_close(const amark_dialect_closing_t *closing,
                                  void *state, amark_dialect_reply_t *reply)
 {
+    amark_error_t err;
+
     count_close(state);
-    return set_count(reply, closing->line_count);
+    err = set_count(reply, closing->line_count);
+    if (err != AMARK_ERROR_NONE) {
+        return err;
+    }
+    return close_marker(closing, closing->range.start + 3, reply);
 }
 
 /*
@@ -261,6 +405,7 @@ static amark_error_t line_start(const amark_dialect_line_t *line,
         out->matched = true;
         out->consumed.start = line->position;
         out->consumed.end = line->position + 6;
+        return start_marker(line, out);
     }
     return AMARK_ERROR_NONE;
 }
@@ -283,7 +428,10 @@ static amark_error_t line_close(const amark_dialect_closing_t *closing,
     range.start = span.content_start;
     range.end = closing->range.end;
     err = amark_dialect_reply_set_inline(reply, 0, range);
-    return err == AMARK_ERROR_NOMEM ? err : AMARK_ERROR_NONE;
+    if (err == AMARK_ERROR_NOMEM) {
+        return err;
+    }
+    return close_marker(closing, closing->range.start + 6, reply);
 }
 
 /* Counts a call of the paragraph close rule, if there is a state. */
@@ -399,6 +547,110 @@ static amark_error_t add_row(const amark_dialect_closing_t *closing,
 }
 
 /*
+ * The invalid reply that a close marker right after the '|' of the first
+ * row line (first, line g of the paragraph) selects. Returns false if there
+ * is no marker; otherwise stores in *err the status to return.
+ */
+static bool grid_marker(const amark_dialect_closing_t *closing,
+                        amark_dialect_reply_t *reply, size_t g,
+                        const amark_dialect_line_span_t *first,
+                        amark_error_t *err)
+{
+    const char *c = closing->content;
+    size_t at = first->content_start + 1;
+    size_t end = first->end;
+    size_t grid;
+    size_t i;
+    amark_dialect_line_span_t span;
+    amark_range_t whole;
+    amark_range_t range;
+
+    whole.start = first->content_start;
+    whole.end = closing->range.end;
+    range = whole;
+    *err = AMARK_ERROR_NONE;
+    if (has_marker(c, at, end, "close-index")) {
+        /* No block 0 yet. */
+        *err = kept(amark_dialect_reply_add_block(
+            reply, 0, AMARK_TEST_KIND_GRID, whole, &i));
+    } else if (has_marker(c, at, end, "close-kind")) {
+        *err = kept(amark_dialect_reply_add_block(
+            reply, AMARK_DIALECT_TOP, AMARK_KIND_HEADING, whole, &i));
+    } else if (has_marker(c, at, end, "close-nesting")) {
+        *err = kept(amark_dialect_reply_add_block(
+            reply, AMARK_DIALECT_TOP, AMARK_TEST_KIND_VAR, whole, &i));
+    } else if (has_marker(c, at, end, "close-bounds")) {
+        range.end = (size_t)-1;
+        *err = kept(amark_dialect_reply_add_block(
+            reply, AMARK_DIALECT_TOP, AMARK_TEST_KIND_GRID, range, &i));
+    } else if (has_marker(c, at, end, "close-parent")) {
+        /* A grid of the '|' alone, and a row over the whole of it. */
+        range.end = at;
+        *err = amark_dialect_reply_add_block(reply, AMARK_DIALECT_TOP,
+                                             AMARK_TEST_KIND_GRID, range,
+                                             &grid);
+        if (*err == AMARK_ERROR_NONE) {
+            *err = amark_dialect_reply_add_block(reply, grid,
+                                                 AMARK_TEST_KIND_ROW, whole,
+                                                 &i);
+        }
+        *err = kept(*err);
+    } else if (has_marker(c, at, end, "close-order")) {
+        /* Two grids over the same bytes. */
+        *err = amark_dialect_reply_add_block(reply, AMARK_DIALECT_TOP,
+                                             AMARK_TEST_KIND_GRID, whole,
+                                             &grid);
+        if (*err == AMARK_ERROR_NONE) {
+            *err = amark_dialect_reply_add_block(reply, AMARK_DIALECT_TOP,
+                                                 AMARK_TEST_KIND_GRID, whole,
+                                                 &i);
+        }
+        *err = kept(*err);
+    } else if (has_marker(c, at, end, "close-inline")) {
+        /* Inline content on the grid, a container. */
+        *err = amark_dialect_reply_add_block(reply, AMARK_DIALECT_TOP,
+                                             AMARK_TEST_KIND_GRID, whole,
+                                             &grid);
+        if (*err == AMARK_ERROR_NONE) {
+            *err = amark_dialect_reply_set_inline(reply, grid, whole);
+        }
+        *err = kept(*err);
+    } else if (has_marker(c, at, end, "close-prefix")) {
+        /*
+         * A cell over the grid, whose inline content starts where the line
+         * after the first row line starts (in its prefix or the white space
+         * before its content, if it has one).
+         */
+        *err = amark_dialect_reply_add_block(reply, AMARK_DIALECT_TOP,
+                                             AMARK_TEST_KIND_GRID, whole,
+                                             &grid);
+        if (*err == AMARK_ERROR_NONE) {
+            *err = amark_dialect_reply_add_block(reply, grid,
+                                                 AMARK_TEST_KIND_CELL, whole,
+                                                 &i);
+        }
+        if (*err == AMARK_ERROR_NONE &&
+            amark_dialect_closing_line(closing, g + 1, &span)) {
+            range.start = span.start;
+            *err = amark_dialect_reply_set_inline(reply, i, range);
+        }
+        *err = kept(*err);
+    } else if (has_marker(c, at, end, "close-paragraph")) {
+        /* A paragraph part that starts inside the first line. */
+        range.start = closing->range.start + 1;
+        *err = kept(amark_dialect_reply_add_block(
+            reply, AMARK_DIALECT_TOP, AMARK_KIND_PARAGRAPH, range, &i));
+    } else if (has_marker(c, at, end, "close-status")) {
+        *err = AMARK_ERROR_INVALID_INPUT;
+    } else if (has_marker(c, at, end, "close-nomem")) {
+        *err = AMARK_ERROR_NOMEM;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+/*
  * GRID: the paragraph close rule. From the first line of the paragraph
  * whose content starts with '|' to its end, the paragraph is a grid; the
  * lines before it stay a paragraph. Each line that starts with '|' starts a
@@ -411,6 +663,7 @@ static amark_error_t grid_close(const amark_dialect_closing_t *closing,
     amark_dialect_line_span_t first = {0, 0, 0};
     amark_dialect_line_span_t span;
     amark_range_t range;
+    amark_error_t err;
     size_t grid;
     size_t g;
     size_t i;
@@ -426,6 +679,9 @@ static amark_error_t grid_close(const amark_dialect_closing_t *closing,
     }
     if (g == closing->line_count) {
         return AMARK_ERROR_NONE;
+    }
+    if (grid_marker(closing, reply, g, &first, &err)) {
+        return err;
     }
     if (g > 0) {
         /* The lines before the grid stay a paragraph. */

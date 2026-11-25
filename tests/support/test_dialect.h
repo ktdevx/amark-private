@@ -64,6 +64,58 @@
  * Close rules: BOX and FENCE set their attributes to the number of their
  * lines, in decimal ASCII; LINE sets its inline content, from the first
  * non-space byte after its marker to its end. NOTE has none.
+ *
+ * Markers of invalid results. As the dialect has no state to switch on, a
+ * test selects an invalid result by the input: "!" and a name right after
+ * the syntax, followed by the end of the line, a space or a tab. A name
+ * that is no marker below is content as any other.
+ *
+ *   Start markers, right after the start marker a start rule consumes
+ *   ("@> !start-origin", "@note: !...", "@@@!...", "@line !..."): the rule
+ *   matches with
+ *     start-origin  a range that starts 1 byte after the position;
+ *     start-line    a range that ends 1 byte past the end of the line;
+ *     start-empty   a range of length 0 (invalid for BOX and NOTE only);
+ *     start-status  the status AMARK_ERROR_INVALID_INPUT, not defined;
+ *     start-nomem   the status AMARK_ERROR_NOMEM.
+ *
+ *   Continue markers, on a line BOX goes on over, right after the prefix
+ *   it consumes ("@> !cont-origin"): cont-origin, cont-line, cont-status
+ *   and cont-nomem, as the start markers. When BOX does not go on, "@> "
+ *   on that line opens a new box.
+ *
+ *   Close markers of a dialect block, right after its start marker on its
+ *   first line ("@> !close-index", "@@@!close-bounds", "@line !close-x"):
+ *   after its valid reply, the close rule makes the request named, so that
+ *   none of the reply is kept:
+ *     close-index    attributes for block 1, which is not there;
+ *     close-nesting  a block added to the reply of a block;
+ *     close-inline   inline content on block 0 (invalid for BOX only);
+ *     close-bounds   inline content that ends past the content (leaves);
+ *     close-parent   inline content over the byte after the block (leaves;
+ *                    needs that byte);
+ *     close-prefix   inline content from the start of the block's second
+ *                    line (leaves; needs a prefix there, as in a box);
+ *     close-status   the status AMARK_ERROR_INVALID_INPUT;
+ *     close-nomem    the status AMARK_ERROR_NOMEM.
+ *
+ *   Close markers of a paragraph, right after the '|' of its first row line
+ *   ("|!close-order"): instead of the grid, the paragraph close rule replies
+ *     close-index      a block under block 0, which is not there;
+ *     close-kind       a heading, a kind not registered by the extension;
+ *     close-nesting    a block of the inline kind VAR;
+ *     close-bounds     a grid that ends past the content;
+ *     close-parent     a grid of the '|' alone, and a row over the grid's
+ *                      bytes up to the paragraph's end under it;
+ *     close-order      two grids over the same bytes;
+ *     close-inline     a grid with inline content;
+ *     close-prefix     a grid and a cell under it, whose inline content
+ *                      starts where the next line starts (needs a next line
+ *                      with a prefix or white space before its content);
+ *     close-paragraph  a paragraph part that starts 1 byte into the
+ *                      paragraph;
+ *     close-status     the status AMARK_ERROR_INVALID_INPUT;
+ *     close-nomem      the status AMARK_ERROR_NOMEM.
  */
 #define AMARK_TEST_KIND_BOX (AMARK_KIND_DIALECT_MIN)        /* container */
 #define AMARK_TEST_KIND_NOTE (AMARK_KIND_DIALECT_MIN + 1)   /* container */
