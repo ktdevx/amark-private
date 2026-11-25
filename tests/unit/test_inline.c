@@ -146,11 +146,11 @@ static amark_error_t parse_with(const char *bytes, size_t length,
                                               resolved.end, NULL, &g_doc),
                         AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_doc), AMARK_ERROR_NONE);
-    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_doc, &resolved, &g_scratch),
+    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_doc, &resolved, &g_scratch, NULL),
                         AMARK_ERROR_NONE);
     amark_arena_deinit(&g_scratch);
     amark_arena_init(&g_scratch, &g_allocator);
-    return amark_inline_parse(g_doc, &resolved, &g_scratch);
+    return amark_inline_parse(g_doc, &resolved, &g_scratch, NULL);
 }
 
 /* Parses the whole of length bytes without limits, requiring success. */
@@ -1551,8 +1551,9 @@ static void parse_both(const char *bytes, size_t length)
                                               resolved.end, NULL, &g_blocks),
                         AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_blocks), AMARK_ERROR_NONE);
-    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_blocks, &resolved, &g_scratch),
-                        AMARK_ERROR_NONE);
+    NAOS_REQUIRE_INT_EQ(
+        amark_block_parse(g_blocks, &resolved, &g_scratch, NULL),
+        AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse((const char *)g_buffer, g_length, &config,
                                     &g_doc),
                         AMARK_ERROR_NONE);

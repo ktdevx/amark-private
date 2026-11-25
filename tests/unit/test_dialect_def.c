@@ -6,8 +6,9 @@
 /*
  * Unit tests of the definition of a dialect: the rules of
  * amark_dialect_validate (Requirements 3.2 to 3.9, 3.13, 8.6 to 8.8), the
- * kind lookups, the per-parse run state (12.3 to 12.7) and the rejection
- * diagnostic (11.1 to 11.5).
+ * kind lookups, the per-parse run state (12.3 to 12.7) and its lifetime in
+ * amark_parse (12.4, 12.6, 13.7, 13.10), and the rejection diagnostic (11.1
+ * to 11.5).
  *
  * Each test builds a valid definition of two extensions in local structures
  * (amark_test_def_init of test_dialect_defs.h), checks that it passes, then
@@ -405,6 +406,7 @@ static size_t g_log_len;
 static int g_fail_ext;
 static amark_error_t g_fail_err;
 static const amark_allocator_t *g_seen_allocator;
+static void *g_seen_ctx; /* allocator->ctx, read during the call */
 
 static amark_dialect_extension_t g_exts[RUN_EXT_MAX];
 static const amark_dialect_extension_t *g_ext_ptrs[RUN_EXT_MAX];
@@ -424,6 +426,7 @@ static amark_error_t state_new_k(const amark_allocator_t *allocator,
     int *tag;
 
     g_seen_allocator = allocator;
+    g_seen_ctx = allocator->ctx;
     if (g_fail_ext == k) {
         return g_fail_err;
     }
@@ -995,9 +998,159 @@ NAOS_SUITE(reject,
     NAOS_ADD_TEST(reject_returns_the_failure_to_add)
 )
 
+/* ---------------------------------------------------------------------- */
+/* The run state over a parse (12.4, 12.6, 13.1, 13.7, 13.10) */
+
+/*
+ * amark_parse with g_dialect and the counting allocator. The dialect has
+ * two extensions with state functions and nothing else, so the parse is
+ * the one without a dialect plus the run.
+ */
+static amark_config_t g_config;
+
+static const char k_parse_content[] = "# a\n\nb *c* `d`\n\n- e\n";
+
+NAOS_SETUP(parse_run)
+{
+    amark_test_alloc_init(&g_state);
+    g_allocator = amark_test_allocator(&g_state);
+    g_doc = NULL;
+    g_log_len = 0;
+    g_fail_ext = 0;
+    g_fail_err = AMARK_ERROR_NOMEM;
+    g_seen_ctx = NULL;
+    init_dialect(2);
+    set_state_fns(0, state_new_1);
+    set_state_fns(1, state_new_2);
+    amark_config_init(&g_config);
+    g_config.allocator = g_allocator;
+    g_config.dialect = &g_dialect;
+}
+
+NAOS_TEARDOWN(parse_run)
+{
+    g_state.fail_at = 0;
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+}
+
+static amark_error_t parse(void)
+{
+    return amark_parse(k_parse_content, sizeof(k_parse_content) - 1,
+                       &g_config, &g_doc);
+}
+
+/* Checks that every state made was freed once, in the order it was made. */
+static void check_balanced_log(void)
+{
+    static const int full[] = {1, 2, -1, -2};
+    static const int first[] = {1, -1};
+
+    switch (g_log_len) {
+    case 0:
+        break;
+    case 2:
+        check_log(first, 2);
+        break;
+    default:
+        check_log(full, 4);
+        break;
+    }
+}
+
+NAOS_TEST(parse_creates_and_frees_each_state_once)
+{
+    static const int log[] = {1, 2, -1, -2};
+
+    NAOS_REQUIRE_INT_EQ(parse(), AMARK_ERROR_NONE);
+    NAOS_REQUIRE_NOT_NULL(g_doc);
+    /* The states are freed before amark_parse returns. */
+    check_log(log, 4);
+    /* The parse's allocator (its copy in amark_parse is gone now). */
+    NAOS_CHECK_PTR_EQ(g_seen_ctx, &g_state);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+    check_log(log, 4);
+}
+
+NAOS_TEST(parse_with_a_failing_state_new_is_nomem)
+{
+    static const int log[] = {1, -1};
+
+    g_fail_ext = 2;
+    g_fail_err = AMARK_ERROR_INVALID_INPUT;
+    NAOS_CHECK_INT_EQ(parse(), AMARK_ERROR_NOMEM);
+    NAOS_CHECK_NULL(g_doc);
+    check_log(log, 2);
+    NAOS_CHECK_UINT_EQ(g_state.live, 0);
+}
+
+NAOS_TEST(parse_failing_at_every_allocation_keeps_states_balanced)
+{
+    size_t fail_at;
+    size_t total;
+    size_t after_run_begin = 0;
+    amark_error_t err;
+
+    /* The allocations of a successful parse. */
+    NAOS_REQUIRE_INT_EQ(parse(), AMARK_ERROR_NONE);
+    amark_document_destroy(g_doc);
+    g_doc = NULL;
+    total = g_state.malloc_calls;
+    NAOS_REQUIRE_UINT_GT(total, 0);
+
+    for (fail_at = 1; fail_at <= total; fail_at++) {
+        amark_test_alloc_init(&g_state);
+        g_state.fail_at = fail_at;
+        g_log_len = 0;
+        err = parse();
+        g_state.fail_at = 0;
+        NAOS_CHECK_INT_EQ(err, AMARK_ERROR_NOMEM);
+        NAOS_CHECK_NULL(g_doc);
+        NAOS_CHECK_UINT_EQ(g_state.live, 0);
+        NAOS_CHECK_UINT_EQ(g_state.ctx_mismatch, 0);
+        check_balanced_log();
+        if (g_log_len == 4) {
+            after_run_begin++;
+        }
+        amark_document_destroy(g_doc);
+        g_doc = NULL;
+    }
+    /* Some failures came after the run began (in the parsers). */
+    NAOS_CHECK_UINT_GT(after_run_begin, 0);
+
+    /* One past the last allocation succeeds. */
+    amark_test_alloc_init(&g_state);
+    g_state.fail_at = total + 1;
+    g_log_len = 0;
+    NAOS_CHECK_INT_EQ(parse(), AMARK_ERROR_NONE);
+    check_balanced_log();
+    NAOS_CHECK_UINT_EQ(g_log_len, 4);
+}
+
+NAOS_TEST(parse_without_extensions_calls_no_state_function)
+{
+    init_dialect(0);
+    NAOS_REQUIRE_INT_EQ(parse(), AMARK_ERROR_NONE);
+    NAOS_CHECK_UINT_EQ(g_log_len, 0);
+}
+
+NAOS_SUITE(parse_run,
+    NAOS_SET_SETUP(parse_run),
+    NAOS_SET_TEARDOWN(parse_run),
+    NAOS_ADD_TEST(parse_creates_and_frees_each_state_once),
+    NAOS_ADD_TEST(parse_with_a_failing_state_new_is_nomem),
+    NAOS_ADD_TEST(parse_failing_at_every_allocation_keeps_states_balanced),
+    NAOS_ADD_TEST(parse_without_extensions_calls_no_state_function)
+)
+
 NAOS_MAIN(
     NAOS_ADD_SUITE(validate),
     NAOS_ADD_SUITE(find_kind),
     NAOS_ADD_SUITE(run),
-    NAOS_ADD_SUITE(reject)
+    NAOS_ADD_SUITE(reject),
+    NAOS_ADD_SUITE(parse_run)
 )

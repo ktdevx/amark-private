@@ -520,7 +520,7 @@ NAOS_TEST(scratch_arena_is_released_on_success)
                             NULL, &g_other),
                         AMARK_ERROR_NONE);
     NAOS_REQUIRE_INT_EQ(amark_parse_data_create(g_other), AMARK_ERROR_NONE);
-    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_other, &resolved, &g_scratch),
+    NAOS_REQUIRE_INT_EQ(amark_block_parse(g_other, &resolved, &g_scratch, NULL),
                         AMARK_ERROR_NONE);
     check_tree(g_other);
     NAOS_REQUIRE_NOT_NULL(g_scratch.current);

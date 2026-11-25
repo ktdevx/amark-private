@@ -10,6 +10,7 @@
 
 #include "arena.h"
 #include "config_internal.h"
+#include "dialect_internal.h"
 #include "document.h"
 
 /*
@@ -36,7 +37,9 @@
  * an initialized arena that the caller releases. Of config, only
  * max_nesting_depth and max_node_count are read (not the dialect). The
  * state of the parse lives in a local structure; nothing is kept between
- * calls. No recursion.
+ * calls. No recursion. run is the run state of the parse's dialect, or NULL
+ * without a dialect; with NULL the parse is the CommonMark one (13.1). No
+ * rule of a dialect is called yet, so run is not read.
  *
  * On success, every paragraph and heading holds its inline nodes and the
  * tree passes amark_tree_check; the block nodes are unchanged. On failure,
@@ -46,6 +49,7 @@
  */
 amark_error_t amark_inline_parse(amark_document_t *doc,
                                  const amark_resolved_config_t *config,
-                                 amark_arena_t *scratch);
+                                 amark_arena_t *scratch,
+                                 amark_dialect_run_t *run);
 
 #endif /* AMARK_INLINE_H */

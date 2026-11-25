@@ -1563,7 +1563,8 @@ static amark_error_t process_line(block_parser_t *p, size_t line,
 
 amark_error_t amark_block_parse(amark_document_t *doc,
                                 const amark_resolved_config_t *config,
-                                amark_arena_t *scratch)
+                                amark_arena_t *scratch,
+                                amark_dialect_run_t *run)
 {
     block_parser_t p;
     open_block_t root;
@@ -1573,6 +1574,7 @@ amark_error_t amark_block_parse(amark_document_t *doc,
     size_t count;
     amark_error_t err;
 
+    (void)run; /* read once a dialect's rules are called */
     p.doc = doc;
     p.bytes = amark_document_content(doc);
     p.max_depth = config->max_nesting_depth;

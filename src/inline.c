@@ -473,13 +473,15 @@ static amark_error_t parse_content(inline_parser_t *parser,
 
 amark_error_t amark_inline_parse(amark_document_t *doc,
                                  const amark_resolved_config_t *config,
-                                 amark_arena_t *scratch)
+                                 amark_arena_t *scratch,
+                                 amark_dialect_run_t *run)
 {
     inline_parser_t parser;
     amark_inline_content_t content;
     size_t index;
     amark_error_t err;
 
+    (void)run; /* read once a dialect's rules are called */
     parser_init(&parser, doc, config, scratch);
     for (index = 0; amark_inline_content_at(doc, index, &content); index++) {
         if (content.start == content.end) {
