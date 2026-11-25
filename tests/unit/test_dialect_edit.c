@@ -1926,6 +1926,66 @@ static const amark_dialect_extension_t *const k_post_exts[] = {&k_post1,
 static const amark_dialect_extension_t *const k_split_exts[] = {
     &k_post_split, &k_post2};
 
+/*
+ * Rules that make one invalid edit (the root's kind cannot be changed:
+ * PROTECTED) and then return: the edit's own result, AMARK_ERROR_INVALID_INPUT
+ * without an invalid edit, or another value the contract does not define
+ * after the invalid edit.
+ */
+static amark_error_t post_pass_on(const amark_dialect_post_t *post,
+                                  void *state, amark_dialect_editor_t *editor)
+{
+    (void)state;
+    return amark_dialect_edit_set_kind(editor, amark_document_root(post->doc),
+                                       K_MARK);
+}
+
+static amark_error_t post_invalid_alone(const amark_dialect_post_t *post,
+                                        void *state,
+                                        amark_dialect_editor_t *editor)
+{
+    (void)post;
+    (void)state;
+    (void)editor;
+    return AMARK_ERROR_INVALID_INPUT;
+}
+
+static amark_error_t post_other_after(const amark_dialect_post_t *post,
+                                      void *state,
+                                      amark_dialect_editor_t *editor)
+{
+    (void)state;
+    (void)amark_dialect_edit_set_kind(editor, amark_document_root(post->doc),
+                                      K_MARK);
+    return AMARK_ERROR_LIMIT_EXCEEDED;
+}
+
+static const amark_dialect_extension_t k_post_pass_on = {
+    "first", k_kinds1, sizeof(k_kinds1) / sizeof(k_kinds1[0]),
+    NULL, 0, NULL, NULL, 0, NULL, 0, post_pass_on, NULL, NULL};
+
+static const amark_dialect_extension_t k_post_invalid_alone = {
+    "first", k_kinds1, sizeof(k_kinds1) / sizeof(k_kinds1[0]),
+    NULL, 0, NULL, NULL, 0, NULL, 0, post_invalid_alone, NULL, NULL};
+
+static const amark_dialect_extension_t k_post_other_after = {
+    "first", k_kinds1, sizeof(k_kinds1) / sizeof(k_kinds1[0]),
+    NULL, 0, NULL, NULL, 0, NULL, 0, post_other_after, NULL, NULL};
+
+static const amark_dialect_extension_t *const k_pass_on_exts[] = {
+    &k_post_pass_on, &k_post2};
+static const amark_dialect_extension_t *const k_invalid_alone_exts[] = {
+    &k_post_invalid_alone};
+static const amark_dialect_extension_t *const k_other_after_exts[] = {
+    &k_post_other_after};
+
+static const amark_dialect_t k_pass_on_dialect = {
+    sizeof(amark_dialect_t), AMARK_DIALECT_ABI, k_pass_on_exts, 2};
+static const amark_dialect_t k_invalid_alone_dialect = {
+    sizeof(amark_dialect_t), AMARK_DIALECT_ABI, k_invalid_alone_exts, 1};
+static const amark_dialect_t k_other_after_dialect = {
+    sizeof(amark_dialect_t), AMARK_DIALECT_ABI, k_other_after_exts, 1};
+
 static const amark_dialect_t k_post_dialect = {
     sizeof(amark_dialect_t), AMARK_DIALECT_ABI, k_post_exts, 2};
 static const amark_dialect_t k_split_dialect = {
@@ -2249,6 +2309,33 @@ NAOS_TEST(an_undefined_return_value_goes_on_with_the_next_extension)
     NAOS_CHECK_UINT_EQ(amark_node_next_sibling(g_doc, node), AMARK_NODE_NONE);
 }
 
+NAOS_TEST(an_invalid_edit_passed_on_adds_one_diagnostic)
+{
+    amark_node_id_t para;
+
+    /* The rule returns what its invalid edit returned: the edit's
+     * diagnostic only, and the next extension's rule still runs. */
+    parse_with(&k_pass_on_dialect, "ab\n", AMARK_ERROR_NONE, 1);
+    check_parse_diagnostic(0, 0, MSG_FIRST R_PROTECTED);
+    para = amark_node_first_child(g_doc, amark_document_root(g_doc));
+    check_node(amark_node_next_sibling(g_doc,
+                                       amark_node_first_child(g_doc, para)),
+               K_SUB, false, 2, 2);
+}
+
+NAOS_TEST(invalid_input_without_an_invalid_edit_is_an_unknown_value)
+{
+    parse_with(&k_invalid_alone_dialect, "ab\n", AMARK_ERROR_NONE, 1);
+    check_parse_diagnostic(0, 0, MSG_FIRST R_STATUS);
+}
+
+NAOS_TEST(another_value_after_an_invalid_edit_is_an_unknown_value)
+{
+    parse_with(&k_other_after_dialect, "ab\n", AMARK_ERROR_NONE, 2);
+    check_parse_diagnostic(0, 0, MSG_FIRST R_PROTECTED);
+    check_parse_diagnostic(1, 0, MSG_FIRST R_STATUS);
+}
+
 NAOS_TEST(a_rule_that_returns_nomem_ends_the_parse)
 {
     parse_with(amark_test_dialect(), "- [x] !post-nomem\n", AMARK_ERROR_NOMEM,
@@ -2327,6 +2414,10 @@ NAOS_SUITE(postprocess,
     NAOS_ADD_TEST(
         an_undefined_return_value_is_at_the_start_of_the_parsed_range),
     NAOS_ADD_TEST(an_undefined_return_value_goes_on_with_the_next_extension),
+    NAOS_ADD_TEST(an_invalid_edit_passed_on_adds_one_diagnostic),
+    NAOS_ADD_TEST(
+        invalid_input_without_an_invalid_edit_is_an_unknown_value),
+    NAOS_ADD_TEST(another_value_after_an_invalid_edit_is_an_unknown_value),
     NAOS_ADD_TEST(a_rule_that_returns_nomem_ends_the_parse),
     NAOS_ADD_TEST(a_lasting_failure_ends_the_parse_with_its_error),
     NAOS_ADD_TEST(an_input_with_every_hook_of_the_test_dialect_parses)

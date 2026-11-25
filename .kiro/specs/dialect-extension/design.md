@@ -879,7 +879,7 @@ amark_error_t amark_draft_set_dialect_data(amark_draft_t *draft,
 amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
     size_t max_depth, size_t max_nodes);
 ```
-- `amark_dialect_postprocess`：`postprocess` を持つ拡張の順に、1 回ずつ呼ぶ（9.1）。編集の状態（`run`、拡張の番号、2 つの上限、残る失敗）は、この関数のスタックにある。規則が戻った後、残る失敗があればそれを返し、規則が `AMARK_ERROR_NOMEM` を返せば、それを返す。`AMARK_ERROR_NONE` と `AMARK_ERROR_NOMEM` のほかの値は、`STATUS` の診断にして、次の拡張へ進む。
+- `amark_dialect_postprocess`：`postprocess` を持つ拡張の順に、1 回ずつ呼ぶ（9.1）。編集の状態（`run`、拡張の番号、2 つの上限、残る失敗）は、この関数のスタックにある。規則が戻った後、残る失敗があればそれを返し、規則が `AMARK_ERROR_NOMEM` を返せば、それを返す。`AMARK_ERROR_NONE` と `AMARK_ERROR_NOMEM` のほかの値は、`STATUS` の診断にして、次の拡張へ進む。ただし、その呼び出しの中で不採用になった操作があり、規則が `AMARK_ERROR_INVALID_INPUT` を返したときは、操作の診断だけにして `STATUS` の診断を足さない。
 
 **操作の検査と適用**（どれも、対象のノードと、その親・前後の兄弟・最初と最後の子だけを読む。10.9）
 
@@ -1055,6 +1055,6 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 - **閉じるブロックの行**：`amark_dialect_closing_line` は、最初の行の `start` と `content_start` を、ブロックの開始より前のときだけ開始まで上げる。コンテナの閉じる規則には、1 行目も自分のプレフィックスの後ろが内容の開始に見える。
 - **開始の規則の入力**：`position` は空白でない最初のバイト、`indent` はプレフィックスの終わりから数えた 0〜3 の桁。`container_kind` は、新しいブロックの親になる要素の種類（段落とリストをさかのぼる）。
 - **インラインの解析から行を読む**：`inline.c` は、行の読み方を共有するために `dialect_reply.h` の `struct amark_dialect_lines` を使う。`delimiter.c` は、種類の数の上限をコンパイル時に確かめるために `<amark/dialect.h>` を取り込む。
-- **規則が `INVALID_INPUT` をそのまま返したとき**：閉じるときの規則では、返事の最初の違反の診断が 1 件だけ残る。後処理の規則では、操作の診断と、戻り値の `STATUS` の診断の 2 件になる。設計の本文のとおりの振る舞いだが、2 つの差し込み口でそろっていない。そろえるかどうかは、次に設計を見直すときに決める。
+- **規則が `INVALID_INPUT` をそのまま返したとき**：閉じるときの規則では、返事の最初の違反の診断が 1 件だけ残る。後処理の規則でも、その呼び出しの中で不採用になった操作があれば、操作の診断の 1 件だけにし、戻り値の `STATUS` の診断は足さない（2 つの差し込み口をそろえた）。不採用の操作がないのに `INVALID_INPUT` を返したときと、`INVALID_INPUT` のほかの定めていない値は、これまでどおり `STATUS` にする。
 - **テスト用の方言**：GRID は、最初の行の後で `|` で始まらない行を、前の行の最後のセルの続きにする（6.9 のテストのため）。NOTE と LINE の開始は段落に割り込む。TASK の属性は、文書の中での TASK の番号。
 - **上流の設計の更新**：inline-parser の `design.md`（下限の表の大きさ、区切りの種類の項目、インラインの親）と、`structure.md` の依存の図は、この spec の変更に合わせて更新が要る。

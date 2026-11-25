@@ -6,6 +6,7 @@
 #ifndef AMARK_DIALECT_EDIT_H
 #define AMARK_DIALECT_EDIT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include <amark/dialect.h>
@@ -47,12 +48,14 @@ struct amark_dialect_editor {
     size_t max_depth;                     /* 0: no limit */
     size_t max_nodes;                     /* 0: no limit */
     amark_error_t failure; /* the lasting failure, or AMARK_ERROR_NONE */
+    bool rejected;         /* an edit was rejected with a diagnostic */
 };
 
 /*
  * Sets *editor up for the postprocessing rule of extension number
  * `extension` of run->dialect, editing run->doc, with the depth and node
- * limits of the parse (0: no limit) and no lasting failure.
+ * limits of the parse (0: no limit), no lasting failure and no rejected
+ * edit.
  */
 void amark_dialect_editor_init(amark_dialect_editor_t *editor,
                                amark_dialect_run_t *run, size_t extension,
@@ -70,7 +73,10 @@ void amark_dialect_editor_init(amark_dialect_editor_t *editor,
  * After a rule returns:
  *   - if the editor has a lasting failure, returns it (10.10, 10.11);
  *   - if the rule returned AMARK_ERROR_NOMEM, returns it (10.10);
- *   - if it returned any value other than AMARK_ERROR_NONE, adds a
+ *   - if it returned AMARK_ERROR_INVALID_INPUT after one of its edits was
+ *     rejected, adds nothing more: the rule passed on what an edit
+ *     returned, and that edit's diagnostic is the only one (11.1);
+ *   - if it returned any other value than AMARK_ERROR_NONE, adds a
  *     rejection diagnostic (hook POSTPROCESS, reason STATUS, at the start
  *     of the root) and goes on with the next extension (10.4); the edits
  *     the rule made stay (they each passed their checks, so the tree keeps

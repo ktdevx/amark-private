@@ -25,6 +25,7 @@ void amark_dialect_editor_init(amark_dialect_editor_t *editor,
     editor->max_depth = max_depth;
     editor->max_nodes = max_nodes;
     editor->failure = AMARK_ERROR_NONE;
+    editor->rejected = false;
 }
 
 /*
@@ -61,6 +62,7 @@ static amark_error_t reject(amark_dialect_editor_t *editor,
     if (err != AMARK_ERROR_NONE) {
         return fail(editor, err);
     }
+    editor->rejected = true;
     return AMARK_ERROR_INVALID_INPUT;
 }
 
@@ -552,6 +554,11 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
         }
         if (err == AMARK_ERROR_NOMEM) {
             return err;
+        }
+        if (err == AMARK_ERROR_INVALID_INPUT && editor.rejected) {
+            /* What a rejected edit returned, passed on: its diagnostic is
+             * the only one (11.1). */
+            continue;
         }
         if (err != AMARK_ERROR_NONE) {
             /* A value the contract does not define (10.4). */

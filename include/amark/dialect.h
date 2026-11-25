@@ -216,7 +216,9 @@ typedef struct amark_dialect_post {
  * per document, after the inline parse, in the order of the extensions.
  * Its edits are applied as they are made, so any other error it returns
  * adds a diagnostic but does not undo them; the next extension's rule is
- * called as usual. When an edit fails in a way the parse cannot go on from
+ * called as usual. A rule may pass on the AMARK_ERROR_INVALID_INPUT that one
+ * of its rejected edits returned: that adds no diagnostic besides the
+ * edit's own. When an edit fails in a way the parse cannot go on from
  * (a failed allocation, a limit exceeded), the parse ends with that error
  * once the rule returns, whatever the rule returns.
  *
