@@ -1060,5 +1060,5 @@ amark_error_t amark_dialect_postprocess(amark_dialect_run_t *run,
 - **インラインの解析から行を読む**：`inline.c` は、行の読み方を共有するために `dialect_reply.h` の `struct amark_dialect_lines` を使う。`delimiter.c` は、種類の数の上限をコンパイル時に確かめるために `<amark/dialect.h>` を取り込む。
 - **規則が `INVALID_INPUT` をそのまま返したとき**：閉じるときの規則では、返事の最初の違反の診断が 1 件だけ残る。後処理の規則でも、その呼び出しの中で不採用になった操作があれば、操作の診断の 1 件だけにし、戻り値の `STATUS` の診断は足さない（2 つの差し込み口をそろえた）。不採用の操作がないのに `INVALID_INPUT` を返したときと、`INVALID_INPUT` のほかの定めていない値は、これまでどおり `STATUS` にする。
 - **テスト用の方言**：GRID は、最初の行の後で `|` で始まらない行を、前の行の最後のセルの続きにする（6.9 のテストのため）。NOTE と LINE の開始は段落に割り込む。TASK の属性は、文書の中での TASK の番号。
-- **上流の設計の更新**：inline-parser の `design.md`（下限の表の大きさ、区切りの種類の項目、インラインの親）と、`structure.md` の依存の図は、この spec の変更に合わせて更新が要る。
+- **上流の設計の更新**：inline-parser の `design.md`（下限の表の大きさ、区切りの種類の項目、インラインの親、Draft の属性の値、`amark_inline_parse` の引数、`special` の表の印）は、この spec の変更に合わせて更新した。`structure.md` の依存の図は、`/kiro-steering` で更新する。
 - **空行で消費する桁の数**：空行でも続くコンテナは、空行で何も消費しなかったため、中の空のリスト項目が、空白だけの行で、リスト項目の中と違って続いていた。種類の登録に `blank_columns` を足し、空行ではリスト項目と同じ決まりで消費するようにした（要件 2.9、3.14、5.6 を合わせて直した）。公開前なので、`AMARK_DIALECT_ABI` は 1 のままにした。テスト用の方言の NOTE は 2 桁。
